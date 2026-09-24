@@ -1,0 +1,22 @@
+name: Feature
+description: A new feature (F-nnn) tracked through the ADLC
+labels: [feature]
+body:
+  - type: input
+    id: feature
+    attributes: { label: Feature ID, placeholder: F-001 }
+  - type: input
+    id: reqs
+    attributes: { label: Requirements, placeholder: REQ-001, REQ-002 }
+  - type: textarea
+    id: problem
+    attributes: { label: Problem and users }
+    validations: { required: true }
+  - type: textarea
+    id: ac
+    attributes: { label: Acceptance criteria (Given / When / Then) }
+  - type: dropdown
+    id: phase
+    attributes:
+      label: Roadmap phase
+      options: ["0 - Foundations", "1 - MVP", "2 - Productivity & Web Scale", "3 - Department Packs", "4 - Enterprise Hardening"]
