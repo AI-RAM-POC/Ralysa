@@ -249,4 +249,4 @@ Suggested tagline for §1.3: *"Ralysa — Claude Code for the whole enterprise: 
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| | | | | |
+| Ram Mohan Rao Adduri | Founder / Product owner | Approved | 2026-09-25 | Approval given in chat; recorded by Claude on the approver's instruction. |
