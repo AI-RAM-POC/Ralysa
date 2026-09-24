@@ -1,0 +1,29 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create GitHub release from release record
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          base="${TAG%%-rc*}"
+          notes="docs/releases/${base}.md"
+          flags=""
+          case "$TAG" in *-rc*) flags="--prerelease" ;; esac
+          if gh release view "$TAG" >/dev/null 2>&1; then echo "Release exists"; exit 0; fi
+          if [ -f "$notes" ]; then
+            gh release create "$TAG" $flags --title "$TAG" --notes-file "$notes"
+          else
+            gh release create "$TAG" $flags --title "$TAG" --generate-notes
+          fi
