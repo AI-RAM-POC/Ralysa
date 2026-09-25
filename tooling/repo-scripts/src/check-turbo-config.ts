@@ -16,6 +16,15 @@ export const REQUIRED_GLOBAL_DEPENDENCIES = [
   '!tooling/**/node_modules/**',
 ] as const;
 
+/**
+ * A dependent's `typecheck` (`tsc -p`) reads the declarations a referenced library's `typecheck`
+ * writes to `.tsc/` (repo-conventions.md, "Referenceable libraries"): an app that imports a
+ * library's `.ts` script export fails with TS6305 when they are missing. So `typecheck` waits for
+ * the dependencies' `typecheck`, and `.tsc/` is its cached output, restored on a cache hit.
+ */
+export const TYPECHECK_DEPENDS_ON = '^typecheck';
+export const TYPECHECK_OUTPUT = '.tsc/**';
+
 /** Tasks that must never be cached, whatever their name. */
 export const UNCACHED_TASKS = ['check:generated', 'test:integration'] as const;
 
@@ -45,6 +54,29 @@ export function checkTurboConfig(config: unknown, path = 'turbo.json'): Finding[
   }
 
   findings.push(...checkTaskCaching(taskMap(config), {}, path));
+  findings.push(...checkTypecheckTask(taskMap(config), path));
+  return findings;
+}
+
+function checkTypecheckTask(tasks: Record<string, unknown>, path: string): Finding[] {
+  const task = tasks.typecheck;
+  const list = (key: string): unknown[] =>
+    isRecord(task) && Array.isArray(task[key]) ? (task[key] as unknown[]) : [];
+  const findings: Finding[] = [];
+  if (!list('dependsOn').includes(TYPECHECK_DEPENDS_ON)) {
+    findings.push({
+      rule: 'turbo/typecheck-order',
+      path,
+      message: `tasks.typecheck.dependsOn must include "${TYPECHECK_DEPENDS_ON}": a dependent's typecheck reads the .tsc/ declarations of the libraries it references (TS6305)`,
+    });
+  }
+  if (!list('outputs').includes(TYPECHECK_OUTPUT)) {
+    findings.push({
+      rule: 'turbo/typecheck-order',
+      path,
+      message: `tasks.typecheck.outputs must include "${TYPECHECK_OUTPUT}" so a cache hit restores the declarations dependents read`,
+    });
+  }
   return findings;
 }
 

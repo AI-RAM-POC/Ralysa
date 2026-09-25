@@ -73,11 +73,13 @@ A workspace that depends on a TypeScript library must reference it in its `tscon
 "compilerOptions": {
   "noEmit": false,
   "emitDeclarationOnly": true,
-  "outDir": "${configDir}/.tsc"
+  "outDir": "${configDir}/.tsc",
+  "tsBuildInfoFile": "${configDir}/.tsc/tsconfig.tsbuildinfo"
 }
 ```
 
-- `.tsc/` is in `.gitignore` and in the ESLint base ignores. Nothing reads it; `typecheck` and `tsc -b` just write it.
+- `.tsc/` is in `.gitignore` and in the ESLint base ignores. `typecheck` and `tsc -b` write it. A dependent's `typecheck` (`tsc -p`) reads it whenever the dependent imports a `.ts` source of the library directly (for example `@ralysa/ui/font-licenses`, an export that points at `scripts/*.ts`): TypeScript then uses the referenced project's declaration output and fails with `TS6305` when it is missing.
+- So Turbo's `typecheck` depends on `^typecheck` and caches `.tsc/**` (`check-turbo-config`, `turbo/typecheck-order`), and the library's `tsBuildInfoFile` lives in `.tsc/` too: deleting `.tsc/` can't leave behind a build info that makes `tsc` skip re-emitting.
 - `tsconfig.build.json` sets `"emitDeclarationOnly": false` again, so `build` still emits JavaScript and declarations to `dist/`.
 - `check-tsrefs` fails when a referenced project isn't `composite` (`tsrefs/reference-not-composite`, TS6306) or sets `noEmit` (`tsrefs/reference-no-emit`, TS6310). It reads the effective options, with `extends` resolved.
 - Apps, services and CLIs are leaves (nothing references them), so their `tsconfig.json` stays no-emit.
