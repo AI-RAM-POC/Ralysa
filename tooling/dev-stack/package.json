@@ -12,12 +12,17 @@
     "./harness": {
       "types": "./dist/harness/index.d.ts",
       "default": "./dist/harness/index.js"
+    },
+    "./mock-idp": {
+      "types": "./dist/mock-idp/index.d.ts",
+      "default": "./dist/mock-idp/index.js"
     }
   },
   "scripts": {
     "bootstrap": "node src/cli.ts bootstrap",
     "build": "tsc -p tsconfig.build.json",
     "lint": "eslint .",
+    "mock-idp": "node src/cli.ts mock-idp",
     "stack:env": "node src/cli.ts env",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
@@ -28,11 +33,15 @@
     "@ralysa/tsconfig": "workspace:*",
     "@ralysa/vitest-config": "workspace:*",
     "@types/node": "catalog:",
+    "@types/oidc-provider": "9.11.1",
     "@types/pg": "catalog:",
     "eslint": "catalog:",
+    "jose": "catalog:",
+    "oidc-provider": "9.11.5",
     "pg": "catalog:",
     "typescript": "catalog:",
-    "vitest": "catalog:"
+    "vitest": "catalog:",
+    "zod": "catalog:"
   },
   "ralysa": {
     "kind": "tooling",

@@ -739,3 +739,113 @@ Branch `feat/F-002-sessions`, based on `main` after #25.
 | R26-10 | The README didn't say what a lost refresh response means. | README: a retry after a lost response is reuse, and the refresher must treat it as a sign-out. A failure before rotation (503) is safe to retry. | — |
 | R26-CI (found on CI) | `db.int.ts` "bootstrap-roles.sql is idempotent" re-ran the role script **without** the cross-file advisory lock that `createTestDatabase` takes. With one more integration file running in parallel, it collided with another file's bootstrap (`XX000 tuple concurrently updated`). | `support/db.ts` `runBootstrapRoles()` holds the lock for every run of the script; the idempotency test uses it. | The full control-plane integration suite passed three times in a row locally. |
 | R26-11 | The feed-cache tests slept. | `RtsServices.now` is an injectable clock for in-memory caches. The tests step it past the 1 s feed cache instead of sleeping. | `sessions.int.ts`. |
+
+## T09: mock IdP
+
+Branch `feat/F-002-mock-idp`, based on `main` after #26. It was started in an earlier session that was interrupted after the fixtures and state; this session reviewed that work and finished it.
+
+### What landed
+
+- `tooling/dev-stack/src/mock-idp/` (exported as `@ralysa/dev-stack/mock-idp`):
+  - `provider.ts`: the `oidc-provider` configuration shaped like Entra v2. It uses Entra's paths under `/<tenant>`, with issuer `<base>/<tenant>/v2.0`. It has two clients: the CLI (public, device code only) and RTS (confidential: authorization code with PKCE S256 required, plus client credentials for Graph). Any currently valid RTS secret is accepted. Resource indicators pick the RTS API or Graph. There is no password field. Disabled users get `access_denied` (AADSTS50057). The device authorization response is reshaped the way Entra sends it.
+  - `claims.ts`: the Entra v2 access-token payload. It carries `ver`, `tid`, `oid`, pairwise `sub`, `azp`, `scp`, `uti`, `ipaddr`, `amr`, `acrs`, `name`, `preferred_username` and `groups`, or the overage `_claim_names`/`_claim_sources` past 200 groups. Graph app tokens use Entra's v1 app shape.
+  - `fixtures.ts`, `state.ts`: the ten fixture users of §8.3, with object ids generated per run, plus mutable state (users, groups, valid secrets, the Graph fault).
+  - `graph.ts`: the Graph stub. It serves `users/{id}`, `checkMemberGroups`, `getMemberObjects` and `groups/{id}`, requires an app token, returns Graph's error shape, and honours the `error`, `hang` and `latencyMs` toggles.
+  - `control.ts`: the test-control API. It binds 127.0.0.1, requires the per-run bearer (compared in constant time), and validates every body with zod.
+  - `browser.ts`: a headless form driver used by tests. `approveDeviceCode()` covers flow A and `signInAtAuthorize()` covers flow B.
+  - `index.ts`: `startMockIdp()`, the in-process start helper. Per run it creates the RSA signing key, a foreign key for bad-signature tests, the RTS secret and the control bearer.
+  - `main.ts`: the process entry point for manual runs, with a `control` subcommand.
+- `tooling/dev-stack/src/cli.ts mock-idp`. It imports the mock lazily, so `env` still runs before `pnpm install`.
+- `deploy/docker/dev/compose.yaml`: the `mock-idp` service (profile `idp`). It runs `node:24.21.0-alpine` pinned by digest and executes `dist/mock-idp/main.js` from read-only bind mounts of only what it needs: dev-stack's `dist`, `package.json` and `node_modules`, and the root `node_modules/.pnpm` (R27-S2). It is on its own `idp` network. It runs as a non-root user with a read-only root filesystem, `cap_drop: ALL` and a tmpfs `/tmp`. Only 127.0.0.1:59400 is published, and there is a discovery healthcheck. Its ids match `control-plane.serve.dev.yaml`.
+- The README gained a mock IdP section: API, fixtures, test-control routes, manual runs and the `MOCK_IDP_*` variables.
+
+### Versions
+
+| Item | Pinned | Evidence |
+|---|---|---|
+| `oidc-provider` | **9.11.5** (dev-stack devDependency only) | Published 2026-08-24 (32 days old). MIT. No install scripts. |
+| `@types/oidc-provider` | **9.11.1** | Published 2026-08-07. MIT. |
+| `node:24-alpine` (compose `mock-idp`) | `24.21.0-alpine@sha256:ebfe2f90…ec1c1` | Index digest checked 2026-09-25 with `docker buildx imagetools inspect`; `node --version` in the image is v24.21.0. |
+
+### Recorded decisions and deviations
+
+Items marked **self-decided** were open questions decided under the standing authorization (CLAUDE.md), taking the recommended option.
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T09-1 | Deviation from §2.1 file names | `server.ts` became `index.ts` (start helper) plus `provider.ts` (configuration and interaction). `entra-claims.ts` became `claims.ts` and `test-control.ts` became `control.ts`. `browser.ts` and `main.ts` were added. | This separates the provider configuration from the listener wiring. The headless browser and the process entry point were not named in the design. |
+| T09-2 | Design gap, filled (**self-decided**) | Graph is served under `<base>/graph/v1.0/…` on the IdP's listener, so `idp.graph_base_url` is `<base>/graph`. | The committed `control-plane.serve.dev.yaml` (T07) already says `graph_base_url: http://127.0.0.1:59400/graph`. Like the real base, it carries no version, and one port serves both. |
+| T09-3 | Design gap, filled (**self-decided**) | The device authorization response is reshaped the way Entra sends it: `interval` is added (default 5, configurable for tests), `message` is added, and `verification_uri_complete` is removed. | `oidc-provider` omits `interval` and adds `verification_uri_complete`, which Entra never sends. If the mock returned it, a client could come to depend on it and then fail against real Entra (TC-F-002-28). `oidc-provider` does not enforce `slow_down`, so the interval is advisory. |
+| T09-4 | Deviation from §8.3 wording | Access-token payloads are **replaced** in `formats.customizers.jwt` rather than extended through `extraTokenClaims`. The header is `{alg: RS256, typ: JWT, kid}`. | Entra's shape needs claims that `oidc-provider` adds to be removed: `client_id`, `scope` and `jti`. It also needs `aud` to be the resource's client id, `scp` to be the short scope name, and `typ` to be `JWT` rather than `at+jwt`. `extraTokenClaims` can only add claims. |
+| T09-5 | Implementation choice | The Graph app token (client credentials, `https://graph.microsoft.com/.default`) is Entra's v1 app shape (`ver: "1.0"`, `idtyp: app`, `roles`). The Graph stub accepts only that token. A user token gets 401. | That is what real Graph tokens look like. It also catches RTS calling Graph with a user's token. |
+| T09-6 | Security choice (**self-decided**) | In compose, the test-control API binds the **container's** 127.0.0.1 and is not published. It is reached with `docker compose … exec mock-idp node …/main.js control …`. The bearer is written to a mode-0600 file on a tmpfs and is never logged. | This keeps SEC-F002-13 (e) literal. The alternative was to bind `0.0.0.0` inside the container and publish it on host loopback. That would expose the control API to every container on the compose network. |
+| T09-7 | Hardening beyond design | `main.ts` refuses a non-loopback `MOCK_IDP_PUBLIC_BASE_URL`. It also refuses a non-loopback listener unless `MOCK_IDP_IN_CONTAINER=1`, which only the compose service sets. | This is a runtime backstop against running the mock where anything other than this machine can reach it. SEC-F002-12's production issuer pattern remains the control plane's own backstop. |
+| T09-8 | Scope (**self-decided**) | For manual runs, the RTS client secret is per run and is **not** written to OpenBao by `bootstrap`. The developer gets one with `control POST /client-secrets` and stores it at `kv/ralysa/control-plane/idp-client-secret`. The README and the startup log say so. | A fixed secret in `.env` would be a second long-lived credential. Wiring sign-in end to end is T10's, and the runbook is T13's. Tests never need it, because they start the mock in-process. |
+| T09-9 | Additions beyond §8.3 | These were added to serve the test cases: `POST /users/{id}/getMemberObjects` (the overage `_claim_sources` target); `POST /tokens` with `claims`, `header`, `expiresInSeconds` and `signWith: "foreign"` (the negatives in TC-F-002-03 and -10); and patching `ipaddr` and `displayName` (the `ipaddr` mismatch check and the TC-F-002-01 rename). | These are the Entra behaviours that T10 and T15 exercise. |
+| T09-10 | Fixture interpretation | **sam**: Graph reports membership of the access group by object id, but the token carries `CONTOSO\Ralysa Users`. **mallory**: her only group has the access group's (Arabic) display name under another object id. **dora**: sign-in works and Graph answers 404. **erin**: `amr ["fido"]`, `acrs ["c1"]`. | This lets T10 prove that non-GUID claims are ignored, Graph is authoritative (SEC-F002-08), the look-alike group is refused, 404 leads to disable-and-revoke, and the strong-flow admin rule holds. |
+| T09-11 | Implementation choice | `ipaddr` is the socket address that completed the interactive sign-in (per user). It can be overridden through the control API. Minted tokens use the same value. | The mock runs on loopback, so tests set a different `ipaddr` to exercise the mismatch flag. |
+| T09-12 | Implementation choice | `oidc-provider`'s default in-memory adapter is used. It prints a "development-only" warning once per process. | The mock is per process by design (tests start their own). A custom adapter would only suppress the warning. |
+
+### Tests (T09)
+
+- **Unit** (`tooling/dev-stack/test/mock-idp.test.ts`, 39 tests, in-process on ephemeral loopback ports):
+  - **Discovery and keys:**
+    - Entra paths and issuer; `password` is not among the grants; S256 is the only PKCE method.
+    - Signing keys are **per run**: a second instance has a different modulus, `kid`, control bearer and client secret, and the JWKS never contains `d` [SEC-F002-13 d].
+    - `grant_type=password` → `unsupported_grant_type`.
+  - **Device flow:**
+    - An RS256 `typ: JWT` token that verifies against the JWKS and carries every Entra claim (`ver`, `tid`, `oid`, pairwise `sub`, `azp`, `scp`, `uti`, `ipaddr`, `amr`, `groups`).
+    - `authorization_pending` before approval, then `invalid_grant` for a used code.
+    - The Entra response shape (`interval`, `message`, no `verification_uri_complete`).
+    - `expired_token` after the lifetime.
+    - carol → `access_denied`.
+    - The RTS confidential client can't use the device endpoint.
+  - **Code + PKCE:**
+    - fatima signs in by username. The redirect carries `code`, `state` and `iss`. Redemption with the verifier and a client secret gives access and ID tokens with the Arabic name byte for byte.
+    - A request without PKCE → `invalid_request`.
+    - A wrong verifier → `invalid_grant` without consuming the code; the right verifier → 200; a reused code → `invalid_grant`.
+    - carol → `access_denied` at the redirect.
+    - The login page has a username field and no password field.
+  - **Two client secrets:** the first and the added secret both work. After removing the first, it gets `invalid_client` and the second still works. Removing a secret twice → 404. A wrong secret → 401.
+  - **Fixture claim shapes:**
+    - olga gets overage markers (minted and device-flow tokens), and `_claim_sources` points at the Graph stub.
+    - sam gets a non-GUID claim while Graph reports the access group.
+    - mallory's look-alike group; dana is admin only; erin has both groups and FIDO `amr`/`acrs`.
+    - fatima's Arabic group.
+    - Every group id is a GUID.
+  - **Graph stub:**
+    - "Revoke sessions" moves `signInSessionsValidFromDateTime`.
+    - dora → 404 with `Request_ResourceNotFound`; carol → `accountEnabled: false`.
+    - `checkMemberGroups` filters memberships and validates its body; `getMemberObjects` lists 250 groups.
+    - A missing token or a user token → 401.
+    - The **`error` fault** gives 503 and resets; the **latency toggle** adds ≥ 300 ms; the **`hang`** fault is cut off by the client's timeout.
+  - **Test-control API [SEC-F002-13 e]:**
+    - Loopback URL.
+    - 401 without the bearer, with another bearer, or with the bearer plus one character.
+    - User list without secrets; disable/enable; groups; delete in Graph.
+    - Minted tokens verify, and `foreign` tokens don't.
+    - 400 and 404 for invalid bodies and unknown names.
+  - **No password field:** no source file in `src/mock-idp/` contains a password input.
+- **Unit** (`test/mock-idp-main.test.ts`, 4): the `MainEnv` defaults and loopback refusals; `runMockIdp` uses the dev ids, writes the bearer 0600 without logging it, serves the `control` subcommand, and removes the file on stop.
+- **Manual, 2026-09-25:**
+  - The compose service was started with `--profile idp` under a throwaway project name and reported healthy.
+  - Discovery and `devicecode` answered on 127.0.0.1:59400.
+  - The control port was **unreachable from the host**, and `exec … control GET /users` answered 200.
+  - The token file was `-rw------- node`; `/repo` was read-only; the uid was 1000.
+  - `node tooling/dev-stack/src/cli.ts mock-idp` on the host started and answered `control GET /users`.
+- `pnpm repo:check`: all checks pass, including `check-workspaces` `deps/dev-only-in-shipped` (SEC-F002-13 b). SEC-F002-13 (a) (dependency-cruiser) and (c) (image scan) are T14's.
+
+### Code review of PR #27 (changes requested): resolutions
+
+| Item | Finding | Fix | Test |
+|---|---|---|---|
+| R27-B1 (blocker) | The flow-B ID token wasn't Entra-shaped. oidc-provider signs it with `sub` = the account id (the object id), no `typ` header, and no `uti`, `ver`, `amr`, `acrs` or `ipaddr`. The `amr` passed at login was lost. | A `provider.use` post-processor on the token route re-issues `id_token` with the per-run key: header `{alg: RS256, typ: JWT, kid}`, `userIdClaims()` (pairwise `sub`, `oid`, `tid`, `uti`, `ver: "2.0"`, `amr`, `acrs`, `ipaddr`, `email`, `name`, `preferred_username`, group claims). `nonce`, `sid`, `auth_time` and the hashes are copied when present. oidc-provider emits neither `at_hash` nor `sid` from the token endpoint here, so only `nonce` appears. | `mock-idp.test.ts` "issues an Entra v2-shaped ID token": `typ` is `JWT`, `sub` ≠ `oid`, `uti` is 22 base64url characters, `ver` is 2.0, erin has `amr ["fido"]` and `acrs ["c1"]`, alice has `amr ["pwd","mfa"]` and no `acrs`, `nonce` is echoed, and `ipaddr` and the groups are checked. |
+| R27-S1 | The JWT customizer ignored the resource. A mixed RTS + Graph scope in flow B got 200 with `aud` = RTS, and client credentials with the RTS scope got `aud` = Graph. | `aud` comes from `token.resourceServer.audience`, and a mismatch throws `InvalidTarget`. `defaultResource` refuses scopes for two resources with `invalid_scope`, as Entra's AADSTS28000 does. `getResourceServerInfo` allows client credentials only for Graph with exactly `https://graph.microsoft.com/.default` (`invalid_scope`), and allows no delegated Graph tokens (`invalid_target`). | "refuses scopes for two resources" (flow B → `invalid_scope`); "client credentials: only Graph, only with /.default" (the RTS scope and `…/User.Read.All` → `invalid_scope`); "refuses a device-flow request for Graph" (`invalid_target`). |
+| R27-S2 | Compose mounted the whole repository, which exposed `deploy/docker/dev/.env` (Postgres password, OpenBao root token) to uid 1000 in the container. mock-idp also shared the default network with openbao. | Only `tooling/dev-stack/{dist,package.json,node_modules}` and the root `node_modules/.pnpm` are mounted, all read-only. mock-idp is alone on the `idp` network, while postgres and openbao stay on `default`. | Manual compose run, 2026-09-25, with openbao and mock-idp both healthy in one project: `/repo` contains only `node_modules/.pnpm` and `tooling/dev-stack`, and `/repo/deploy` doesn't exist. From mock-idp, `openbao` doesn't resolve and its IP times out; from openbao, `mock-idp` doesn't resolve. Discovery, the host-unreachable control port, `exec … control GET /users` (200) and the 0700 directory with its 0600 token were re-checked. |
+| R27-N1 | `MOCK_IDP_IN_CONTAINER=1` alone allowed binding `0.0.0.0`. | `parseMainEnv()` also requires `/.dockerenv`. | `mock-idp-main.test.ts`: `0.0.0.0` is refused with the flag but no container, and with a container but no flag. `/.dockerenv` was confirmed present in the compose container. |
+| R27-N2 | `tmpdir()/ralysa-mock-idp` is shared on Linux. | `ensurePrivateDir()` creates the directory 0700, then `lstat`s it. It refuses a symlink, another owner, or any mode other than 0700. The token is still written with `wx` (O_EXCL). | `ensurePrivateDir`: creates 0700, and refuses a 0755 directory and a symlink. |
+| R27-N3 | The device-code expiry test slept 1.5 s. | Fake `Date` timers step the clock. oidc-provider reads `Date.now()`. | "expires the device code after its lifetime". |
+| R27-N4 | The main test used a random fixed control port. | Ports accept `0`. `runMockIdp()` returns `{ controlPort, stop }`. | `runMockIdp` test binds port 0 and reads it back. |
+| R27-N5 | The v1 app token used the v2 issuer. | Its `iss` is `https://sts.windows.net/<tid>/` (`appTokenIssuer()`), and the Graph stub verifies that issuer. `azp` was replaced by v1's `appidacr: "1"`. | The client-credentials test checks `iss`, `ver`, `idtyp` and `appid`. The Graph tests still pass with the new issuer. |
+| R27-N6 | `azpacr` was always `"0"`. | `"1"` for the confidential RTS client (flow B), `"0"` for the CLI and for minted tokens. | Flow-B access token has `azpacr: "1"`; device-flow token has `azpacr: "0"`. |
+
