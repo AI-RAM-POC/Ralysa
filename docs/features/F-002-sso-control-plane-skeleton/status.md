@@ -1,6 +1,6 @@
 # F-002: SSO sign-in (OIDC) and control-plane skeleton: Status
 
-- **Current phase:** 5 – Development (T01–T06, T16 and the SEC-F002-34 remediation merged: #18, #19, #21, #23, #24; T07 in review; T08 next)
+- **Current phase:** 5 – Development (T01–T08, T16 and the SEC-F002-34 remediation merged: #18, #19, #21, #23, #24, #25, #26; T09 in review; T10 and T11 next)
 - **GitHub issue:** https://github.com/AI-RAM-POC/Ralysa/issues/5
 - **Branch / PR:** `feat/F-002-foundations` (T01–T03, #18, merged); `feat/F-002-secrets-db-audit` (T04–T05)
 - **Release:**
@@ -35,3 +35,4 @@
 | 2026-09-25 | #19 review round 1 addressed (R19-1..3). T06 (audit core: writer, spool, rejections, chain, sealer entry point, db.migration.applied) implemented on `feat/F-002-audit-core`. |
 | 2026-09-25 | T06 merged (#21). T16 (signed checkpoints, custody monitor on the checkpoint key, `audit-verify`) implemented on `feat/F-002-checkpoints`. |
 | 2026-09-25 | T16 (#23) and the T16-1 remediation (#24, SEC-F002-34) merged. T07 (config, guards, HTTP layer, signing keys, discovery, `serve`) implemented on `feat/F-002-app-skeleton`. |
+| 2026-09-25 | T07 (#25) and T08 (#26) merged. T09 (mock IdP: Entra-shaped `oidc-provider`, fixtures, Graph stub, loopback test-control API with a per-run bearer, per-run keys, compose `mock-idp` service) implemented on `feat/F-002-mock-idp`; see implementation-notes.md T09. |
