@@ -22,6 +22,7 @@ export default config;
 
 - `BANNED_PACKAGE_GROUPS`: the Agent SDK, its `@anthropic-ai/sdk` peer, model-provider SDKs and in-process inference runtimes (SR-03), and vendor APM/analytics SDKs (ADR-0024). Each group names the files that may import it (`importAllowedIn`, repo-relative globs) and the dependency paths that may reach it (`graphAllowedThrough`). A package belongs to the first group that matches it.
 - `RESTRICTED_SYNTAX`: the non-literal loading ban (`import(x)`, `require(x)`, `createRequire`, `process.getBuiltinModule`, `eval`, `Function`); `LOADING_EXCEPTIONS` holds reviewed per-path exceptions and starts empty.
+- `PROVIDER_HOSTS` and `PROVIDER_HOSTS_ALLOWED_IN`: the model-provider API hostnames that `check-provider-hosts` bans outside the gateway (SEC-F001-09 d).
 - `WORKSPACE_DEPENDENCY_RULES`, `SPECIFIER_ALLOWLIST`, and the matching helpers.
 
 `base()` derives the workspace from `tsconfigRootDir` (its path under the folder holding `pnpm-workspace.yaml`) and adds a config block only for the allowed paths inside that workspace, so `services/agent-host` gets `src/engine/claude/**` and `services/model-gateway` gets every file. Nothing else relaxes the rules, and `tests` never touches them.

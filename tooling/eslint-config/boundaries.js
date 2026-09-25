@@ -198,6 +198,60 @@ export const WORKSPACE_DEPENDENCY_RULES = [
 ];
 
 /**
+ * Model-provider API hostnames (SEC-F001-09 d): a raw `fetch` needs no SDK, so check-provider-hosts
+ * greps tracked source (outside services/model-gateway/**, docs/**, requirements/**, *.md and
+ * this file) and every shipped artefact for them. `*.` at the start stands for one or more
+ * labels; any other `*` for characters within one label. Matched case-insensitively.
+ * List confirmed in F-001-T16 (2026-09-25) against the providers' API documentation.
+ */
+export const PROVIDER_HOSTS = [
+  'api.anthropic.com',
+  'api.openai.com',
+  '*.openai.azure.com',
+  '*.services.ai.azure.com',
+  'generativelanguage.googleapis.com',
+  '*aiplatform.googleapis.com',
+  'bedrock-runtime.*.amazonaws.com',
+  'api.mistral.ai',
+  'api.groq.com',
+  'api.cohere.com',
+  'api.cohere.ai',
+  'openrouter.ai',
+  'api-inference.huggingface.co',
+  'router.huggingface.co',
+  'ai-gateway.vercel.sh',
+  'api.together.xyz',
+];
+
+/** Where a provider hostname may appear (repo-relative globs). */
+export const PROVIDER_HOSTS_ALLOWED_IN = [
+  'services/model-gateway/**',
+  'docs/**',
+  'requirements/**',
+  '*.md',
+  '**/*.md',
+  'tooling/eslint-config/boundaries.js',
+];
+
+/**
+ * One regex source matching any PROVIDER_HOSTS entry as a whole hostname: not preceded by a
+ * hostname character other than `.` (so `eu.api.openai.com` matches, `myapi.openai.com` doesn't),
+ * and not followed by a hostname character.
+ * @returns {string}
+ */
+export function providerHostSource() {
+  const hosts = PROVIDER_HOSTS.map((host) => {
+    const leading = host.startsWith('*.');
+    const body = (leading ? host.slice(2) : host)
+      .split('*')
+      .map((part) => part.replace(/[.+?^${}()|[\]\\]/g, '\\$&'))
+      .join('[a-z0-9-]*');
+    return leading ? `(?:[a-z0-9-]+\\.)+${body}` : body;
+  });
+  return `(?<![a-z0-9-])(?:${hosts.join('|')})(?![a-z0-9-])`;
+}
+
+/**
  * Reviewed exceptions to the dependency-specifier rule in check-workspaces (`npm:`, `file:`,
  * `link:`, `portal:`, git and tarball specifiers). A specifier that resolves under `packs/` can
  * never be excepted (SEC-F001-09 a, SEC-F001-26). Starts empty.

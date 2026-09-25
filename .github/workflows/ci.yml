@@ -115,6 +115,11 @@ jobs:
       # .gitleaks.artefacts.toml. A missing artefact path fails (AC-2, SEC-F001-05).
       - name: Secret scan of shipped artefacts
         run: node tooling/repo-scripts/src/secret-scan-cli.ts artefacts
+      # No model-provider API hostname in any shipped artefact (SR-03, SEC-F001-09 d). The
+      # tracked-source half of this check runs in repo-checks.
+      - name: Provider hostnames in shipped artefacts
+        if: ${{ !cancelled() }}
+        run: node tooling/repo-scripts/src/cli.ts check-provider-hosts --artefacts
       - name: Upload secret-scan reports (secrets redacted)
         if: ${{ failure() }}
         uses: actions/upload-artifact@v4

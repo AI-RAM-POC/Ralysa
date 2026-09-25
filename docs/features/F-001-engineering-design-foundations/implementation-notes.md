@@ -334,7 +334,40 @@ Branch `feat/F-001-boundaries-secrets` (T04, T05 and T16 together, one commit pe
 - `test/gitleaks-rules.test.ts` (3), **TC-F-001-39:** 11 positive fixtures across the five custom rules fire in both configs. 11 negatives trigger no custom rule: bare 32-hex hashes, a UUID next to `AZURE_OPENAI`, a keyword more than 40 characters away, `sk-` without context, LiteLLM context without a key, a low-entropy or 31-character Mistral value, a short `gsk_`, and a lowercase or short canary.
 - `test/check-gitleaks-config.test.ts` (16), **TC-F-001-38 config part:** the real files pass. It fails on an artefact `[allowlist]`, `[[allowlists]]`, an empty `[allowlist]`, a rule-level allow-list, and `disabledRules`; on an unanchored repo path (an anchored one passes); on content allow-lists; on diverging rules; on a missing rule; on a weak entropy floor; on `useDefault = false` or `[extend] path`; and on a tracked `.gitleaksignore`.
 - `test/check-ci-invariants.test.ts` (22), **TC-F-001-44:** five bad `packageManager` values; a missing `fetch-depth: 0`; four gitleaks calls without `--config` (in a workflow and in a hook), while five `--config`/`-c`/comment/wrapper forms pass; an unconditional `cancel-in-progress` at the top level and in a job; an install in `secret-scan`; and Playwright digests (same passes, different fails, tag-only fails).
-- `test/install-tool.test.ts` (8), **TC-F-001-44:** install and print the path; re-verify instead of downloading; `--verify` and install both fail on a tampered cached binary and leave it untouched; `--verify` fails when the binary is missing; an archive or binary hash mismatch installs nothing; an unknown tool or bad option fails; the real register pins 8.30.1 × 3 GitHub URLs.
+- `test/install-tool.test.ts` (8), **TC-F-001-44 (install-tool part):** install and print the path; re-verify instead of downloading; `--verify` and install both fail on a tampered cached binary and leave it untouched; `--verify` fails when the binary is missing; an archive or binary hash mismatch installs nothing; an unknown tool or bad option fails; the real register pins 8.30.1 × 3 GitHub URLs.
+
+## T16: provider-hostname check
+
+### What landed
+
+- **`PROVIDER_HOSTS`** and **`PROVIDER_HOSTS_ALLOWED_IN`** in `tooling/eslint-config/boundaries.js`, plus `providerHostSource()`. That helper matches a whole hostname, case-insensitively. It allows a listed host under a subdomain (`eu.<host>`), and doesn't match a longer label (`myapi.…`) or a longer TLD (`….company`).
+- **`check-provider-hosts`**:
+  - **Source mode** runs in `repo-check`. It covers every tracked (and untracked-not-ignored) file outside `services/model-gateway/**`, `docs/**`, `requirements/**`, `*.md`/`**/*.md` and `boundaries.js`.
+  - **`--artefacts`** runs as a new `quality` step after the artefact secret scan, outside Turbo. It covers every file of every `shipped: true` artefact path, and a missing path fails.
+- **0 findings on `main`.** The one hit when the check first ran was the T05 rule fixture's Azure endpoint URL, which is now split with `frag()`. The check fires on its own test file too, which is why every positive hostname there is derived from `PROVIDER_HOSTS` at runtime.
+
+### List confirmation (design §6.1: "Confirm the list in T16")
+
+The design's 16 entries are kept unchanged. Checked 2026-09-25:
+- Microsoft Learn (Foundry "Azure OpenAI v1 API" and "switching endpoints"): inference base URLs are `https://<resource>.openai.azure.com/openai/v1/` and `https://<resource>.services.ai.azure.com/openai/v1/`. Both are covered by the two `*.` entries.
+- `cognitiveservices.azure.com` appears in those pages only as the Entra token scope (`https://cognitiveservices.azure.com/.default`), not as an inference host, so it was **not** added.
+- The Vertex (`<region>-aiplatform.googleapis.com`) and Bedrock (`bedrock-runtime.<region>.amazonaws.com`) wildcards match the regional hosts. The other entries are the providers' documented API hosts.
+- Providers outside the SR-03 SDK list (for example xAI or DeepSeek) are not added. Adding one is a reviewed change to `boundaries.js`.
+
+### Recorded decisions and deviations
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T16-1 | Implementation choice | Files are read as latin1 (byte-preserving), only the first 32 MiB of each. There is no binary-file skip. | ASCII hostnames are found in any encoding of a bundle, source map or `.wasm` string table. Our bundles are far below 32 MiB. |
+| T16-2 | Scope note | Source mode also covers `packs/**`, tests, scripts and configs (they're all tracked and outside the allowed paths). The `.claude/**` agent files are Markdown, so they're excluded like other docs. | This keeps the check the same shape as the RC-3 boundary rules. |
+
+### Tests added (T16)
+
+- `test/check-provider-hosts.test.ts` (33), **TC-F-001-42, hostname part:**
+  - Each of the 16 patterns matches its sample host, in lower and upper case. A subdomain matches and the line is reported.
+  - 11 look-alikes don't match: `myapi.…`, `.company`, `-proxy`, the provider marketing and docs hosts, the `@aws-sdk/client-bedrock-runtime` import, the Bedrock control plane, `huggingface.co`, a suffixed Azure host, and blob storage.
+  - Source mode: the real repo has 0 findings. It fails in `apps/web` source and config, `packages/sdk` tests, `services/control-plane`, a look-alike `services/model-gateway-v2` and `packs/**`. It passes in the gateway, docs, Markdown, `requirements/` and `boundaries.js`.
+  - Artefact mode: a host inside `dist/assets/index-abc123.js` fails; a clean bundle and an unshipped ui-lab pass; a missing `dist` fails.
 
 ## Version confirmations (npm registry, 2026-09-25 ~08:20 UTC)
 

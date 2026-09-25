@@ -11,6 +11,7 @@
 //   ralysa-repo check-imports            dependency-cruiser import boundaries (.dependency-cruiser.cjs)
 //   ralysa-repo check-gitleaks-config    the two gitleaks configs (no artefact allow-list, same rules)
 //   ralysa-repo check-ci-invariants      packageManager hash, fetch-depth, gitleaks --config, cancel-in-progress
+//   ralysa-repo check-provider-hosts [--artefacts]   provider API hostnames in source (or shipped artefacts)
 // The secret scans themselves run through secret-scan-cli.ts (dependency-free).
 //   ralysa-repo placeholder-guard        run inside a placeholder package (its four scripts)
 //   ralysa-repo scaffold <path> --kind <kind>
@@ -19,6 +20,7 @@ import { appendFileSync } from 'node:fs';
 import { checkBannedDeps } from './check-banned-deps.ts';
 import { checkCiInvariantsFiles } from './check-ci-invariants.ts';
 import { checkGitleaksConfigFiles } from './check-gitleaks-config.ts';
+import { checkProviderHosts, checkProviderHostsInArtefacts } from './check-provider-hosts.ts';
 import { checkImports } from './check-imports.ts';
 import { checkTsrefs } from './check-tsrefs.ts';
 import { checkConfigGate } from './config-gate.ts';
@@ -42,6 +44,7 @@ const REPO_CHECKS: Record<string, Check> = {
   'check-imports': (root) => checkImports({ root }),
   'check-gitleaks-config': (root) => checkGitleaksConfigFiles(root),
   'check-ci-invariants': (root) => checkCiInvariantsFiles(root),
+  'check-provider-hosts': (root) => checkProviderHosts(root),
 };
 
 function report(name: string, findings: Finding[]): boolean {
@@ -83,6 +86,9 @@ async function main(argv: string[]): Promise<number> {
       }
     }
     return ok ? 0 : 1;
+  }
+  if (command === 'check-provider-hosts' && args.includes('--artefacts')) {
+    return report('check-provider-hosts --artefacts', checkProviderHostsInArtefacts(root)) ? 0 : 1;
   }
   const check = REPO_CHECKS[command];
   if (check !== undefined) return report(command, await check(root)) ? 0 : 1;

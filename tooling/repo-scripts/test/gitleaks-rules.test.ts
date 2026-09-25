@@ -43,7 +43,8 @@ const POSITIVES: [string, string][] = [
   ['azure-openai-key', `  "api-key": "${randomFrom(HEX, 32)}",`],
   [
     'azure-openai-key',
-    `const endpoint = "https://ralysa.openai.azure.com"; const k = "${randomFrom(HEX, 32)}";`,
+    // The hostname is split: check-provider-hosts bans it in source outside the gateway.
+    `const endpoint = "https://ralysa.${frag('openai', '.azure', '.com')}"; const k = "${randomFrom(HEX, 32)}";`,
   ],
   ['azure-openai-key', `cognitiveservices_key: ${randomFrom(HEX, 32)}`],
   ['litellm-key', `LITELLM_MASTER_KEY="${sk()}"`],
