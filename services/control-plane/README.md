@@ -51,7 +51,9 @@ job exits non-zero, saying the migrations were applied but not recorded.
   | `GET /.well-known/oauth-authorization-server` | RFC 8414 metadata |
   | `GET /.well-known/jwks.json` | Public keys from `cp.signing_key_version`, with `Cache-Control: public, max-age=60, must-revalidate` |
   | `GET /v1/auth/config` | The enabled flows and IdP endpoints |
-  | `POST /oauth2/token` | Token exchange of an IdP device-flow token (T10), `refresh_token` and `client_credentials` (T08); `authorization_code` arrives with the second part of T10 |
+  | `GET /oauth2/authorize` | Flow B leg 1: sets the browser-binding cookie and redirects to the IdP (T10) |
+  | `GET /oauth2/idp/callback` | Flow B leg 2: redirects to the CLI's loopback with a single-use `rly_ac_` code, or an OAuth error (T10) |
+  | `POST /oauth2/token` | `authorization_code` with PKCE and token exchange of an IdP device-flow token (T10), `refresh_token` and `client_credentials` (T08) |
   | `POST /v1/auth/sign-in-failures` | 202: the CLI's report of an IdP-side flow-A failure, audited as `auth.sign_in failure` (T10) |
   | `POST /oauth2/revoke` | RFC 7009 sign-out: revokes the refresh token's whole session; always 200 |
   | `GET /v1/me` | The signed-in user, the calling session's roles and the user's groups (user token) |
@@ -196,6 +198,41 @@ job exits non-zero, saying the migrations were applied but not recorded.
   - Group memberships: a token with a group list replaces the user's memberships. A token with
     overage markers or no `groups` claim only updates the Graph-checked ones.
   - Display text keeps ZWNJ/ZWJ (Persian, Urdu, emoji) and strips ZWSP, the word joiner and BOM.
+- **Sign-in, flow B** (`/login --browser`; F-002-T10; `src/auth/flow-b.ts`,
+  `grants/authorization-code.ts`, `idp/oidc-client.ts` on `openid-client`):
+  - `/oauth2/authorize` accepts only `client_id=ralysa-cli` and an IP-literal loopback
+    `redirect_uri` (`http://127.0.0.1:<port>/callback` or `[::1]`). Anything else about those two
+    is never redirected: the answer is `400 text/plain` with the English and Arabic sentences for
+    `auth.error.invalid_authorize_request` (`src/i18n/{en,ar}.json`; the Arabic is marked
+    `needs-native-review` in `src/i18n/review.json`). Other bad parameters go back to the
+    loopback as `invalid_request`.
+  - It stores the request for 10 minutes with the authorize IP, sets the browser-binding cookie
+    `__Host-rts_tx_<id>` (Secure, HttpOnly, SameSite=Lax, Path=/, 10 min; `<id>` is derived from
+    RTS's state, so concurrent flows in one browser don't collide; `rts_tx_<id>` without Secure
+    only outside production on plain-http loopback), and redirects to the IdP with RTS's own state, nonce and
+    PKCE (scope `openid profile email`).
+  - `/oauth2/idp/callback` consumes the request with one `DELETE … RETURNING` and requires the
+    cookie (else `auth.sign_in failure browser_binding_failed` and a plain-text 400: this browser
+    didn't start the flow). It redeems the IdP code with the client secret from KV (openid-client
+    checks state, nonce, PKCE and the ID token), applies the pinned ID-token rules, MFA
+    evidence, Graph and the access decision, and creates a **pending** session and a 60-second
+    `rly_ac_` code bound to the client, the exact redirect URI, the CLI's PKCE challenge and the
+    callback IP. Refusals are redirected with `error=access_denied` (or `temporarily_unavailable`)
+    and `error_description=<SignInReason>`. Responses carry `Cache-Control: no-store` and
+    `Referrer-Policy: no-referrer`.
+  - **Redemption** (`authorization_code`): the code is consumed only by a matching client,
+    redirect URI and `code_verifier` (a mismatch leaves it for its owner); a second redemption
+    revokes the session (`auth.token.reuse_detected`). The redemption IP must equal the callback
+    IP: with `access.loopback_ip_mismatch: deny` (default) the pending session is revoked and
+    `auth.sign_in denied loopback_ip_mismatch` written; with `alert` the sign-in succeeds with
+    `details.ip_mismatch: true`, `auth_loopback_ip_mismatch_total` and an
+    `auth_loopback_ip_mismatch` log line. **`auth.sign_in success` is written here**, fail-closed,
+    not at the callback; a code never redeemed is recorded by cleanup as `code_not_redeemed`, and
+    a redeemed code whose session is still pending 5 minutes after expiry (a crash mid-redemption)
+    as `error internal_error` (`redemption_incomplete`). Every flow-B event carries
+    `authorize_ip`, and redemption also `callback_ip` and `client_ip`. On dual-stack hosts,
+    `deny` can refuse a genuine sign-in reached over two IP families; `alert` is the fallback.
+  - Flow B is a strong sign-in: members of the admin group get `platform_admin`.
 - **Org source** (SEC-F002-31): unauthenticated routes act in `config.org.id`. A header, host,
   path or body never selects the org.
 

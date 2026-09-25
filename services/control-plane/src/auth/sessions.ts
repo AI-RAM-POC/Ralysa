@@ -215,24 +215,56 @@ export type CodeRedemption =
       redirectUri: string;
       codeChallenge: string;
       callbackIp: string | null;
+      /** Facts from the IdP callback (cp/0006). */
+      signIn: Record<string, unknown>;
     }
   | { kind: 'reused'; sessionId: string; revoked: boolean }
+  /** A live code presented with another client, redirect URI or PKCE challenge: not consumed. */
+  | { kind: 'mismatch' }
   | { kind: 'invalid' };
 
+/** What a redemption must match: the client, the exact redirect URI and the PKCE challenge. */
+export interface CodeBinding {
+  clientId: string;
+  redirectUri: string;
+  /** S256(code_verifier), base64url. */
+  codeChallenge: string;
+}
+
 /**
- * Consumes an authorization code once (T10's grant builds on this) [SEC-F002-20]. The row stays
- * as a tombstone (used_at set) until expiry + 1 h; a second redemption revokes the session the
- * first one created. Expired or unknown codes are `invalid`.
+ * Consumes an authorization code once [SEC-F002-20]. The row stays as a tombstone (used_at set)
+ * until expiry + 1 h; a second redemption revokes the session the first one created. Expired or
+ * unknown codes are `invalid`. With a `binding`, only a matching redemption consumes the code
+ * (one UPDATE); a live code presented with another client, redirect URI or verifier is a
+ * `mismatch` and stays redeemable by its owner (RFC 6749 §4.1.3, RFC 7636 §4.6).
  */
-export async function redeemAuthorizationCode(trx: Trx, code: string): Promise<CodeRedemption> {
+export async function redeemAuthorizationCode(
+  trx: Trx,
+  code: string,
+  binding?: CodeBinding,
+): Promise<CodeRedemption> {
   const hash = tokenHash(code);
-  const consumed = await trx
+  let update = trx
     .updateTable('cp.authorization_code')
     .set({ used_at: sql<Date>`clock_timestamp()` })
     .where('code_hash', '=', hash)
     .where('used_at', 'is', null)
-    .where(sql<boolean>`expires_at > clock_timestamp()`)
-    .returning(['session_id', 'client_id', 'redirect_uri', 'code_challenge', 'callback_ip'])
+    .where(sql<boolean>`expires_at > clock_timestamp()`);
+  if (binding !== undefined) {
+    update = update
+      .where('client_id', '=', binding.clientId)
+      .where('redirect_uri', '=', binding.redirectUri)
+      .where('code_challenge', '=', binding.codeChallenge);
+  }
+  const consumed = await update
+    .returning([
+      'session_id',
+      'client_id',
+      'redirect_uri',
+      'code_challenge',
+      'callback_ip',
+      'sign_in',
+    ])
     .executeTakeFirst();
   if (consumed !== undefined) {
     return {
@@ -242,16 +274,75 @@ export async function redeemAuthorizationCode(trx: Trx, code: string): Promise<C
       redirectUri: consumed.redirect_uri,
       codeChallenge: consumed.code_challenge,
       callbackIp: consumed.callback_ip,
+      signIn: consumed.sign_in,
     };
   }
-  const tombstone = await trx
+  const row = await trx
     .selectFrom('cp.authorization_code')
-    .select(['session_id', 'used_at'])
+    .select(['session_id', 'used_at', sql<boolean>`expires_at > clock_timestamp()`.as('live')])
     .where('code_hash', '=', hash)
     .executeTakeFirst();
-  if (tombstone?.used_at !== null && tombstone?.used_at !== undefined) {
-    const revoked = await revokeSession(trx, tombstone.session_id, 'reuse_detected');
-    return { kind: 'reused', sessionId: tombstone.session_id, revoked };
+  if (row?.used_at !== null && row?.used_at !== undefined) {
+    const revoked = await revokeSession(trx, row.session_id, 'reuse_detected');
+    return { kind: 'reused', sessionId: row.session_id, revoked };
   }
+  if (row !== undefined && row.live && binding !== undefined) return { kind: 'mismatch' };
   return { kind: 'invalid' };
+}
+
+/** Stores a new authorization code (hash only) bound to its session, client and challenge. */
+export async function createAuthorizationCode(
+  trx: Trx,
+  input: {
+    orgId: string;
+    code: string;
+    sessionId: string;
+    clientId: string;
+    redirectUri: string;
+    codeChallenge: string;
+    callbackIp: string | null;
+    ttlSeconds: number;
+    signIn: Record<string, unknown>;
+  },
+): Promise<void> {
+  await trx
+    .insertInto('cp.authorization_code')
+    .values({
+      code_hash: tokenHash(input.code),
+      org_id: input.orgId,
+      client_id: input.clientId,
+      redirect_uri: input.redirectUri,
+      code_challenge: input.codeChallenge,
+      session_id: input.sessionId,
+      callback_ip: input.callbackIp,
+      expires_at: sql<Date>`clock_timestamp() + make_interval(secs => ${input.ttlSeconds})`,
+      used_at: null,
+      sign_in: JSON.stringify(input.signIn),
+    })
+    .execute();
+}
+
+/**
+ * Activates a pending session (flow B at code redemption) and issues its first refresh token.
+ * Undefined when the session is no longer pending (revoked meanwhile).
+ */
+export async function activatePendingSession(
+  trx: Trx,
+  input: { orgId: string; sessionId: string; idleSeconds: number },
+): Promise<{ id: string; token: string } | undefined> {
+  const activated = await trx
+    .updateTable('cp.auth_session')
+    .set({ status: 'active' })
+    .where('id', '=', input.sessionId)
+    .where('status', '=', 'pending')
+    .where(sql<boolean>`absolute_expires_at > clock_timestamp()`)
+    .returning('id')
+    .executeTakeFirst();
+  if (activated === undefined) return undefined;
+  return issueRefreshToken(trx, {
+    orgId: input.orgId,
+    sessionId: input.sessionId,
+    parentId: null,
+    idleSeconds: input.idleSeconds,
+  });
 }

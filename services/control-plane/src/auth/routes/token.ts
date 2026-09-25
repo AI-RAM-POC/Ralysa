@@ -1,8 +1,7 @@
 // POST /oauth2/token and POST /oauth2/revoke (F-002 design §3.1, §3.3, §5.3, §5.4; AC-3, AC-8).
 // - No client secret, ever: a `client_secret` parameter or Basic authorization is invalid_client.
-// - Grants: token exchange (flow A, F-002-T10), refresh_token and client_credentials;
-//   authorization_code is dispatched by the second part of T10 (until then
-//   unsupported_grant_type). Anything else, `password` included, is unsupported_grant_type.
+// - Grants: authorization_code (flow B) and token exchange (flow A) (F-002-T10), refresh_token
+//   and client_credentials (T08). Anything else, `password` included, is unsupported_grant_type.
 // - Responses carry Cache-Control: no-store (RFC 6749 §5.1).
 // - Revocation always answers 200 (RFC 7009); a known refresh token revokes its whole session
 //   and writes auth.sign_out.
@@ -25,6 +24,7 @@ import {
   serviceKeyViolationRecorder,
 } from '../grants/client-credentials.js';
 import { type GrantContext, refreshGrant } from '../grants/refresh-token.js';
+import { authorizationCodeGrant } from '../grants/authorization-code.js';
 import { tokenExchangeGrant } from '../grants/token-exchange.js';
 import { findRefreshToken, revokeSession } from '../sessions.js';
 
@@ -73,8 +73,13 @@ export function registerTokenRoutes(app: FastifyInstance, deps: RtsDeps): void {
         ...(userAgent === undefined ? {} : { userAgent }),
       });
     }
-    // authorization_code (GRANT_TYPES) arrives with the second part of F-002-T10; until then it
-    // answers like every other grant RTS doesn't serve, `password` included.
+    if (grant === 'authorization_code') {
+      const userAgent = request.headers['user-agent'];
+      return authorizationCodeGrant(env, body, {
+        ...context(request),
+        ...(userAgent === undefined ? {} : { userAgent }),
+      });
+    }
     throw new OAuthProblem({ error: 'unsupported_grant_type' });
   });
 

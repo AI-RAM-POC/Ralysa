@@ -1,0 +1,7 @@
+{
+  "auth": {
+    "error": {
+      "invalid_authorize_request": "This sign-in request is not valid. Start the sign-in again from the Ralysa CLI."
+    }
+  }
+}

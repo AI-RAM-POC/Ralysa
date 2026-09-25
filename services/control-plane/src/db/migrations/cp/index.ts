@@ -6,6 +6,7 @@ import * as m0002 from './0002_cp_identity.js';
 import * as m0003 from './0003_cp_sessions_and_tokens.js';
 import * as m0004 from './0004_usage_credential_governance.js';
 import * as m0005 from './0005_governance_epoch.js';
+import * as m0006 from './0006_authorization_code_sign_in.js';
 
 export const CP_MIGRATIONS: Readonly<Record<string, Migration>> = {
   '0001_schemas_and_rls_helpers': m0001,
@@ -13,4 +14,5 @@ export const CP_MIGRATIONS: Readonly<Record<string, Migration>> = {
   '0003_cp_sessions_and_tokens': m0003,
   '0004_usage_credential_governance': m0004,
   '0005_governance_epoch': m0005,
+  '0006_authorization_code_sign_in': m0006,
 };

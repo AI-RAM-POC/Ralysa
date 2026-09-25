@@ -1,6 +1,6 @@
 {
   "extends": "@ralysa/tsconfig/node-service.json",
-  "include": ["src", "test", "*.config.ts"],
+  "include": ["src", "src/i18n/*.json", "test", "*.config.ts"],
   "references": [
     { "path": "../../packages/auth" },
     { "path": "../../packages/protocol" },

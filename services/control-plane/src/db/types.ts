@@ -97,6 +97,8 @@ export interface AuthorizationCodeTable {
   callback_ip: string | null;
   expires_at: Timestamp;
   used_at: Timestamp | null;
+  /** Facts from the IdP callback for the sign-in event at redemption (cp/0006). */
+  sign_in: ColumnType<Record<string, unknown>, string | undefined, string>;
 }
 
 export interface IdpAuthRequestTable {
