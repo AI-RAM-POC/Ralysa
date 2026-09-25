@@ -109,6 +109,7 @@ docker compose -f deploy/docker/dev/compose.yaml --env-file deploy/docker/dev/.e
 | Mock IdP (compose profile `idp`, F-002-T09) | 59400 | |
 
 - The env and bootstrap commands need no installed packages. `env` refuses to write outside `deploy/docker/dev/` and never overwrites without `--force`.
+- Postgres sets the superuser password only when its volume is first initialised. If you regenerate `.env` with `--force`, run `down -v` first, or the old volume keeps the old password and the smoke test fails with "password authentication failed for user postgres".
 - Without the stack, `test:integration` skips with one message saying what to start. With `CI` set or `RALYSA_REQUIRE_DEV_STACK=1` it fails instead, so CI can't pass by skipping.
 - `pnpm secret-scan tree` scans git-ignored files too, so it reports the generated `deploy/docker/dev/.env`. Those values are throwaway; move the file aside (or `down -v` and delete it) before a local tree scan.
 

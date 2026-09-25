@@ -1,12 +1,12 @@
 # F-002: Implementation notes
 
-> Phase 5 · Owner: developer agent · Branch `feat/F-002-foundations` (T01–T04, one commit per task) · Design: [design.md](./design.md) (G4 recorded 2026-09-25) · Security review: [security.md](./security.md) · Date: 2026-09-25
+> Phase 5 · Owner: developer agent · Branch `feat/F-002-foundations` (T01–T03, one commit per task; T04 follows on its own branch) · Design: [design.md](./design.md) (G4 recorded 2026-09-25) · Security review: [security.md](./security.md) · Date: 2026-09-25
 > These notes carry the evidence the design asks each task to record: versions, deviations, "to verify" results and anything left open. The PR description links here.
 
 ## Environment
 
 - Node.js **24.21.0**, pnpm **11.27.1** (Corepack), Turbo 2.11.2, TypeScript 6.0.3, Vitest 4.1.11.
-- Docker Desktop on macOS (darwin_arm64): `docker info` succeeds, so the dev stack and `test:integration` ran locally (see T02 and T04).
+- Docker Desktop on macOS (darwin_arm64): `docker info` succeeds, so the dev stack and `test:integration` ran locally (see T02).
 
 ## T01: workspaces
 
@@ -141,3 +141,9 @@ Checked for later tasks and **not added**, because no code uses them yet: `kysel
 - `control-plane.test.ts`: the auth config switch, the IdP-neutral `idp_error_code` [AR-18], Arabic display names byte-identical (AC-15), UUID-only groups, the governance feed, client-event allow-list and batch limits, a forged `actor` refused by the schema, the service batch limit, `AuditQuery` limits.
 - `schema.test.ts`: the committed files are exactly the registry and equal the generator output; URN `$id`s; a transform fails generation; no password, PIN, OTP or `client_secret` property in any generated contract (the AC-3 check on contracts; TC-F-002-05 on the OpenAPI document is T07's); the audit schema lists `endpoint_region` and `inference_region`.
 - **Drift proof (manual, 2026-09-25):** changing one value in `audit-event.v1.json` made `schema.test.ts` fail, and `git diff` showed the file changed (CI's porcelain check); `check:generated` rewrote it and `git diff` was empty again.
+
+## PR close-out (T01–T03)
+
+- The interrupted session left the branch clean: three commits, no uncommitted work, based on the current `main` (`f3ce0b5`, F-001 T06–T08 and the F-002 design), so no merge was needed.
+- Local run on Node 24.21.0 (2026-09-25): pre-install gate, `pnpm install --frozen-lockfile`, `pnpm repo:check`, and `turbo run lint typecheck test build check:generated --force` (91/91 tasks). The dev stack (`env`, `compose up --wait`, `bootstrap`) with `RALYSA_REQUIRE_DEV_STACK=1 turbo run test:integration --force` passes 9/9 tasks and 55 tests.
+- Local trap found and documented in repo-conventions: after `env --force`, an old `postgres-data` volume keeps the previous superuser password, so the smoke test fails until `down -v`. CI always starts with a fresh volume, so it isn't affected.
