@@ -6,6 +6,7 @@ import { buildApp } from '../src/app.js';
 import { createRateLimiter } from '../src/http/rate-limits.js';
 import { createPinoLogger } from '../src/observability/pino.js';
 import { registerRequestContext } from '../src/http/request-context.js';
+import { fakeRts } from './fixtures/fake-rts.js';
 import { fakeKeys } from './fixtures/fake-keys.js';
 import { ORG_ID, TENANT, serveConfig } from './fixtures/serve-config.js';
 
@@ -15,6 +16,7 @@ async function app(options: { ping?: boolean; perIp?: number; global?: number } 
   const instance = await buildApp({
     config: serveConfig(),
     keys: fake.keys,
+    rts: fakeRts(),
     pingDatabase: () =>
       options.ping === false ? Promise.reject(new Error('down')) : Promise.resolve(true),
     rateLimiter: createRateLimiter({

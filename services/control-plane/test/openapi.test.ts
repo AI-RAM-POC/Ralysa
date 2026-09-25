@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { ROUTES } from '../src/http/contracts.js';
 import { openApiText } from '../src/http/openapi.js';
+import { fakeRts } from './fixtures/fake-rts.js';
 import { fakeKeys } from './fixtures/fake-keys.js';
 import { serveConfig } from './fixtures/serve-config.js';
 
@@ -22,6 +23,7 @@ describe('OpenAPI document', () => {
     const app = await buildApp({
       config: serveConfig(),
       keys: (await fakeKeys()).keys,
+      rts: fakeRts(),
       pingDatabase: () => Promise.resolve(true),
     });
     for (const route of Object.values(ROUTES)) {

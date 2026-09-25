@@ -24,6 +24,7 @@ import type { Database } from '../../src/db/types.js';
 import { silentLogger } from '../../src/observability/logger.js';
 import { OrganizationMismatchError, ensureOrganization } from '../../src/org/bootstrap.js';
 import { assertSigningKeyCustody } from '../../src/serve.js';
+import { fakeRts } from '../fixtures/fake-rts.js';
 import { serveConfig } from '../fixtures/serve-config.js';
 import { type TestDatabase, createTestDatabase } from './support/db.js';
 
@@ -114,6 +115,7 @@ describe.skipIf(stack === undefined)('serve app (F-002-T07)', () => {
     app = await buildApp({
       config,
       keys,
+      rts: fakeRts({ db: cpDb, custody }),
       pingDatabase: async () => {
         await sql`select 1`.execute(cpDb);
         return true;

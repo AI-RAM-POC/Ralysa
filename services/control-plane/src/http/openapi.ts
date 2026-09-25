@@ -28,11 +28,32 @@ export function buildOpenApi(): Record<string, unknown> {
         },
       };
     }
-    paths[route.url] ??= {};
-    (paths[route.url] as Record<string, unknown>)[route.method.toLowerCase()] = {
+    const path = route.url.replace(/:([A-Za-z_][A-Za-z0-9_]*)/g, '{$1}');
+    const operations = (paths[path] ??= {});
+    operations[route.method.toLowerCase()] = {
       summary: route.summary,
       tags: route.tags,
-      security: route.auth === 'none' ? [] : [{ bearer: [] }],
+      // OAuth clients authenticate in the body (public client id or private_key_jwt), not bearer.
+      security: route.auth === 'none' || route.auth === 'client' ? [] : [{ bearer: [] }],
+      ...(route.parameters === undefined
+        ? {}
+        : {
+            parameters: route.parameters.map((p) => ({
+              name: p.name,
+              in: p.in,
+              required: p.required,
+              description: p.description,
+              schema: toSchema(p.schema),
+            })),
+          }),
+      ...(route.request === undefined
+        ? {}
+        : {
+            requestBody: {
+              required: true,
+              content: { [route.request.contentType]: { schema: toSchema(route.request.schema) } },
+            },
+          }),
       responses,
     };
   }

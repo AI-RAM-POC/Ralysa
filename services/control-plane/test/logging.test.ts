@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { REDACT_PATHS, loggerOptions, scrubText, scrubValue } from '../src/http/logging.js';
 import { createJsonLogger } from '../src/observability/logger.js';
 import { createPinoLogger, loggerFromPino } from '../src/observability/pino.js';
+import { fakeRts } from './fixtures/fake-rts.js';
 
 // Token-shaped fixtures are built at runtime from low-entropy filler, so the repository's own
 // secret scanner doesn't read the test data as credentials; the scrubber patterns still match.
@@ -136,6 +137,7 @@ describe('re-review of #25: interpolation cannot escape scrubbing', () => {
     const app = await buildApp({
       config: serveConfig(),
       keys: (await fakeKeys()).keys,
+      rts: fakeRts(),
       pingDatabase: () => Promise.resolve(true),
       logger: createPinoLogger('info', { write: (line: string) => lines.push(line) }),
     });

@@ -2,9 +2,15 @@
 // (F-002 design §3.1, §3.10). The app registers its routes with these schemas and the OpenAPI
 // document is generated from the same objects, so what is validated is what is published. Later
 // tasks append their routes here.
-import { AuthorizationServerMetadata } from '@ralysa/protocol/auth';
+import {
+  AuthorizationServerMetadata,
+  OAuthError,
+  RevokeRequest,
+  TokenRequest,
+  TokenResponse,
+} from '@ralysa/protocol/auth';
 import { Problem } from '@ralysa/protocol/common';
-import { AuthConfig } from '@ralysa/protocol/control-plane';
+import { AuthConfig, GovernanceState, Me, Principal } from '@ralysa/protocol/control-plane';
 import { z } from 'zod';
 
 export const Jwks = z.strictObject({
@@ -31,9 +37,20 @@ export const Readiness = z.strictObject({
   }),
 });
 
+export interface RouteParameter {
+  name: string;
+  in: 'path' | 'query';
+  required: boolean;
+  description: string;
+  schema: z.ZodType;
+}
+
 export interface RouteContract {
   method: 'GET' | 'POST';
+  /** Fastify syntax (`:name`); the OpenAPI document writes `{name}`. */
   url: string;
+  parameters?: RouteParameter[];
+  request?: { contentType: string; schema: z.ZodType };
   summary: string;
   tags: string[];
   auth: 'none' | 'user' | 'service' | 'client';
@@ -46,6 +63,11 @@ const problem = (description: string) => ({
   schema: Problem,
   contentType: 'application/problem+json',
 });
+
+const oauthError = (description: string) => ({ description, schema: OAuthError });
+
+/** RFC 7009 §2.2: an empty JSON object, whether or not the token was known. */
+export const RevokeResponse = z.strictObject({});
 
 export const ROUTES = {
   metadata: {
@@ -97,5 +119,95 @@ export const ROUTES = {
       200: { description: 'Ready', schema: Readiness },
       503: { description: 'Not ready', schema: Readiness },
     },
+  },
+  token: {
+    method: 'POST',
+    url: '/oauth2/token',
+    summary:
+      'Token endpoint: refresh_token and client_credentials (private_key_jwt); authorization_code and token exchange arrive with F-002-T10. No client secret is ever accepted.',
+    tags: ['oauth'],
+    auth: 'client',
+    request: { contentType: 'application/x-www-form-urlencoded', schema: TokenRequest },
+    responses: {
+      200: { description: 'Tokens', schema: TokenResponse },
+      400: oauthError('invalid_request, invalid_grant, invalid_scope or unsupported_grant_type'),
+      401: oauthError('invalid_client'),
+      429: oauthError('Rate limited'),
+      503: oauthError(
+        'temporarily_unavailable (IdP directory unreachable; the token is not consumed)',
+      ),
+    },
+    headers: { 'cache-control': 'no-store' },
+  },
+  revoke: {
+    method: 'POST',
+    url: '/oauth2/revoke',
+    summary: "RFC 7009 revocation = sign-out: revokes the refresh token's whole session",
+    tags: ['oauth'],
+    auth: 'client',
+    request: { contentType: 'application/x-www-form-urlencoded', schema: RevokeRequest },
+    responses: {
+      200: { description: 'Revoked, or the token was unknown (RFC 7009)', schema: RevokeResponse },
+      400: oauthError('invalid_request'),
+      401: oauthError('invalid_client'),
+      429: oauthError('Rate limited'),
+    },
+    headers: { 'cache-control': 'no-store' },
+  },
+  me: {
+    method: 'GET',
+    url: '/v1/me',
+    summary: "The signed-in user, the calling session's roles and the user's groups",
+    tags: ['directory'],
+    auth: 'user',
+    responses: {
+      200: { description: 'The user', schema: Me },
+      401: problem('Missing, invalid or revoked access token'),
+    },
+  },
+  principal: {
+    method: 'GET',
+    url: '/v1/internal/principals/:user_id',
+    summary: 'Groups, roles and status of a user (service token)',
+    tags: ['internal'],
+    auth: 'service',
+    parameters: [
+      {
+        name: 'user_id',
+        in: 'path',
+        required: true,
+        description: 'Ralysa user id',
+        schema: z.uuid(),
+      },
+    ],
+    responses: {
+      200: { description: 'The principal', schema: Principal },
+      400: problem('Invalid user id'),
+      401: problem('Missing or invalid service token'),
+      404: problem('No such user'),
+    },
+  },
+  governance: {
+    method: 'GET',
+    url: '/v1/internal/governance',
+    summary: 'Revocations, kill-switch state and epoch for every PEP (service token; G-1)',
+    tags: ['internal'],
+    auth: 'service',
+    parameters: [
+      {
+        name: 'since',
+        in: 'query',
+        required: false,
+        description:
+          'The cursor of the previous response; without it the feed covers the maximum access-token TTL + 5 min',
+        schema: z.iso.datetime(),
+      },
+    ],
+    responses: {
+      200: { description: 'Governance state', schema: GovernanceState },
+      400: problem('Invalid cursor'),
+      401: problem('Missing or invalid service token'),
+    },
+    headers: { 'cache-control': 'no-store' },
   },
 } as const satisfies Record<string, RouteContract>;

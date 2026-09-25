@@ -21,6 +21,9 @@
     },
     "cp/0004_usage_credential_governance.ts": {
       "sha256": "ae1216e77a19d8a85df813849d1739eaff31db333d37a22968918868f6fbef56"
+    },
+    "cp/0005_governance_epoch.ts": {
+      "sha256": "4c5a672a7c325cef1c4fb4151f1cdef84a12e5ddb371e0ee83dc421466c2fb58"
     }
   }
 }
