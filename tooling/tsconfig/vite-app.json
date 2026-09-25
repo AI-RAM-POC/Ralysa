@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "display": "Ralysa Vite + React app (Vite emits the bundle; tsc only type-checks)",
+  "extends": "./react-lib.json",
+  "compilerOptions": {
+    "types": ["vite/client"]
+  }
+}

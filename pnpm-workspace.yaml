@@ -1,5 +1,42 @@
+# Workspace packages. packs/* is deliberately NOT a workspace (RF-7, F-001 design §6.4):
+# department packs are content, never part of the build graph.
 packages:
-  - "apps/*"
-  - "packages/*"
-  - "services/*"
-  - "packs/*"
+  - 'apps/*'
+  - 'packages/*'
+  - 'services/*'
+  - 'tooling/*'
+
+# Supply-chain settings (F-001 design §6.4; RF-3, SEC-F001-19, -20).
+# Install fails on any dependency build script that is not reviewed below.
+strictDepBuilds: true
+# Every entry defaults to false. A `true` entry needs a matching reviewed entry in
+# tooling/repo-scripts/allow-builds.json (reason, reviewer, date); check-workspaces enforces it.
+allowBuilds: {}
+# 3 days (pnpm 11 default is 1 day).
+minimumReleaseAge: 4320
+# Transitive dependencies may only come from the registry.
+blockExoticSubdeps: true
+# Refuse a version whose publish provenance is weaker than an earlier version's.
+trustPolicy: no-downgrade
+# Reviewed exceptions to trustPolicy (exact versions only; each needs a reason).
+trustPolicyExclude:
+  # 6.3.1 is the 2023-07-10 security backport on the 6.x line (CVE-2022-25883), published by the
+  # npm CLI team three days after the provenance-attested 7.5.4. It has no attestation because
+  # the 6.x release pipeline never had one, not because of a takeover. Pulled in by
+  # @babel/core (via eslint-plugin-react-hooks). Reviewed 2026-09-25, F-001-T02.
+  - semver@6.3.1
+
+# One version per shared toolchain package, referenced as "catalog:" (architect review AR-7).
+catalog:
+  '@types/node': 24.13.6
+  '@types/react': 19.3.0
+  '@types/react-dom': 19.3.0
+  '@vitejs/plugin-react': 6.1.1
+  eslint: 10.11.0
+  react: 19.3.0
+  react-dom: 19.3.0
+  typescript: 6.0.3
+  vite: 8.3.0
+  vitest: 4.1.11
+  yaml: 2.9.1
+  zod: 4.6.5

@@ -1,0 +1,8 @@
+import { describe, expect, it } from 'vitest';
+import { run } from '../src/run.js';
+
+describe('{{package}} run', () => {
+  it('exits 0 by default', () => {
+    expect(run([])).toBe(0);
+  });
+});

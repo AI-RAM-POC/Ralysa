@@ -1,0 +1,4 @@
+{
+  "$comment": "Reviewed pnpmfiles (.pnpmfile.cjs, .pnpmfile.mjs or any file named by the pnpmfile setting). pnpm loads the root .pnpmfile.* on every install and runs its hooks, so each one needs an entry with the SHA-256 of the reviewed content, an owner, a reason and the date; an edit changes the hash and needs a new review. check-workspaces enforces it (code review M2). Starts empty.",
+  "entries": []
+}

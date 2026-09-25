@@ -1,0 +1,5 @@
+#!/usr/bin/env node
+// {{package}}: command-line entry point. The owning feature (F-005) chooses the bundler and adds Ink.
+import { run } from './run.js';
+
+process.exitCode = run(process.argv.slice(2));

@@ -1,0 +1,35 @@
+{
+  "name": "@ralysa/repo-scripts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Repository checks and helpers run in CI (repo-checks, quality) and by developers.",
+  "bin": {
+    "ralysa-repo": "./src/cli.ts"
+  },
+  "scripts": {
+    "build": "echo \"@ralysa/repo-scripts: runs from source on Node 24 (type stripping), nothing to build\"",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "typescript": "catalog:",
+    "yaml": "catalog:",
+    "zod": "catalog:"
+  },
+  "devDependencies": {
+    "@ralysa/eslint-config": "workspace:*",
+    "@ralysa/tsconfig": "workspace:*",
+    "@ralysa/vitest-config": "workspace:*",
+    "@types/node": "catalog:",
+    "eslint": "catalog:",
+    "vitest": "catalog:"
+  },
+  "ralysa": {
+    "kind": "tooling",
+    "shipped": false,
+    "ui": false,
+    "artefacts": []
+  }
+}

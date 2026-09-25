@@ -1,0 +1,9 @@
+import { renderToString } from 'react-dom/server';
+import { describe, expect, it } from 'vitest';
+import { Slot } from '../src/index.js';
+
+describe('{{package}} Slot', () => {
+  it('renders an empty, labelled region', () => {
+    expect(renderToString(<Slot />)).toBe('<div data-ralysa-slot="{{name}}"></div>');
+  });
+});

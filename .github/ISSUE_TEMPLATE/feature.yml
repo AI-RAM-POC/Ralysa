@@ -19,4 +19,11 @@ body:
     id: phase
     attributes:
       label: Roadmap phase
-      options: ["0 - Foundations", "1 - MVP", "2 - Productivity & Web Scale", "3 - Department Packs", "4 - Enterprise Hardening"]
+      options:
+        [
+          '0 - Foundations',
+          '1 - MVP',
+          '2 - Productivity & Web Scale',
+          '3 - Department Packs',
+          '4 - Enterprise Hardening',
+        ]

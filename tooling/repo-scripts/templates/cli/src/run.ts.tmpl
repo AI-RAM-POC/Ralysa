@@ -1,0 +1,4 @@
+/** Runs the command with its arguments and returns the process exit code. */
+export function run(args: readonly string[]): number {
+  return args.includes('--fail') ? 1 : 0;
+}

@@ -1,0 +1,4 @@
+{
+  "$comment": "Reviewed pnpm configDependencies. pnpm installs these before anything else, and auto-loads pnpmfile.mjs/pnpmfile.cjs from any whose name is pnpm-plugin-*, @pnpm/plugin-* or @<scope>/pnpm-plugin-*, running its hooks before install. Every entry in pnpm-workspace.yaml configDependencies needs an entry here with the package name, the exact \"<version>+<integrity>\" value, an owner and a reason. check-workspaces enforces it (code review N1). Starts empty.",
+  "entries": []
+}

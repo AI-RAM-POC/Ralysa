@@ -1,0 +1,22 @@
+{
+  "name": "@ralysa/extraction",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Placeholder package (F-001 design §2.1): only README.md and package.json until Phase 2 converts it; Python tooling waits for the F-004 design (RC-7).",
+  "scripts": {
+    "build": "ralysa-repo placeholder-guard",
+    "lint": "ralysa-repo placeholder-guard",
+    "test": "ralysa-repo placeholder-guard",
+    "typecheck": "ralysa-repo placeholder-guard"
+  },
+  "devDependencies": {
+    "@ralysa/repo-scripts": "workspace:*"
+  },
+  "ralysa": {
+    "kind": "placeholder",
+    "shipped": true,
+    "ui": false,
+    "artefacts": []
+  }
+}

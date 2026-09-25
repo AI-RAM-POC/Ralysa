@@ -4,22 +4,22 @@ labels: [uat]
 body:
   - type: input
     id: scenario
-    attributes: { label: "UAT scenario / السيناريو", placeholder: UAT-F-001-01 }
+    attributes: { label: 'UAT scenario / السيناريو', placeholder: UAT-F-001-01 }
   - type: input
     id: department
-    attributes: { label: "Department / القسم" }
+    attributes: { label: 'Department / القسم' }
   - type: dropdown
     id: outcome
     attributes:
-      label: "Could you complete the task? / هل أكملت المهمة؟"
-      options: ["Yes / نعم", "With difficulty / بصعوبة", "No / لا"]
+      label: 'Could you complete the task? / هل أكملت المهمة؟'
+      options: ['Yes / نعم', 'With difficulty / بصعوبة', 'No / لا']
     validations: { required: true }
   - type: textarea
     id: details
-    attributes: { label: "What happened? / ماذا حدث؟" }
+    attributes: { label: 'What happened? / ماذا حدث؟' }
     validations: { required: true }
   - type: dropdown
     id: rating
     attributes:
-      label: "Satisfaction (1-5) / مستوى الرضا"
-      options: ["1", "2", "3", "4", "5"]
+      label: 'Satisfaction (1-5) / مستوى الرضا'
+      options: ['1', '2', '3', '4', '5']

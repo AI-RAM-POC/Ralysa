@@ -1,0 +1,22 @@
+{
+  "name": "@ralysa/ui",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Placeholder package (F-001 design §2.1): only README.md and package.json until F-001 T06 converts it (--kind library).",
+  "scripts": {
+    "build": "ralysa-repo placeholder-guard",
+    "lint": "ralysa-repo placeholder-guard",
+    "test": "ralysa-repo placeholder-guard",
+    "typecheck": "ralysa-repo placeholder-guard"
+  },
+  "devDependencies": {
+    "@ralysa/repo-scripts": "workspace:*"
+  },
+  "ralysa": {
+    "kind": "placeholder",
+    "shipped": false,
+    "ui": true,
+    "artefacts": []
+  }
+}

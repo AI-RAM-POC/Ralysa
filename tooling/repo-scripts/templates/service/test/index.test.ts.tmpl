@@ -1,0 +1,8 @@
+import { describe, expect, it } from 'vitest';
+import { serviceInfo } from '../src/index.js';
+
+describe('{{package}}', () => {
+  it('reports its name', () => {
+    expect(serviceInfo()).toEqual({ name: '{{package}}' });
+  });
+});

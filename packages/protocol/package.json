@@ -1,0 +1,22 @@
+{
+  "name": "@ralysa/protocol",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Placeholder package (F-001 design §2.1): only README.md and package.json until F-003 converts it (--kind library-isomorphic).",
+  "scripts": {
+    "build": "ralysa-repo placeholder-guard",
+    "lint": "ralysa-repo placeholder-guard",
+    "test": "ralysa-repo placeholder-guard",
+    "typecheck": "ralysa-repo placeholder-guard"
+  },
+  "devDependencies": {
+    "@ralysa/repo-scripts": "workspace:*"
+  },
+  "ralysa": {
+    "kind": "placeholder",
+    "shipped": false,
+    "ui": false,
+    "artefacts": []
+  }
+}

@@ -1,14 +1,24 @@
 {
   "name": "ralysa",
   "private": true,
-  "packageManager": "pnpm@9.12.0",
+  "type": "module",
+  "packageManager": "pnpm@11.27.1+sha512.a81d4c21b9b09a4b0aebf90ef5e527d4262bdda322d26082978cb549023ac6d9cafc98b19fffaa5c71db438a65f70224edb78d7311187861ff96480d1cdca23c",
+  "engines": {
+    "node": ">=24.12 <25"
+  },
   "scripts": {
     "build": "turbo run build",
     "dev": "turbo run dev",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "lint": "turbo run lint",
-    "test": "turbo run test"
+    "repo:check": "node tooling/repo-scripts/src/cli.ts repo-check && prettier --check .",
+    "scaffold": "node tooling/repo-scripts/src/cli.ts scaffold",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck"
   },
   "devDependencies": {
-    "turbo": "^2.1.0"
+    "prettier": "3.9.8",
+    "turbo": "2.11.2"
   }
 }

@@ -1,0 +1,4 @@
+{
+  "$comment": "Reviewed dependency build scripts. Every `allowBuilds: { <package>: true }` entry in pnpm-workspace.yaml needs a matching entry here with a reason, the reviewer and the date. check-workspaces enforces it (F-001 design §6.4, SEC-F001-19).",
+  "entries": []
+}

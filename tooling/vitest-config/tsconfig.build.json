@@ -1,0 +1,9 @@
+{
+  "extends": ["./tsconfig.json", "@ralysa/tsconfig/build.json"],
+  "compilerOptions": {
+    "emitDeclarationOnly": true,
+    "rootDir": "${configDir}",
+    "outDir": "${configDir}/dist"
+  },
+  "include": ["index.js"]
+}

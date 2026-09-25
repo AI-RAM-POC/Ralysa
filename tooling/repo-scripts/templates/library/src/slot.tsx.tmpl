@@ -1,0 +1,8 @@
+// {{package}}: React component library. User-visible text goes through i18n keys, and layout
+// uses logical CSS properties only (F-001 design §7.3, §7.4).
+import type { JSX } from 'react';
+
+/** An empty region that marks where this package renders. It holds no text. */
+export function Slot(): JSX.Element {
+  return <div data-ralysa-slot="{{name}}" />;
+}

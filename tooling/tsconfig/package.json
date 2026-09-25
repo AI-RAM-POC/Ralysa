@@ -1,0 +1,33 @@
+{
+  "name": "@ralysa/tsconfig",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared TypeScript base configs for every Ralysa workspace.",
+  "files": [
+    "*.json"
+  ],
+  "exports": {
+    "./base.json": "./base.json",
+    "./lib-isomorphic.json": "./lib-isomorphic.json",
+    "./lib-node.json": "./lib-node.json",
+    "./lib-dom.json": "./lib-dom.json",
+    "./react-lib.json": "./react-lib.json",
+    "./vite-app.json": "./vite-app.json",
+    "./node-service.json": "./node-service.json",
+    "./node-cli.json": "./node-cli.json",
+    "./build.json": "./build.json"
+  },
+  "scripts": {
+    "build": "echo \"@ralysa/tsconfig: configuration-only package, nothing to build\"",
+    "lint": "node scripts/check-configs.js",
+    "test": "echo \"@ralysa/tsconfig: the bases are compiled against fixtures in @ralysa/repo-scripts (test/tsconfig-bases.test.ts)\"",
+    "typecheck": "node scripts/check-configs.js"
+  },
+  "ralysa": {
+    "kind": "tooling",
+    "shipped": false,
+    "ui": false,
+    "artefacts": []
+  }
+}
