@@ -27,6 +27,10 @@
     },
     "./schema/*.json": "./src/schema/generated/*.json"
   },
+  "files": [
+    "dist",
+    "src/schema/generated"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "check:generated": "tsc -p tsconfig.build.json && node scripts/generate-schemas.js",
