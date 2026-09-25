@@ -48,7 +48,8 @@ jobs:
           restore-keys: pnpm-store-${{ runner.os }}-
       - run: pnpm install --frozen-lockfile
       # check-workspaces (coverage, contract, lifecycle scripts, build settings, specifiers,
-      # packs/, Python), check-tsrefs, check-turbo-config, then prettier --check.
+      # packs/, Python), check-tsrefs, check-turbo-config, check-banned-deps (lockfile graph),
+      # check-imports (dependency-cruiser), then prettier --check.
       - run: pnpm repo:check
 
   # Every workspace's lint, typecheck, test and build (AC-1). --continue=dependencies-successful
@@ -79,6 +80,16 @@ jobs:
           key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
           restore-keys: pnpm-store-${{ runner.os }}-
       - run: pnpm install --frozen-lockfile
+      # gitleaks before the Turbo run: the @ralysa/repo-scripts tests run the real, hash-pinned
+      # binary (TC-F-001-03, -37, -38, -39), and the artefact scan below uses it too.
+      - uses: actions/cache@v4
+        with:
+          path: .tools/gitleaks
+          key: tools-gitleaks-${{ runner.os }}-${{ hashFiles('tooling/repo-scripts/bin/tool-hashes.txt') }}
+      # Downloads the hash-pinned binary, or re-verifies a cached one; the wrapper re-hashes it
+      # again before every run (SEC-F001-20).
+      - name: Install gitleaks
+        run: sh tooling/repo-scripts/bin/install-tool.sh gitleaks
       # Turbo local cache only; the remote cache is disabled in turbo.json (SEC-F001-12).
       # PR runs can read main's caches but main can't read PR caches.
       - uses: actions/cache@v4
@@ -100,6 +111,67 @@ jobs:
       - name: Workspace summary
         if: ${{ !cancelled() }}
         run: node tooling/repo-scripts/src/cli.ts summary --out "$GITHUB_STEP_SUMMARY"
+      # Outside Turbo and uncached (SEC-F001-23): every shipped artefact, with the allow-list-free
+      # .gitleaks.artefacts.toml. A missing artefact path fails (AC-2, SEC-F001-05).
+      - name: Secret scan of shipped artefacts
+        run: node tooling/repo-scripts/src/secret-scan-cli.ts artefacts
+      # No model-provider API hostname in any shipped artefact (SR-03, SEC-F001-09 d). The
+      # tracked-source half of this check runs in repo-checks.
+      - name: Provider hostnames in shipped artefacts
+        if: ${{ !cancelled() }}
+        run: node tooling/repo-scripts/src/cli.ts check-provider-hosts --artefacts
+      - name: Upload secret-scan reports (secrets redacted)
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: secret-scan-artefacts
+          path: ${{ runner.temp }}/secret-scan-reports
+          if-no-files-found: ignore
+
+  # Secret scanning of the repository (F-001 design §6.2.3, §6.2.5). No install and no build, so
+  # nothing from the PR runs before the scan; only plain node and the hash-pinned gitleaks.
+  secret-scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # The whole history, so the PR base commit is present for the range scan (SEC-F001-06).
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/cache@v4
+        with:
+          path: .tools/gitleaks
+          key: tools-gitleaks-${{ runner.os }}-${{ hashFiles('tooling/repo-scripts/bin/tool-hashes.txt') }}
+      - name: Install gitleaks
+        run: sh tooling/repo-scripts/bin/install-tool.sh gitleaks
+      # Fails on an empty range ("is the base commit fetched?") and on any gitleaks exit code
+      # other than 0 or 1.
+      - name: Scan the PR's new commits
+        if: github.event_name == 'pull_request'
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: node tooling/repo-scripts/src/secret-scan-cli.ts pr --base "$BASE" --head "$HEAD"
+      - name: Scan the working tree
+        if: ${{ !cancelled() }}
+        run: node tooling/repo-scripts/src/secret-scan-cli.ts tree
+      - name: Scan the full history
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: node tooling/repo-scripts/src/secret-scan-cli.ts history
+      # dir, git, artefact and canary cases with runtime-assembled synthetic credentials.
+      - name: Scanner self-tests
+        if: ${{ !cancelled() }}
+        run: node tooling/repo-scripts/src/secret-scan-cli.ts selftest
+      - name: Upload secret-scan reports (secrets redacted)
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: secret-scan-reports
+          path: ${{ runner.temp }}/secret-scan-reports
+          if-no-files-found: ignore
 
   pr-traceability:
     if: github.event_name == 'pull_request'

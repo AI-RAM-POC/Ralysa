@@ -14,7 +14,9 @@
     "lint": "turbo run lint",
     "repo:check": "node tooling/repo-scripts/src/cli.ts repo-check && prettier --check .",
     "scaffold": "node tooling/repo-scripts/src/cli.ts scaffold",
+    "secret-scan": "node tooling/repo-scripts/src/secret-scan-cli.ts",
     "test": "turbo run test",
+    "tools:install": "sh tooling/repo-scripts/bin/install-tool.sh gitleaks",
     "typecheck": "turbo run typecheck"
   },
   "devDependencies": {
