@@ -15,8 +15,14 @@
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json"
   },
+  "dependencies": {
+    "@ralysa/protocol": "workspace:*",
+    "jose": "catalog:",
+    "zod": "catalog:"
+  },
   "devDependencies": {
     "@ralysa/eslint-config": "workspace:*",
+    "@ralysa/secrets": "workspace:*",
     "@ralysa/tsconfig": "workspace:*",
     "@ralysa/vitest-config": "workspace:*",
     "eslint": "catalog:",

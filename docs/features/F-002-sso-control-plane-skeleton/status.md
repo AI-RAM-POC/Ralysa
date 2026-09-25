@@ -13,6 +13,8 @@
 | SEC-F002-36: pin the checkpoint trust anchor (JWK thumbprints logged by the sealer and pinned in `audit-verify`; separate OpenBao admin from DB superuser) | **Blocks G6** unless a named human accepts it in writing as an F-011 prerequisite | same |
 | SEC-F002-37: detect a checkpoint key recreated under the same name across restarts (thumbprint tracking; the signer already stays stopped in-process) | **Blocks G6** unless a named human accepts it in writing as an F-011 prerequisite | same |
 | RFC 8414 metadata (T07) already advertises the authorize, token and revoke endpoints and all four grants; the token/revoke routes land in T08 and authorize/callback plus the authorization_code and token-exchange grants in T10 | **No release may be cut before T08 and T10 have landed** | T07-4; code review of #25 |
+| TC-F-002-02 end to end (flow A against the mock IdP plus the token-exchange grant) | T10, using T09's mock IdP and `@ralysa/auth`'s client flows | T11 covers the client half with fakes (implementation-notes T11-1). |
+| TC-F-002-10's 20 stored `auth.token_rejected` events; the gateway-side aggregator in `packages/auth` or shared (§2.1 `verify/rejections.ts`); moving the control plane's own verifier onto `createAccessTokenVerifier` with a database `RevocationSource` | T12 | implementation-notes T11-2, T11-11 |
 | SEC-F002-38: without the checkpoint log, tail truncation is invisible (`anchor: none` exit code; require `--log-checkpoints` outside dev; ship the log off-host) | **Blocks any non-dev deployment** | same |
 
 ## Gate log
@@ -36,3 +38,4 @@
 | 2026-09-25 | T06 merged (#21). T16 (signed checkpoints, custody monitor on the checkpoint key, `audit-verify`) implemented on `feat/F-002-checkpoints`. |
 | 2026-09-25 | T16 (#23) and the T16-1 remediation (#24, SEC-F002-34) merged. T07 (config, guards, HTTP layer, signing keys, discovery, `serve`) implemented on `feat/F-002-app-skeleton`. |
 | 2026-09-25 | T07 (#25) and T08 (#26) merged. T09 (mock IdP: Entra-shaped `oidc-provider`, fixtures, Graph stub, loopback test-control API with a per-run bearer, per-run keys, compose `mock-idp` service) implemented on `feat/F-002-mock-idp`; see implementation-notes.md T09. |
+| 2026-09-25 | T11 (`packages/auth`) implemented on `feat/F-002-auth-package`, in parallel with T09. It covers the verifier, JWKS cache, revocation feed (G-1, freshness and epoch), principal resolver, service-token source and Transit assertion signer, plus the client flows and the single-flight token manager. TC-F-002-10, -11, -12 and -09 (gateway part) pass. TC-F-002-02 passes its client half against fakes; the end-to-end run waits for T09 and T10 (T11-1). Storing `auth.token_rejected` events waits for T12 (T11-2). |

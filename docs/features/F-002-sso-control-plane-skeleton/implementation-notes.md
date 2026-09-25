@@ -849,3 +849,181 @@ Items marked **self-decided** were open questions decided under the standing aut
 | R27-N5 | The v1 app token used the v2 issuer. | Its `iss` is `https://sts.windows.net/<tid>/` (`appTokenIssuer()`), and the Graph stub verifies that issuer. `azp` was replaced by v1's `appidacr: "1"`. | The client-credentials test checks `iss`, `ver`, `idtyp` and `appid`. The Graph tests still pass with the new issuer. |
 | R27-N6 | `azpacr` was always `"0"`. | `"1"` for the confidential RTS client (flow B), `"0"` for the CLI and for minted tokens. | Flow-B access token has `azpacr: "1"`; device-flow token has `azpacr: "0"`. |
 
+## T11: `packages/auth`
+
+Branch `feat/F-002-auth-package`, based on `main` after #26 (T08). Built in parallel with T09 (mock IdP, `feat/F-002-mock-idp`) and without T10, so it depends on neither.
+
+### What landed
+
+- **Verifier** (`src/verify/access-token-verifier.ts`), with the §3.2.2 rules in order. Each rule has its reason code:
+  - shape;
+  - `alg` ES256 only;
+  - `typ: at+jwt`;
+  - no `jku`, `jwk`, `x5u`, `x5c` or `crit` (SEC-F002-19);
+  - a `kid` from `kidPattern(kidPrefix)`;
+  - the signature against a jose remote JWKS (`src/verify/jwks.ts`: 60 s max age, 5 s cooldown);
+  - exact `iss`;
+  - a single-string `aud`;
+  - the pinned `tid`;
+  - `exp` and `nbf` with 30 s skew;
+  - `iat` not after now + skew (SEC-F002-18 e);
+  - `token_use`;
+  - the claim contract;
+  - then the `RevocationSource`.
+- `onReject` gets `{reason, clientIp, traceId}` and never the token.
+- **Revocation feed** (`src/verify/revocation-feed.ts`). It polls every 5 s with the service token. A poll is a confirmation only when all of these hold (SEC-F002-18 a):
+  - the answer is a 200 that validates;
+  - its `issued_at` is within 30 s of the PEP clock;
+  - its `epoch` is not lower than the last one seen.
+
+  Other behaviour:
+  - G-1: `governance_stale` after 60 s without a confirmation.
+  - Entries are de-duplicated by `sid` and `user_id`, keeping the latest `revoked_before` (T08-1 overlap).
+  - Entries are pruned after the maximum TTL + 5 min.
+  - `since=<cursor>` is sent from confirmed answers only.
+  - Kill-switch state is taken from confirmed answers only.
+- **Principal resolver** (`src/verify/principal-resolver.ts`):
+  - a 30 s bounded cache;
+  - one request per user in flight;
+  - the user id checked as a UUID before it goes into the path;
+  - the answer's `user_id` must match;
+  - 404 → `PrincipalNotFoundError`, and anything else fails closed.
+- **Service identity** (`src/service/`):
+  - the `AssertionSigner` interface;
+  - `createTransitAssertionSigner` over a structural `TransitSigning` port, which `@ralysa/secrets` `KeyCustody` satisfies. It signs with the latest Transit version and names it in the `kid`, the T07-7 pattern.
+  - `createClientAssertion`: RFC 7523, 50 s lifetime, a fresh `jti`.
+  - `createServiceTokenSource`:
+    - renews at 50 % of the TTL plus up to 10 % jitter, in the background;
+    - keeps the current token until 5 s before `exp`;
+    - retries with a 1–30 s backoff;
+    - then throws `ServiceTokenUnavailableError`, and the PEP fails closed [AR-1].
+- **Client flows** (`src/client/`):
+  - `fetchAuthConfig`, which pins the issuer.
+  - `startIdpDeviceSignIn`: RFC 8628 with `authorization_pending`, `slow_down` and back-off on 5xx or network faults. Every IdP-side failure goes through `reportSignInFailure` before the typed error is thrown (AC-4). A user cancel is not reported.
+  - `exchangeIdpToken` and `reportSignInFailure`.
+  - PKCE: `createPkcePair` and `createState` (WebCrypto), `buildAuthorizeUrl`, validated with `AuthorizeQuery`, and `readAuthorizationCallback`.
+  - `redeemAuthorizationCode` and `revokeSession`.
+  - `createTokenManager`: single flight, all refreshes serialised, documented as the one refresher per device (SEC-F002-17).
+  - Typed errors, whose i18n keys are restricted to `AUTH_I18N_KEYS`.
+- **Isomorphic.** `src/platform.ts` reaches `fetch`, WebCrypto, `TextEncoder`, `URL`, `URLSearchParams`, `btoa`, timers and `AbortSignal` through `globalThis` with structural types, like protocol and secrets. There are no Node built-ins, and the `isomorphic` lint preset passes. There is no file-backed `TokenStore`, and a test asserts that no store is exported.
+- **Dependencies.** `@ralysa/protocol`, `jose` (catalog 6.2.12) and `zod` (catalog). `@ralysa/secrets` is a devDependency, used by the tests only.
+- **Control plane.** `@ralysa/auth` is a devDependency (integration tests only) with a tsconfig reference.
+- README: the API, "no env vars", and the one-refresher contract.
+
+### Recorded decisions and deviations
+
+Self-decided under the standing authorization (recommended option taken), logged here:
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T11-1 | Scope | TC-F-002-02 end to end needs the mock IdP (T09) and the token-exchange grant at RTS (T10), and neither is on `main`. T11 covers the **client half** with fakes: config, device start, `authorization_pending`, `slow_down`, success, exchange form and `TokenSet`. The integration run lands with T10, which adds the grant, against T09's mock. | The coordinator said not to depend on T09. The exchange grant is T10's. |
+| T11-2 | Scope / deviation from §2.1 | TC-F-002-10's "20 `auth.token_rejected` events" are proven up to the aggregator: 20 `onReject` calls, recorded through the control plane's `createRejectionAggregator` under the configured org, giving 20 individual emissions on one /24. Storing them through `POST /v1/audit/events` is T12, because the route doesn't exist yet. §2.1 lists `packages/auth/src/verify/rejections.ts`, but the aggregator isn't duplicated here; T12 (SEC-F002-16) decides whether it moves into `packages/auth` with an isomorphic `networkOf`. | T12 owns the aggregation DoD (per `/24`/`/64`, per-verifier cap). Two copies would drift. |
+| T11-3 | Design gap, filled | If the JWKS can't be fetched (network, timeout, non-200), `verify()` **throws** `VerifierUnavailableError` instead of returning a reject reason. | `TokenRejectReason` has no code for an infrastructure fault. Recording it as `auth.token_rejected` would blame the caller. The PEP answers 503 and still fails closed. |
+| T11-4 | Interpretation (SEC-F002-18 a) | Revocations in an answer that is **not** a confirmation (a stale `issued_at` or a lower `epoch`) are still added. Its kill-switch state and cursor are ignored, and it does not refresh G-1. | Adding a revocation can only make the PEP stricter. An old kill-switch state or cursor could make it laxer. |
+| T11-5 | Implementation choice | `RevocationFeed.check` tests `user_revoked` before `session_revoked`. | Disabling a user also revokes their sessions, and the broader reason is the useful one in `auth.token_rejected`. The control plane's own verifier (T08) checks the session first. Both reject. |
+| T11-6 | API additions to §3.6 | The additions are all optional and don't change any listed signature's meaning:<ul><li>every call takes `fetch` and `timeoutMs`, and the stateful ones take `now`;</li><li>the verifier takes `orgId` (pins `tid`, as T08's local verifier does), `keySet` and `now`;</li><li>`verify(bearer, { clientIp, traceId })`, and the principal carries `tokenId` (`jti`);</li><li>`createServiceTokenSource` takes `assertionAudience`, for when the internal address differs from RTS's `public_base_url`;</li><li>`startIdpDeviceSignIn` takes `classifyIdpError` (the CLI's Entra `AADSTS` table [AR-18]) and `deviceLabel`;</li><li>new exports: `createState`, `readAuthorizationCallback`, `createClientAssertion`, `createTransitAssertionSigner`, `TransitSigning`.</li></ul>`TokenManager` is `signedIn`, `getAccessToken(audience)`, `hasSession` and `signOut({ localOnly })`. | §3.6 names these functions but not the parameters that tests, internal addresses and the vendor error table need. |
+| T11-7 | Implementation choice | `buildAuthorizeUrl` returns a WHATWG `URL`, typed structurally (`{ href, toString() }`). | lib-isomorphic has no DOM types. At runtime it is the platform `URL`. |
+| T11-8 | Implementation choice | Device polling:<ul><li>5xx, 429 or network faults double the interval (at most 60 s) until the code expires, per RFC 8628 §3.5.</li><li>At expiry, `other/idp_unreachable` is reported if the last poll was a fault, and `expired_token` otherwise.</li><li>A refusal at device **start** is reported too.</li><li>The IdP's answers are validated as untrusted input: `verification_uri` must be http(s), and `user_code` must be printable ASCII with no bidi or control characters.</li></ul> | AC-4 counts every attempt. The user code and URL are shown to the user, so they must not carry spoofing characters. |
+| T11-9 | Implementation choice | `fetchAuthConfig(issuer)` refuses a config whose `issuer` differs from the one asked (`auth.failed.untrusted_issuer`). | Otherwise a tampered config could send later calls, the refresh token included, to another server. |
+| T11-10 | Implementation choice | RTS error mapping:<ul><li>`invalid_grant` is `SessionRevokedError` for a refresh and `AccessDeniedError` for a sign-in grant (replay, a bad code);</li><li>`access_denied` and `unauthorized_client` → `AccessDeniedError`;</li><li>`temporarily_unavailable`, 429 and 5xx → `TemporarilyUnavailableError`;</li><li>an i18n key RTS sends that isn't in `AUTH_I18N_KEYS` falls back to the error's default.</li></ul> | The CLI needs different advice for "sign in again" and "you're not allowed". Response fields are external input. |
+| T11-11 | Deviation (follow-up) | The control plane keeps its own `verify-local.ts` (T08), which reads revocation from the database, instead of `createAccessTokenVerifier` with a database `RevocationSource`. §3.2.6 says "the same verifier". | The rules are the same, and both are tested: the T08 integration tests and TC-F-002-10/11 here. Moving the control plane onto the package's verifier touches every merged T08 route. It is a behaviour-neutral refactor for T12, which adds the next user routes (client events, audit query). The `RevocationSource` interface is ready for it. |
+| T11-12 | Implementation choice | `TokenManager.signOut()` keeps the local session and throws when RTS can't be reached, unless `{ localOnly: true }`. | A sign-out that silently leaves the session alive server-side for up to 7 days would mislead the user. F-005 decides what to offer. |
+
+### Tests (T11)
+
+- **Unit** (`packages/auth`, 86 tests in 7 files, hermetic):
+  - `access-token-verifier.test.ts`, **TC-F-002-11**, a rejection matrix of 30 cases. Every reason code is covered:
+    - `malformed` (garbage, a refresh token, missing `sid` or `exp`);
+    - `wrong_alg` (`none`, HS256 keyed with the public JWK, Entra-style RS256);
+    - `wrong_typ`;
+    - `forbidden_header` (`jku`, `jwk`, `x5u`, `x5c`, `crit`);
+    - `unknown_kid` (missing, another key, an unknown version);
+    - `bad_signature` (a tampered signature, a tampered payload);
+    - `unknown_issuer`;
+    - `wrong_audience` (4 audiences, an array, another org);
+    - `expired`, `not_yet_valid`, `issued_in_future` and `wrong_token_use`.
+
+    Also covered:
+    - skew boundaries;
+    - revocation verdicts passed through, and revocation asked only for authentic tokens;
+    - a throwing `onReject`;
+    - an unreachable JWKS → `VerifierUnavailableError`;
+    - the JWKS cooldown and max age: a new `kid` is refused inside 5 s and accepted after, the old `kid` keeps validating, and a refetch happens after 60 s.
+  - The same file, **TC-F-002-12**: 1,000 verifications with a warm JWKS and feed, **p50 0.130 ms, p95 0.166 ms** (bound 10 ms, target 2 ms), on a local run on darwin_arm64 with Node 24.21.
+  - `revocation-feed.test.ts`, the **TC-F-002-11** feed part:
+    - G-1 staleness exactly after 60 s;
+    - `issued_at` more than 30 s old or ahead is not a confirmation, and a replayed good answer stops counting;
+    - a lower `epoch` is refused and an equal one accepted;
+    - `session_revoked` and `user_revoked` (`revoked_before` = DB + 30 s);
+    - overlap de-duplication keeps the latest `revoked_before`, and `since=cursor` is sent;
+    - a non-confirming answer adds revocations but not kill switches or its cursor;
+    - 401, invalid bodies and a failing service token;
+    - pruning;
+    - the poll loop's start and stop.
+  - `service-token-source.test.ts`:
+    - the assertion header, claims and lifetime, verified with jose against the in-memory Transit key (latest version);
+    - a custody violation signs nothing;
+    - renewal at 50 % and at about 60 % with jitter;
+    - the current token is kept during failed renewals, with backoff, and it fails closed after `exp`;
+    - single flight.
+  - `principal-resolver.test.ts`: the 30 s cache, single flight, 404, a non-UUID id never sent, and fail-closed cases.
+  - `client-flows.test.ts`:
+    - **TC-F-002-02 (client half)**;
+    - AC-4 reporting before throwing for 7 IdP failure kinds, the classifier included (AADSTS53003 → `DeviceCodeBlockedError`);
+    - local expiry, and 5xx back-off reported as unreachable;
+    - a cancel is not reported, and a failing report doesn't mask the error;
+    - device code disabled;
+    - untrusted device answers refused;
+    - config issuer pinning;
+    - RTS error mapping and i18n-key allow-listing;
+    - PKCE, including the RFC 7636 appendix B vector;
+    - the authorize URL, which refuses a non-loopback redirect;
+    - callback state and error handling;
+    - the code-redemption and revoke forms.
+  - `token-manager.test.ts`:
+    - 10 concurrent callers make 1 refresh;
+    - three audiences refresh in sequence with the latest rotated token;
+    - the 60 s margin;
+    - `invalid_grant` clears the store;
+    - a 503 keeps the token;
+    - two managers over one store end in reuse (the documented defect);
+    - `signedIn` and `signOut`, including `localOnly`;
+    - no file-backed store is exported.
+- **Integration** (`services/control-plane/test/integration/gateway.int.ts`, 4 tests, dev stack). A fake gateway built only on `@ralysa/auth` talks to a real control plane over real HTTP. Its identity is a client assertion signed through its own OpenBao Transit key.
+  - **TC-F-002-10**: 20 negative cases, each rejected with the expected reason:
+    - expired;
+    - a tampered payload and a tampered signature;
+    - 4 wrong audiences and an array audience;
+    - an unknown issuer;
+    - `alg: none` (empty signature → `malformed`);
+    - HS256 keyed with the public JWK;
+    - a missing `kid` and an unknown `kid`;
+    - `typ: JWT`;
+    - `nbf` in the future;
+    - a revoked `sid` (sign-out, then a feed poll);
+    - `iat` before `revoked_before` (user disabled on refresh);
+    - a service token at the user route;
+    - an Entra RS256 token;
+    - a refresh token as a bearer.
+
+    That gives 20 `onReject` calls and 20 aggregator emissions, all under the configured org on `203.0.113.0/24`. A valid token yields the user id, `org_id`, session, and through `PrincipalResolver` the groups and roles.
+  - **TC-F-002-09 (gateway part)**: a user disabled at the IdP on refresh is refused (`user_revoked`) after the next feed poll, and any token is refused after `exp` + skew.
+  - The feed over real HTTP: the epoch is monotonic and the confirmation time advances.
+- Full control-plane integration suite: 7 files, 92 tests, all passed locally.
+
+### Code review of PR #28 (changes requested, no blockers): resolutions
+
+| Item | Finding | Fix | Test |
+|---|---|---|---|
+| R28-1 (should fix) | Once the service token had expired, every `getToken()` called `renew()` at once and ignored `retryAt`. During an outage that is a tight Transit + RTS loop [AR-1]. | When the token isn't valid, no renewal is in flight, and `now() < retryAt`, `getToken()` throws `ServiceTokenUnavailableError` (with the last error's message) without renewing. A renewal already in flight is joined. The backoff (1 s, doubling to 30 s) therefore also applies after expiry. | `service-token-source.test.ts`: "after exp, an outage does not turn every getToken() into a Transit + RTS call". 51 calls inside the backoff make no request, and later attempts follow 1 s, then 2 s. The existing failure test now steps the clock past the backoff before recovery. |
+| R28-2 (should fix) | The service-token tests waited on a real 25 ms timer. | `createServiceTokenSource` returns a `ManagedServiceTokenSource` with `settled()`, which resolves when no renewal is in flight. The tests await it, and no test in `packages/auth` uses a real timer any more. | `service-token-source.test.ts` (all background-renewal cases). |
+| R28-3 | A missing or mistyped `nbf`, `aud` or `iss` was mapped to `not_yet_valid`, `wrong_audience` or `unknown_issuer`. | A jose `JWTClaimValidationFailed` whose `reason` isn't `check_failed` (that is, `missing` or `invalid`) is now `malformed` before any per-claim mapping. | Matrix cases: missing `nbf`, missing `aud`, missing `iss`, and `nbf` not a number → `malformed`. |
+| R28-4 | The Bearer scheme was matched case-sensitively. | `/^bearer /i` (RFC 7235: the auth scheme is case-insensitive). | `bearer`, `BEARER`, `BeArEr` and a bare token are accepted; `Basic …` → `malformed`. |
+| R28-5 | `TemporarilyUnavailableError` said a retry is safe, but a network error or timeout (a lost response) mapped to it too, and after a lost refresh answer a retry is reuse. | New subclass `ResponseLostError extends TemporarilyUnavailableError`, with `lostResponse: true` (the base class has `false`). `postTokenGrant` (refresh, exchange, code redemption) throws it when no answer arrived. The docs now say a retry is safe only when the server answered. `revokeSession` and `fetchAuthConfig` keep the plain error: revoke is idempotent, and config is a GET. The token manager header and the README describe both cases. | See R28-6. |
+| R28-6 | No test covered a lost refresh answer. | Test added. | `token-manager.test.ts`: a fake RTS rotates and then the fetch throws, giving `ResponseLostError` (`lostResponse: true`) with the store still holding the old token. The retry gives `SessionRevokedError` (`reuse_detected`), and the store is cleared. A refusal that arrived is `lostResponse: false`. |
+| R28-7 | The README didn't say what happens when `store.save` fails after rotation. | README, "For F-005's `TokenStore`": the new token is kept in memory and the error is rethrown. The store still holds the rotated token, so the next start ends in reuse. The CLI should say so and retry the save or sign out at exit. Also stated in the token-manager header comment. | — |
+| R28-8 | `stop()` then `start()` during an in-flight poll leaked a second loop. | A generation counter. `start()` and `stop()` bump it, and a poll only schedules the next one if its generation is still current and the feed is running. | `revocation-feed.test.ts`: a poll hangs, then stop, start, release; exactly one poll per 5 s follows. The test fails with the old condition (checked by temporarily reverting it). |
+| R28-9 | `confirmedAt = now()` let an answer issued 29 s ago keep the PEP "fresh" for 60 s more (about 90 s of data age). | **Deviation from the suggested formula.** `min(now(), issuedAt + maxSkewMs)` would change nothing, because any accepted answer already has `issuedAt ≥ now − maxSkewMs`, so that value is always `now()`. The fix is `confirmedAt = min(now(), issuedAt)`: G-1 is measured from when the control plane issued the state, capped at our clock for a DB clock running ahead. In the worst case (the DB clock 30 s behind), the effective window is 30 s of our clock, which a 5 s poll still meets comfortably. | `revocation-feed.test.ts`: a 29 s old answer stays fresh for exactly 31 s more; an `issued_at` 10 s ahead is credited as now. |
+| R28-10 | The README didn't say that service tokens stop 5 s before `exp`, or that an error thrown by a `RevocationSource` propagates. | README, Services: the last 5 s, the backoff, and "an error thrown by the `RevocationSource` propagates from `verify` as-is; treat it like `VerifierUnavailableError`" (T11-3). | — |
+
+Tests after the review: `packages/auth` has 95 unit tests (9 new). The control-plane integration suite has 7 files and 92 tests; all pass locally.

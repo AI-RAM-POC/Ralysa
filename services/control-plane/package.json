@@ -22,6 +22,7 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "devDependencies": {
+    "@ralysa/auth": "workspace:*",
     "@ralysa/dev-stack": "workspace:*",
     "@ralysa/eslint-config": "workspace:*",
     "@ralysa/tsconfig": "workspace:*",
