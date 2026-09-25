@@ -66,8 +66,7 @@ describe('detectable()', () => {
 
 describe('RULE_ENTROPY matches the gitleaks configs', () => {
   type Rules = { rules?: { id: string; entropy?: number }[] };
-  const read = (path: string): Rules =>
-    parse(readFileSync(join(REAL_ROOT, path), 'utf8'));
+  const read = (path: string): Rules => parse(readFileSync(join(REAL_ROOT, path), 'utf8'));
   const rules = [
     ...(read('.gitleaks.toml').rules ?? []),
     ...(read('tooling/repo-scripts/vendor/gitleaks-8.30.1-default.toml').rules ?? []),
