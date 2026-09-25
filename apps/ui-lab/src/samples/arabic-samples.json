@@ -1,0 +1,58 @@
+{
+  "__RALYSA_DEMO_ONLY__": true,
+  "$description": "Synthetic Arabic samples for the shaping checks (F-001 design §7.6; AC-8, TC-F-001-14/15/16). No real names, IDs or customer text. Needs native-speaker review (OQ-D8). check-no-demo fingerprints every text here and fails if one appears in a shipped build (AC-13).",
+  "samples": [
+    { "id": "pure01", "category": "pure", "text": "مرحبًا بكم في مساحة العمل الجديدة" },
+    {
+      "id": "pure02",
+      "category": "pure",
+      "text": "السَّلَامُ عَلَيْكُمْ، كَيْفَ حَالُكُمُ الْيَوْمَ؟"
+    },
+    { "id": "pure03", "category": "pure", "text": "لا يوجد اتصال بالخادم الآن، حاول لاحقًا" },
+    { "id": "pure04", "category": "pure", "text": "الإدارة والأمان والآلية في كل الأقسام" },
+    { "id": "pure05", "category": "pure", "text": "مـــرحـــبـــا بـــالـــفـــريـــق" },
+    {
+      "id": "pure06",
+      "category": "pure",
+      "text": "يساعد هذا المساعد فرق العمل في جميع الأقسام على إنجاز المهام اليومية بسرعة، مع احترام سياسات الأمان والخصوصية في المؤسسة. يمكنك طرح الأسئلة وتلخيص المستندات وإعداد المسودات، ثم مراجعة النتائج قبل اعتمادها."
+    },
+    { "id": "pure07", "category": "pure", "text": "هل تريد حفظ التغييرات قبل إغلاق النافذة؟" },
+    {
+      "id": "pure08",
+      "category": "pure",
+      "text": "المالية، الموارد البشرية، المبيعات؛ وكل الأقسام الأخرى."
+    },
+    { "id": "mixed01", "category": "mixed", "text": "افتح Ralysa Desktop ثم اختر مساحة عمل جديدة" },
+    {
+      "id": "mixed02",
+      "category": "mixed",
+      "text": "زر الصفحة https://example.com/help للمزيد من المعلومات"
+    },
+    {
+      "id": "mixed03",
+      "category": "mixed",
+      "text": "استدعِ الدالة getUserProfile() لقراءة الملف الشخصي"
+    },
+    { "id": "mixed04", "category": "mixed", "text": "راسلنا على name@example.com في أي وقت" },
+    { "id": "mixed05", "category": "mixed", "text": "اختر «حفظ» (أو اضغط Ctrl+S) لحفظ الملف" },
+    { "id": "mixed06", "category": "mixed", "text": "Quarterly report جاهز للمراجعة في Finance" },
+    {
+      "id": "western01",
+      "category": "westernDigits",
+      "text": "موعد الاجتماع 2026-10-15 الساعة 10:30"
+    },
+    { "id": "western02", "category": "westernDigits", "text": "اكتمل 75% من المهام هذا الأسبوع" },
+    { "id": "western03", "category": "westernDigits", "text": "الإصدار 1.4.2 متاح الآن للتنزيل" },
+    {
+      "id": "indic01",
+      "category": "arabicIndicDigits",
+      "text": "لديك ٣ رسائل جديدة و١٢ مهمة مفتوحة"
+    },
+    {
+      "id": "indic02",
+      "category": "arabicIndicDigits",
+      "text": "نسبة الإنجاز ٨٥٪ في الربع الثالث"
+    },
+    { "id": "indic03", "category": "arabicIndicDigits", "text": "الرقم المرجعي للطلب ۱۲۳۴۵۶۷" }
+  ]
+}

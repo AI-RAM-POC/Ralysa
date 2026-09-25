@@ -1,6 +1,7 @@
 {
   "files": [],
   "references": [
+    { "path": "apps/ui-lab" },
     { "path": "apps/web" },
     { "path": "packages/ui" },
     { "path": "tooling/eslint-config" },

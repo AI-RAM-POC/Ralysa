@@ -40,7 +40,7 @@ export function EmptyState({
 }: EmptyStateProps): JSX.Element {
   const { t } = useTranslation('ui');
   return (
-    <div data-state="empty" className={cn(FRAME, className)}>
+    <div data-state-pattern="empty" className={cn(FRAME, className)}>
       <Icon name="inbox" size="lg" className="text-fg-muted" />
       <Heading level={headingLevel} size={4}>
         {title ?? t('emptyState.title')}
@@ -64,7 +64,7 @@ export function LoadingState({ label, className }: LoadingStateProps): JSX.Eleme
       role="status"
       aria-live="polite"
       aria-busy="true"
-      data-state="loading"
+      data-state-pattern="loading"
       className={cn(FRAME, className)}
     >
       <Icon name="loading" size="lg" className="text-fg-muted motion-safe:animate-spin" />
@@ -90,7 +90,7 @@ export function ErrorState({
 }: ErrorStateProps): JSX.Element {
   const { t } = useTranslation('ui');
   return (
-    <div role="alert" data-state="error" className={cn(FRAME, className)}>
+    <div role="alert" data-state-pattern="error" className={cn(FRAME, className)}>
       <Icon name="alert" size="lg" className="text-status-danger" />
       <Heading level={headingLevel} size={4}>
         {title ?? t('errorState.title')}
@@ -126,7 +126,7 @@ export function PermissionDenied({
 }: PermissionDeniedProps): JSX.Element {
   const { t } = useTranslation('ui');
   return (
-    <div data-state="permission-denied" className={cn(FRAME, className)}>
+    <div data-state-pattern="permission-denied" className={cn(FRAME, className)}>
       <Icon name="lock" size="lg" className="text-fg-muted" />
       <Heading level={headingLevel} size={4}>
         {title ?? t('permissionDenied.title')}

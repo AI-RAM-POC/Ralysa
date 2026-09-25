@@ -16,8 +16,10 @@ import { Icon } from '../../icons/Icon.js';
 import { cn } from '../../lib/cn.js';
 import { describedBy, FieldDescription, FieldError, FieldLabel } from './Field.js';
 
+// No radius here: each control sets its own (a second `rounded-*` class would not override it,
+// because Tailwind orders utilities by its own rules, not by class order).
 const CONTROL =
-  'rounded-md border border-border-control bg-surface text-fg focus-visible:focus-ring disabled:cursor-not-allowed disabled:border-border-decor disabled:bg-subtle disabled:text-fg-disabled';
+  'border border-border-control bg-surface text-fg focus-visible:focus-ring disabled:cursor-not-allowed disabled:border-border-decor disabled:bg-subtle disabled:text-fg-disabled';
 
 // --- TextField -------------------------------------------------------------------------------
 
@@ -68,7 +70,7 @@ export function TextField({
         ])}
         className={cn(
           CONTROL,
-          'min-h-control-md w-full px-3 text-md placeholder:text-fg-muted aria-invalid:border-status-danger',
+          'min-h-control-md w-full rounded-md px-3 text-md placeholder:text-fg-muted aria-invalid:border-status-danger',
         )}
       />
       {error !== undefined && <FieldError id={errorId}>{error}</FieldError>}
@@ -236,7 +238,7 @@ export function Select({
           aria-labelledby={labelId}
           className={cn(
             CONTROL,
-            'inline-flex min-h-control-md w-full items-center justify-between gap-2 px-3 text-md data-[placeholder]:text-fg-muted',
+            'inline-flex min-h-control-md w-full items-center justify-between gap-2 rounded-md px-3 text-md data-[placeholder]:text-fg-muted',
           )}
         >
           <SelectPrimitive.Value placeholder={placeholder ?? t('select.placeholder')} />

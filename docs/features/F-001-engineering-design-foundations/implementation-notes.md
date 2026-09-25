@@ -840,6 +840,45 @@ The highlighted Select option is `fg.onAccent` on `accent.default`, an existing 
 
 The token tests (`tokens.test.ts`, `contrast.test.ts`) cover the new token: identical light and dark key sets, and every semantic colour in a pair or exempt.
 
+## T12: `apps/ui-lab` and `check-no-demo`
+
+### What landed
+
+- **`apps/ui-lab`**, created with `pnpm scaffold apps/ui-lab --kind app` (so the `app` template, now with `reactUi({ workspaceDir })`, is proven again in the real repo), then set to `ralysa.shipped: false` with no artefacts.
+  - Views (query-parameter router): `showcase` (the demo screen: AppShell with header switchers, nav, main and aside; the request form; both icon strips; the 20-sample Arabic panel; code, paths and identifiers as LTR islands; the four states), `components[&c=]` (every `@ralysa/ui` example: 20 components, 30 examples) and `tokens` (live values and contrast on canvas). `lang` and `theme` parameters, kept in every link.
+  - The `lab` catalogs (70 keys, en and ar; every Arabic string `needs-native-review`), typed keys, and `i18next-cli extract --ci` in `lint`. i18n runs in **test mode** in every ui-lab build, so a missing key throws.
+  - Tailwind through `@tailwindcss/vite`, scanning the app and `packages/ui/src`; fonts and `fontLicenses()` as in `apps/web`.
+  - **Sentinel:** `data-demo-sentinel="__RALYSA_DEMO_ONLY__"` on the app root, a `ralysa-demo` meta tag, and `"__RALYSA_DEMO_ONLY__": true` in both sample files.
+  - **Samples:** `src/samples/arabic-samples.json` (the 20 strings) and `src/samples/example-data.json` (six synthetic code, path, identifier, placeholder and reference values). All synthetic.
+- **`check-no-demo`** (`tooling/repo-scripts/src/check-no-demo.ts`, `ralysa-repo check-no-demo`) and a new `quality` step after the artefact scans, outside Turbo. On the local builds: `✓ check-no-demo` (0 findings in `apps/web/dist`; the positive control found all 26 fingerprints in `apps/ui-lab/dist`).
+- Checked in a browser (`vite preview` of the production build): showcase in en/light and ar/dark, tokens in dark, components in ar. No console errors, so no missing key in either locale. RTL mirrors the regions and the directional icons, and the Arabic samples shape with harakat, lam-alef and tatweel.
+
+### `@tailwindcss/vite` (npm registry, 2026-09-25)
+
+| Package | Design | Pinned | Evidence |
+|---|---|---|---|
+| `@tailwindcss/vite` | Tailwind 4.3.x "with `@tailwindcss/vite`" (§2.2) | **4.3.3** (catalog) | Published 2026-07-16, the same release as the catalog's `tailwindcss` 4.3.3. MIT, SLSA provenance, peer `vite ^5.2 … ^8`. Its closure (`@tailwindcss/node`, `@tailwindcss/oxide` with platform binaries as optional dependencies, `lightningcss`) has no install scripts: `@tailwindcss/oxide` ships prebuilt binaries per platform, so `allowBuilds` is unchanged and install passed under `strictDepBuilds`. A devDependency of ui-lab only. |
+
+### Recorded decisions and deviations
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T12-1 | Design detail | Fingerprints are the sentinel plus every sample `text` of 12 characters or more from **every** `apps/ui-lab/src/samples/*.json`, including the example-data file. Each is searched as UTF-8 and as the JS string-literal form (`\n`, `\"`), each raw and with non-ASCII as `\uXXXX` in both cases. | §7.6 says "sample-string fingerprints" without a form. The positive control makes the choice safe: if Vite starts emitting another form, the control fails before a leak could pass. The first run proved it matters: `commandLine` holds a newline, which a bundle stores as `\n`, and the control failed until the string-literal form was added. Short strings are skipped so a common word can't cause a false positive; values that could appear in real code were replaced with plainly synthetic ones (`loadDemoWorkspace(demoTenantId)`, `demo.user@example.com`). |
+| T12-2 | Implementation choice | `check-no-demo` is a separate CLI command and CI step, not part of `repo-check`. | It needs the builds (the shipped ones and the ui-lab control), like `secret-scan artefacts` and `check-provider-hosts --artefacts`, next to which it runs. |
+| T12-3 | Implementation choice | `apps/ui-lab` always creates i18n in `mode: 'test'`. | It is a test harness that never ships; §7.4.5 wants missing keys to fail the E2E runs rather than fall back to English. |
+| T12-4 | Scope note (AR-3) | ui-lab's tokens view imports `contrastRatio` from `@ralysa/repo-scripts/check-contrast` (a devDependency). | AR-3 forbids tooling packages in **shipped** source. ui-lab is unshipped, and reusing the gate's own function avoids a second WCAG implementation. `check-workspaces`, `check-imports` and `check-banned-deps` pass. |
+| T12-5 | **Fix in a T10 file** | The state components mark themselves with `data-state-pattern` instead of `data-state`. | Radix writes `data-state` on its own elements (checkbox, radio, select, tabs), so `[data-state]` matched 15 elements on the showcase instead of 4. Found by the ui-lab test; tests and harnesses can now select the patterns unambiguously. |
+| T12-6 | Fix in a T11 file | The shared form-control classes no longer include `rounded-md`; each control sets its own radius. | Found in the browser check: `rounded-md` won over the radio's `rounded-full` (Tailwind orders utilities itself, not by class order), so radios rendered square. |
+| T12-7 | Implementation choice | `apps/ui-lab/tsconfig.json` adds `node` to `types`. | The sample coverage test reads the woff2 files through `@ralysa/ui/font-coverage`. Node types leak into ui-lab's source scope, which is acceptable for an unshipped harness. |
+| T12-8 | Note for T13 | The components view nests each example in the page's `main`, so the `AppShell` example adds a second set of landmarks (moderate axe findings; see T10-5). The keyboard walker should also expect the gallery's many focusable controls. | As designed: the gallery shows the real components. |
+| T12-9 | Open (OQ-D8) | Every Arabic string needs a native speaker's review: 24 in `ui`, 1 in `web`, 70 in `lab` (all `needs-native-review` in the `review.json` registers) and the 20 samples (marked in the samples file's `$description`; they are data, not catalog strings). | Machine-assisted placeholder Arabic, marked for review in the PR as §7.4.3 and T12's definition of done require. |
+
+### Tests added (T12)
+
+- `tooling/repo-scripts/test/check-no-demo.test.ts` (17), **TC-F-001-27**: a clean fixture passes; the sentinel, a sample as UTF-8, and as lower- and upper-case `\u` escapes in a shipped file each fail with the fingerprint named; source maps, HTML, JSON and `node_modules` inside an artefact are scanned; one finding per fingerprint; short strings aren't fingerprints; a missing shipped artefact fails; **positive control**: a missing ui-lab build fails, and a ui-lab build holding a sample only in an unknown form (HTML entities) fails with `no-demo/control-missed`; sample-file contract (sentinel field, JSON, samples, text); `encodings()` including surrogate pairs and the `\n`/`\"` literal form; a multi-line sample is found the way a bundle stores it; the real sample files yield 20 Arabic fingerprints.
+- `apps/ui-lab/test/samples.test.ts` (25): the 8/6/3/3 composition and unique ids; every shaping case §7.6 lists (harakat, lam-alef, tatweel, a paragraph over 150 characters, URL, code identifier, email-like placeholder, parentheses and quotes, Latin at the start and at the end, date, percentage, version, Arabic-Indic and Extended Arabic-Indic digits); Arabic script in every sample; the sentinel in both files; **TC-F-001-14 for the 20 samples**: 0 missing glyphs each in the sans stack, and the code values in the mono stack.
+- `apps/ui-lab/test/App.test.tsx` (11): in en and ar (test mode), the showcase's sentinel, region order, form controls, icon strips (no directional icon in the non-directional strip), 20 samples with `lang="ar" dir="rtl"`, LTR islands and four states; every component example; one component and an unknown one; a swatch per colour token including `surfaceRaised`; the router; the `lab` catalogs hold exactly the translatable `EXAMPLE_LABELS`.
+
 ## PR #15 review nits (branch `feat/F-001-components`, 2026-09-25)
 
 | # | Nit | Fix | Tests |
@@ -883,7 +922,13 @@ No dependency added by T01 to T03 runs a build script: `allowBuilds` is still `{
 - **T15 and required-checks.json:** T15 must keep T03's `required-checks.json` content (T03-2).
 - Bump Turbo, Prettier, Vite and `@eslint-react` to their newest patches once those are outside the 3-day window.
 - **T06 to T08 follow-ups:**
-  - Native-speaker review of every `ar` string (3 open, in the two `review.json` files; OQ-D8, still open externally).
+  - Native-speaker review of every `ar` string (OQ-D8, still open externally). After T12: 95 catalog strings open in the three `review.json` files (`ui` 24, `web` 1, `lab` 70), plus the 20 Arabic samples in `apps/ui-lab/src/samples/arabic-samples.json`.
   - `color.bg.surfaceRaised`: done in T11 (T06-5).
   - Bump `jsdom` to 30.1.1 once it is outside the 3-day window.
   - TC-F-001-11 (E2E locale switch) and the Playwright console listener for runtime missing keys arrive with T13.
+- **T09 to T12 follow-ups (for T13 and T14):**
+  - TC-F-001-13 should read the mirrored icon's computed `scale` (`-1 1`), not `transform` (T09-9).
+  - The AC-13 E2E (TC-F-001-28, `vite preview` of `apps/web` at `/ui-lab`, `/demo`, `?view=showcase`) is T13's; `check-no-demo` (TC-F-001-27) covers the build output now.
+  - Space on a checkbox and Select typeahead are left to the keyboard walker (T11-4); the components view nests landmarks (T10-5, T12-8).
+  - TC-F-001-15/16 (per-engine shaping snapshots, browser matrix) use the 20 samples and their `data-sample-id` hooks (T14).
+  - `lucide-react`: move to a newer minor once one is 30 days old (T09-1).

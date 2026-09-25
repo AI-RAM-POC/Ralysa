@@ -1,0 +1,10 @@
+{
+  "extends": "@ralysa/tsconfig/vite-app.json",
+  "compilerOptions": {
+    // The coverage test reads the bundled fonts through @ralysa/ui/font-coverage (Node APIs).
+    // ui-lab is never shipped, so Node types next to the browser ones are acceptable here.
+    "types": ["vite/client", "node"]
+  },
+  "include": ["src", "src/samples/*.json", "locales/*/*.json", "test", "*.config.ts"],
+  "references": [{ "path": "../../packages/ui" }]
+}

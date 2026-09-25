@@ -14,6 +14,7 @@
 //   ralysa-repo check-gitleaks-config    the two gitleaks configs (no artefact allow-list, same rules)
 //   ralysa-repo check-ci-invariants      packageManager hash, fetch-depth, gitleaks --config, cancel-in-progress
 //   ralysa-repo check-provider-hosts [--artefacts]   provider API hostnames in source (or shipped artefacts)
+//   ralysa-repo check-no-demo            demo sentinel and sample text in shipped builds (after a build)
 // The secret scans themselves run through secret-scan-cli.ts (dependency-free).
 //   ralysa-repo placeholder-guard        run inside a placeholder package (its four scripts)
 //   ralysa-repo scaffold <path> --kind <kind>
@@ -23,6 +24,7 @@ import { checkBannedDeps } from './check-banned-deps.ts';
 import { checkCiInvariantsFiles } from './check-ci-invariants.ts';
 import { checkGitleaksConfigFiles } from './check-gitleaks-config.ts';
 import { checkI18n } from './check-i18n.ts';
+import { checkNoDemo } from './check-no-demo.ts';
 import { checkImports } from './check-imports.ts';
 import { checkProviderHosts, checkProviderHostsInArtefacts } from './check-provider-hosts.ts';
 import { checkUiLint } from './check-ui-lint.ts';
@@ -101,6 +103,10 @@ async function main(argv: string[]): Promise<number> {
     }
     return ok ? 0 : 1;
   }
+  // Build-output check (the `quality` job, after the build): not part of repo-check.
+  if (command === 'check-no-demo') {
+    return report('check-no-demo', checkNoDemo(root)) ? 0 : 1;
+  }
   if (command === 'check-provider-hosts' && args.includes('--artefacts')) {
     return report('check-provider-hosts --artefacts', checkProviderHostsInArtefacts(root)) ? 0 : 1;
   }
@@ -142,7 +148,7 @@ async function main(argv: string[]): Promise<number> {
   }
 
   console.error(
-    `usage: ralysa-repo <${['repo-check', ...Object.keys(REPO_CHECKS), 'placeholder-guard', 'scaffold', 'summary'].join('|')}>`,
+    `usage: ralysa-repo <${['repo-check', ...Object.keys(REPO_CHECKS), 'check-no-demo', 'placeholder-guard', 'scaffold', 'summary'].join('|')}>`,
   );
   return command === 'help' ? 0 : 2;
 }

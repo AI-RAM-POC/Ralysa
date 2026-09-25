@@ -120,6 +120,12 @@ jobs:
       - name: Provider hostnames in shipped artefacts
         if: ${{ !cancelled() }}
         run: node tooling/repo-scripts/src/cli.ts check-provider-hosts --artefacts
+      # No demo screen or sample data in any shipped build (AC-13, TC-F-001-27): the ui-lab
+      # sentinel and every sample string, searched in every shipped artefact, with the ui-lab
+      # build itself as the positive control. Outside Turbo and uncached, like the steps above.
+      - name: No demo content in shipped artefacts
+        if: ${{ !cancelled() }}
+        run: node tooling/repo-scripts/src/cli.ts check-no-demo
       - name: Upload secret-scan reports (secrets redacted)
         if: ${{ failure() }}
         uses: actions/upload-artifact@v4
