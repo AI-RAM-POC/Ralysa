@@ -19,6 +19,10 @@
 //   `persist-credentials: false`.
 // - `ci/integration-artefact`: that job's container logs name `postgres` only (the OpenBao dev
 //   server prints its root token and unseal key), and its uploads expire within 3 days.
+// F-002-T14 (design §8.5; AC-9, SEC-F002-13 c, -29):
+// - `ci/integration-image-scan`: that job builds and scans the control-plane image
+//   (`secret-scan-cli.ts image --dockerfile deploy/docker/control-plane.Dockerfile --exact-values
+//   deploy/docker/dev/.env`), so the image check can't be dropped silently.
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { type Finding, isRecord, readJson, readYaml } from './lib/repo.ts';
@@ -29,6 +33,9 @@ const E2E_SCRIPTS_DIR = 'apps/ui-lab/scripts';
 /** A gitleaks subcommand invocation: `gitleaks dir|git|detect|protect|directory|file|stdin`. */
 const GITLEAKS_CALL = /\bgitleaks(?:["']|\s)+(?:dir|git|detect|protect|directory|file|stdin)\b/;
 const RANGE_SCAN = /secret-scan(?:-cli\.ts)?["']?\s+(?:pr|history)\b/;
+/** The F-002-T14 image scan: the control-plane Dockerfile, with the run's generated credentials. */
+const IMAGE_SCAN =
+  /\bnode\s+tooling\/repo-scripts\/src\/secret-scan-cli\.ts\s+image\b(?=.*\s--dockerfile\s+deploy\/docker\/control-plane\.Dockerfile\b)(?=.*\s--exact-values\s+deploy\/docker\/dev\/\.env\b)/;
 
 export interface CiFiles {
   packageJson: unknown;
@@ -127,6 +134,7 @@ function checkIntegrationJob(
         'the integration job runs PR code and must reference no secrets.*; it generates throwaway credentials per run (SEC-F002-27)',
     });
   }
+  let imageScan = false;
   const permissions = job.permissions;
   const leastPrivilege =
     isRecord(permissions) &&
@@ -164,6 +172,8 @@ function checkIntegrationJob(
       }
     }
     for (const line of commands(runText(step))) {
+      // A shell comment (a whole line, or after a command) doesn't run.
+      if (IMAGE_SCAN.test(line.replace(/(?:^|\s)#.*$/, ''))) imageScan = true;
       if (!/\bdocker\s+compose\b.*\blogs\b/.test(line)) continue;
       const services = line.slice(line.search(/\blogs\b/) + 'logs'.length);
       if (/openbao/i.test(line) || !/\bpostgres\b/.test(services)) {
@@ -174,6 +184,14 @@ function checkIntegrationJob(
         });
       }
     }
+  }
+  if (!imageScan) {
+    findings.push({
+      rule: 'ci/integration-image-scan',
+      path: where,
+      message:
+        'the integration job must build and scan the control-plane image with this run\'s credentials: "node tooling/repo-scripts/src/secret-scan-cli.ts image --dockerfile deploy/docker/control-plane.Dockerfile --exact-values deploy/docker/dev/.env" (AC-9, SEC-F002-13 c, -29)',
+    });
   }
 }
 

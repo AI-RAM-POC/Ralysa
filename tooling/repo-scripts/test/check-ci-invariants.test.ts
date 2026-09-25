@@ -232,6 +232,39 @@ describe('check-ci-invariants', () => {
       expect(rules({ ci: withJob(edit) })).toEqual(['ci/integration-artefact']);
     });
 
+    it.each([
+      [
+        'no image scan step',
+        (t: string) =>
+          t.replace(
+            /\n {6}- name: Image secret scan \(AC-9\)\n[\s\S]*?--exact-values deploy\/docker\/dev\/\.env\n/,
+            '\n',
+          ),
+      ],
+      [
+        'an image scan without the run credentials',
+        (t: string) => t.replace(' --exact-values deploy/docker/dev/.env', ''),
+      ],
+      [
+        'an image scan of another Dockerfile',
+        (t: string) =>
+          t.replace(
+            '--dockerfile deploy/docker/control-plane.Dockerfile',
+            '--dockerfile Dockerfile',
+          ),
+      ],
+      [
+        'the scan commented out',
+        (t: string) =>
+          t.replace(
+            'run: node tooling/repo-scripts/src/secret-scan-cli.ts image',
+            'run: echo skipped # node tooling/repo-scripts/src/secret-scan-cli.ts image',
+          ),
+      ],
+    ])('fails ci/integration-image-scan (F-002-T14) on %s', (_label, edit) => {
+      expect(rules({ ci: withJob(edit) })).toEqual(['ci/integration-image-scan']);
+    });
+
     it('requires the pre-install gate before the job installs', () => {
       const ci = withJob((t) =>
         t.replace(
