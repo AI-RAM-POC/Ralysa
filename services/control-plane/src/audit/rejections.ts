@@ -89,6 +89,12 @@ interface Overflow {
 
 export interface RejectionAggregator {
   record(rejection: Rejection): 'written' | 'suppressed';
+  /**
+   * Counts `count` rejections that are known only as a number (a verifying service's reporter
+   * dropped them when its buffer was full, T12): they go straight to the overflow summary of
+   * their (reason, audience), with network `unknown`.
+   */
+  recordSuppressed(rejection: Rejection, count: number): void;
   /** Closes the window if it has elapsed (call from a timer, and before shutdown with force). */
   flush(force?: boolean): void;
   /** Live bucket counts (tests and metrics). */
@@ -178,6 +184,12 @@ export function createRejectionAggregator(
       if (bucket !== undefined) bucket.suppressed++;
       else addOverflow(rejection, network, 1);
       return 'suppressed';
+    },
+    recordSuppressed(rejection, count) {
+      flush();
+      if (!Number.isSafeInteger(count) || count < 1) return;
+      metrics.increment('audit_rejections_suppressed_total', { reason: rejection.reason }, count);
+      addOverflow(rejection, 'unknown', count);
     },
     flush,
     size: () => ({ keys: buckets.size, overflow: overflow.size }),

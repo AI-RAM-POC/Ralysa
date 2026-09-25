@@ -10,11 +10,18 @@ import {
   TokenResponse,
 } from '@ralysa/protocol/auth';
 import { Problem } from '@ralysa/protocol/common';
+import { Outcome } from '@ralysa/protocol/audit';
 import {
+  AuditQueryResponse,
   AuthConfig,
+  ClientEventsRequest,
+  ClientEventsResponse,
+  ClientEventsUnavailable,
   GovernanceState,
   Me,
   Principal,
+  ServiceEventsRequest,
+  ServiceEventsResponse,
   SignInFailureReport,
 } from '@ralysa/protocol/control-plane';
 import { z } from 'zod';
@@ -344,6 +351,120 @@ export const ROUTES = {
       200: { description: 'Governance state', schema: GovernanceState },
       400: problem('Invalid cursor'),
       401: problem('Missing or invalid service token'),
+    },
+    headers: { 'cache-control': 'no-store' },
+  },
+  serviceEvents: {
+    method: 'POST',
+    url: '/v1/audit/events',
+    summary:
+      "Service audit ingestion (AC-11): 1–100 events, each within the calling service's action allow-list; source from the service token, attestation server, ts from the database clock. A plain INSERT per event in a savepoint (duplicate event_id = duplicate). auth.token_rejected reports are aggregated per client network (status aggregated).",
+    tags: ['audit'],
+    auth: 'service',
+    request: { contentType: 'application/json', schema: ServiceEventsRequest },
+    responses: {
+      201: {
+        description: 'Stored, duplicate or aggregated, per event',
+        schema: ServiceEventsResponse,
+      },
+      400: problem('Malformed JSON'),
+      401: problem('Missing or invalid service token'),
+      403: problem(
+        'A user token, an unregistered service, or an action outside the allow-list (audited as audit.ingest_rejected)',
+      ),
+      413: problem('Body over 256 KB'),
+      422: problem('Schema, I-JSON details, outcome rule or unknown user actor'),
+      503: problem('audit_unavailable: the insert failed or exceeded 250 ms'),
+    },
+  },
+  clientEvents: {
+    method: 'POST',
+    url: '/v1/audit/client-events',
+    summary:
+      "Client-attested local-tool audit (AC-16): the actor, org, source and ts come from the token and the server; server-issued sessions bound to the token's sid; client_seq gaps; each tool.call.requested is answered with an intent ack (refused while a kill-switch applies).",
+    tags: ['audit'],
+    auth: 'user',
+    request: { contentType: 'application/json', schema: ClientEventsRequest },
+    responses: {
+      201: { description: 'Stored or duplicate, with intent acks', schema: ClientEventsResponse },
+      400: problem('Malformed JSON'),
+      401: problem('Missing, invalid or revoked access token'),
+      409: problem(
+        'A new session not opened by session.started, or an unknown, foreign or ended session, or a client_seq at or below the last one outside an open gap',
+      ),
+      413: problem('An event over 4 KB (canonical form) or a body over 256 KB'),
+      422: problem('Schema, allow-list, reserved details key or I-JSON'),
+      423: {
+        description:
+          'A kill-switch covers an intent: halted, ack false, stored as tool.call.denied',
+        schema: ClientEventsResponse,
+      },
+      429: problem('More than 20 open sessions for the auth session, or 600 events a minute'),
+      503: {
+        description: 'audit_unavailable: nothing stored, every intent ack false',
+        schema: ClientEventsUnavailable,
+        contentType: 'application/problem+json',
+      },
+    },
+  },
+  auditQuery: {
+    method: 'GET',
+    url: '/v1/audit/events',
+    summary:
+      'Audit query (AC-12): session role platform_admin and a current admin-group membership; audit.query is committed before any result is read; keyset paging on (ts, event_id)',
+    tags: ['audit'],
+    auth: 'user',
+    parameters: [
+      {
+        name: 'from',
+        in: 'query',
+        required: true,
+        description: 'Inclusive start (RFC 3339)',
+        schema: z.iso.datetime(),
+      },
+      {
+        name: 'to',
+        in: 'query',
+        required: true,
+        description: 'Exclusive end (RFC 3339), at most 31 days after from',
+        schema: z.iso.datetime(),
+      },
+      {
+        name: 'user_id',
+        in: 'query',
+        required: false,
+        description: 'Actor user id',
+        schema: z.uuid(),
+      },
+      {
+        name: 'action',
+        in: 'query',
+        required: false,
+        description: 'Exact action',
+        schema: z.string().max(100),
+      },
+      { name: 'outcome', in: 'query', required: false, description: 'Outcome', schema: Outcome },
+      {
+        name: 'limit',
+        in: 'query',
+        required: false,
+        description: '1–500, default 100',
+        schema: z.string().regex(/^(?:[1-9]\d?|[1-4]\d\d|500)$/),
+      },
+      {
+        name: 'cursor',
+        in: 'query',
+        required: false,
+        description: 'next_cursor of the previous page',
+        schema: z.string().max(256),
+      },
+    ],
+    responses: {
+      200: { description: 'A page of events with their seals', schema: AuditQueryResponse },
+      400: problem('Invalid filters, range or cursor'),
+      401: problem('Missing, invalid or revoked access token'),
+      403: problem('Not a platform admin (audited as audit.query denied)'),
+      503: problem('audit_unavailable: audit.query could not be committed'),
     },
     headers: { 'cache-control': 'no-store' },
   },

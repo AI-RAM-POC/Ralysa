@@ -104,6 +104,7 @@ describe('route authentication', () => {
     const rts = fakeRts({
       rejections: {
         record: (r) => (rejected.push(r), 'written'),
+        recordSuppressed: () => undefined,
         flush: () => undefined,
         size: () => ({ keys: 0, overflow: 0 }),
       },

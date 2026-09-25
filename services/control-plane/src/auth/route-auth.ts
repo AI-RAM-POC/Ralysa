@@ -15,20 +15,31 @@ import type { RtsDeps } from './deps.js';
 
 type AuthDeps = Pick<RtsDeps, 'verifier' | 'rejections' | 'config'>;
 
+export interface AuthenticateOptions {
+  /**
+   * Rejection reasons answered 403 instead of 401: an authentic token of the wrong kind or of an
+   * unregistered service on POST /v1/audit/events (§3.4.4). Still recorded as auth.token_rejected.
+   */
+  forbidden?: readonly TokenRejectReason[];
+}
+
 export async function authenticate(
   deps: AuthDeps,
   request: FastifyRequest,
   kind: 'user',
+  options?: AuthenticateOptions,
 ): Promise<VerifiedPrincipal>;
 export async function authenticate(
   deps: AuthDeps,
   request: FastifyRequest,
   kind: 'service',
+  options?: AuthenticateOptions,
 ): Promise<VerifiedService>;
 export async function authenticate(
   deps: AuthDeps,
   request: FastifyRequest,
   kind: 'user' | 'service',
+  options: AuthenticateOptions = {},
 ): Promise<VerifiedPrincipal | VerifiedService> {
   const reject = (reason: TokenRejectReason): never => {
     deps.rejections.record({
@@ -38,6 +49,7 @@ export async function authenticate(
       audience: 'control-plane',
       traceId: request.traceId,
     });
+    if (options.forbidden?.includes(reason) === true) throw new HttpProblem('forbidden');
     throw new HttpProblem('unauthorized', undefined, {
       headers: { 'www-authenticate': `Bearer error="invalid_token"` },
     });

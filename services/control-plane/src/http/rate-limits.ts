@@ -26,8 +26,11 @@ export interface RateLimitOptions {
 }
 
 export interface RateLimiter {
-  /** 0 when allowed, else the seconds until the window resets. */
-  take(clientKey: string): number;
+  /**
+   * 0 when allowed, else the seconds until the window resets. `weight` (default 1) counts one
+   * request as several, e.g. the events of a batch (the client audit path's per-user limit).
+   */
+  take(clientKey: string, weight?: number): number;
 }
 
 /** IPv4 (and IPv4-mapped) addresses as they are; IPv6 by /64. */
@@ -43,7 +46,7 @@ export function createRateLimiter(options: RateLimitOptions): RateLimiter {
   let global = 0;
   let perClient = new Map<string, number>();
   return {
-    take(key) {
+    take(key, weight = 1) {
       const t = now();
       if (t - windowStart >= 60_000) {
         windowStart = t;
@@ -51,15 +54,15 @@ export function createRateLimiter(options: RateLimitOptions): RateLimiter {
         perClient = new Map();
       }
       const retry = Math.max(1, Math.ceil((windowStart + 60_000 - t) / 1000));
-      if (global >= options.globalPerMinute) return retry;
+      if (global + weight > options.globalPerMinute) return retry;
       const used = perClient.get(key) ?? 0;
-      if (used >= options.perIpPerMinute) return retry;
+      if (used + weight > options.perIpPerMinute) return retry;
       if (!perClient.has(key) && perClient.size >= maxClients) {
         const oldest = perClient.keys().next().value;
         if (oldest !== undefined) perClient.delete(oldest);
       }
-      perClient.set(key, used + 1);
-      global++;
+      perClient.set(key, used + weight);
+      global += weight;
       return 0;
     },
   };

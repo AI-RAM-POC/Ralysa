@@ -1,12 +1,14 @@
 // F-002-T11 against the dev stack: a "fake gateway" built only on @ralysa/auth (design §8.1) talks
 // to a real control plane over real HTTP. Its service identity is a client assertion signed
-// through its own OpenBao Transit key (throwaway per run); the RTS signing key is the in-memory
+// through the dev stack's ralysa-svc-model-gateway Transit key (the service name must be a real
+// audit source, so it can't be a throwaway name; T12); the RTS signing key is the in-memory
 // custody (JWKS served from it), as in the T08 tests. Sessions are seeded directly until T10 adds
 // sign-in; the IdP directory is a controllable fake.
 //   - TC-F-002-10: 20 negative cases against the fake gateway (aud=model-gateway) → 20 rejections,
-//     each through the auth.token_rejected aggregator under the CONFIGURED org; a valid token
-//     yields user id, org_id and, through PrincipalResolver, groups. (Storing the aggregated
-//     events through POST /v1/audit/events is T12's route.)
+//     reported by @ralysa/auth's rejection reporter through POST /v1/audit/events (T12, T11-2),
+//     aggregated at the control plane and STORED as 20 auth.token_rejected events under the
+//     configured org with source model-gateway; a valid token yields user id, org_id and, through
+//     PrincipalResolver, groups.
 //   - TC-F-002-09 (gateway part): a user disabled at the IdP → refresh sets revoked_before →
 //     the gateway rejects the access token after its next feed poll (≤ 60 s), and after exp.
 //   - The feed, principals and service token source over real HTTP with a Transit-signed
@@ -14,9 +16,11 @@
 import { generateKeyPair, SignJWT } from 'jose';
 import {
   type RejectInfo,
+  type RejectionReporter,
   type RevocationFeed,
   createAccessTokenVerifier,
   createPrincipalResolver,
+  createRejectionReporter,
   createRevocationFeed,
   createServiceTokenSource,
   createTransitAssertionSigner,
@@ -24,13 +28,13 @@ import {
 import { CLI_CLIENT_ID, kidFor } from '@ralysa/protocol/auth';
 import { uuidv7 } from '@ralysa/protocol/common';
 import { type KeyCustody, createOpenBao } from '@ralysa/secrets';
-import { devStackOrSkip, expectOk, rootBao, uniqueName } from '@ralysa/dev-stack/harness';
+import { devStackOrSkip } from '@ralysa/dev-stack/harness';
 import type { FastifyInstance } from 'fastify';
 import type { Kysely } from 'kysely';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../../src/app.js';
-import { type EmittedRejection, createRejectionAggregator } from '../../src/audit/rejections.js';
-import { createAuditWriter } from '../../src/audit/writer.js';
+import { createRejectionAggregator } from '../../src/audit/rejections.js';
+import { type AuditWriter, createAuditWriter } from '../../src/audit/writer.js';
 import type { DirectoryCheck, IdpDirectory } from '../../src/auth/directory-port.js';
 import { createSession, issueRefreshToken } from '../../src/auth/sessions.js';
 import { createDb, withOrg } from '../../src/db/kysely.js';
@@ -42,7 +46,7 @@ import { TENANT, serveConfig } from '../fixtures/serve-config.js';
 import { type TestDatabase, createTestDatabase } from './support/db.js';
 
 const stack = await devStackOrSkip();
-const gw = uniqueName('t11gw');
+const gw = 'model-gateway';
 const config = serveConfig({
   env: 'test',
   org: {
@@ -88,8 +92,12 @@ describe.skipIf(stack === undefined)('fake gateway on @ralysa/auth (F-002-T11)',
 
   // --- the fake gateway ----------------------------------------------------------------------
   const rejected: RejectInfo[] = [];
-  const aggregated: EmittedRejection[] = [];
-  const aggregator = createRejectionAggregator({ emit: (r) => aggregated.push(r) });
+  let reporter: RejectionReporter;
+  // The control plane's fire-and-forget audit writes (the rejection aggregator), awaited in tests.
+  const pending = new Set<Promise<unknown>>();
+  const settled = async () => {
+    while (pending.size > 0) await Promise.allSettled([...pending]);
+  };
   let gateway: ReturnType<typeof createAccessTokenVerifier>;
   let principals: ReturnType<typeof createPrincipalResolver>;
   const verify = (token: string) =>
@@ -215,8 +223,6 @@ describe.skipIf(stack === undefined)('fake gateway on @ralysa/auth (F-002-T11)',
 
   // --- setup ---------------------------------------------------------------------------------
   beforeAll(async () => {
-    const root = rootBao(stack!);
-    expectOk(await root('POST', `transit/keys/ralysa-svc-${gw}`, { type: 'ecdsa-p256' }), gw);
     custody = createOpenBao({
       addr: stack!.openbao.addr,
       auth: { method: 'token', token: stack!.openbao.rootToken },
@@ -227,6 +233,16 @@ describe.skipIf(stack === undefined)('fake gateway on @ralysa/auth (F-002-T11)',
     cpDb = createDb<Database>(await db.pool('cp_app', 6));
     await ensureOrganization(cpDb, config);
     signing = await fakeKeys();
+    const real = createAuditWriter({ db: createDb<Database>(await t().pool('audit_writer', 2)) });
+    const track = <T>(p: Promise<T>): Promise<T> => {
+      pending.add(p);
+      void p.finally(() => pending.delete(p)).catch(() => undefined);
+      return p;
+    };
+    const writer: AuditWriter = {
+      write: (org, events) => track(real.write(org, events)),
+      writeOrSpool: (org, events) => track(real.writeOrSpool(org, events)),
+    };
     app = await buildApp({
       config,
       keys: signing.keys,
@@ -234,7 +250,7 @@ describe.skipIf(stack === undefined)('fake gateway on @ralysa/auth (F-002-T11)',
         db: cpDb,
         custody,
         directory,
-        writer: createAuditWriter({ db: createDb<Database>(await t().pool('audit_writer', 2)) }),
+        writer,
         now: () => Date.now() + cpOffset,
         rejections: createRejectionAggregator({ emit: () => undefined, perKeyLimit: 1000 }),
       },
@@ -252,6 +268,11 @@ describe.skipIf(stack === undefined)('fake gateway on @ralysa/auth (F-002-T11)',
     });
     feed = createRevocationFeed({ url: `${base}/v1/internal/governance`, serviceTokens });
     principals = createPrincipalResolver({ baseUrl: base, serviceTokens });
+    reporter = createRejectionReporter({
+      url: `${base}/v1/audit/events`,
+      serviceTokens,
+      audience: 'model-gateway',
+    });
     gateway = createAccessTokenVerifier({
       issuer: ISSUER,
       audience: 'model-gateway',
@@ -262,13 +283,7 @@ describe.skipIf(stack === undefined)('fake gateway on @ralysa/auth (F-002-T11)',
       now: () => Date.now() + gwOffset,
       onReject: (r) => {
         rejected.push(r);
-        aggregator.record({
-          orgId: ORG, // from config, never the rejected token's tid (OI-4)
-          clientIp: r.clientIp ?? 'unknown',
-          reason: r.reason,
-          audience: 'model-gateway',
-          traceId: r.traceId ?? '',
-        });
+        reporter.record(r); // never throws, never waits (SEC-F002-16)
       },
     });
     expect(await feed.start()).toBe('confirmed');
@@ -286,10 +301,8 @@ describe.skipIf(stack === undefined)('fake gateway on @ralysa/auth (F-002-T11)',
 
   afterAll(async () => {
     feed.stop();
+    await settled();
     await app.close();
-    const root = rootBao(stack!);
-    await root('POST', `transit/keys/ralysa-svc-${gw}/config`, { deletion_allowed: true });
-    await root('DELETE', `transit/keys/ralysa-svc-${gw}`);
     await db?.drop();
   });
 
@@ -318,9 +331,8 @@ describe.skipIf(stack === undefined)('fake gateway on @ralysa/auth (F-002-T11)',
     });
   });
 
-  it('TC-F-002-10: 20 negative cases → 20 rejections, each recorded under the configured org', async () => {
+  it('TC-F-002-10: 20 negative cases → 20 rejections, stored as 20 auth.token_rejected events', async () => {
     rejected.length = 0;
-    aggregated.length = 0;
     const user = await seedUser();
     const live = await seedSession(user);
     const { access_token: valid } = await tokens(live.token);
@@ -464,9 +476,41 @@ describe.skipIf(stack === undefined)('fake gateway on @ralysa/auth (F-002-T11)',
     }
     expect(rejected).toHaveLength(20);
     expect(rejected.every((r) => r.clientIp === '203.0.113.9')).toBe(true);
-    expect(aggregated).toHaveLength(20);
-    expect(new Set(aggregated.map((r) => r.orgId))).toEqual(new Set([ORG]));
-    expect(aggregated.every((r) => r.network === '203.0.113.0/24')).toBe(true);
+
+    // The gateway's reporter sends them through the service path; the control plane aggregates
+    // them per /24, reason and audience and stores them under its org and the gateway's source.
+    expect(reporter.status()).toEqual({ queued: 20, dropped: 0 });
+    await reporter.flush();
+    expect(reporter.status()).toEqual({ queued: 0, dropped: 0 });
+    await settled();
+    const { rows: stored } = await t().superuser.query<{
+      org_id: string;
+      source: string;
+      outcome: string;
+      reason_code: string;
+      trace_id: string;
+      details: Record<string, unknown>;
+    }>(
+      `select org_id, source, outcome, reason_code, trace_id, details from audit.audit_event
+        where action = 'auth.token_rejected' and source = 'model-gateway'`,
+    );
+    expect(stored).toHaveLength(20);
+    expect(stored.map((r) => r.reason_code).sort()).toEqual(cases.map((c) => c[2]).sort());
+    for (const row of stored) {
+      expect(row).toMatchObject({
+        org_id: ORG, // the service token's org, pinned to config; never the rejected token's tid
+        outcome: 'denied',
+        trace_id: 'a'.repeat(32),
+        details: {
+          audience: 'model-gateway',
+          client_ip: '203.0.113.9',
+          client_network: '203.0.113.0/24',
+        },
+      });
+      expect(row.details).not.toHaveProperty('suppressed_count');
+    }
+    // No token of any kind is in what was stored.
+    expect(JSON.stringify(stored)).not.toMatch(/eyJ|rly_rt_/);
     // The live session is untouched by all of this.
     expect((await verify(valid)).ok).toBe(true);
   });
