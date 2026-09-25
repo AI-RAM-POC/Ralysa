@@ -1,4 +1,5 @@
 import '@ralysa/ui/tokens.css';
+import '@ralysa/ui/fonts.css';
 import {
   browserStorage,
   createI18n,

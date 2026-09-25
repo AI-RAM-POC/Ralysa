@@ -1,0 +1,43 @@
+/*
+ * Typefaces and base typography (F-001 design §7.2; AC-8). Import once in an app, after
+ * '@ralysa/ui/tokens.css': `import '@ralysa/ui/fonts.css'`.
+ *
+ * - Noto Sans (Latin), Noto Sans Arabic and Noto Sans Mono, variable weight axis, all under the
+ *   SIL Open Font License 1.1 with no Reserved Font Name. The woff2 files come from the
+ *   @fontsource-variable packages and are bundled by the app's build: there is no font CDN and
+ *   no network fetch, which suits residency and air-gapped installs (and the later strict CSP).
+ *   Each Fontsource file sets `font-display: swap` and a `unicode-range`, so a browser downloads
+ *   only the subsets a page uses.
+ * - The app's build must copy each font's licence into its output; the fontLicenses() Vite
+ *   plugin (`@ralysa/ui/font-licenses`) does that and fails the build for an unlicensed font.
+ * - Font stacks, line heights and letter spacing are tokens. tokens.css overrides them under
+ *   :lang(ar): line height 1.7 and letter spacing 0, because tracking breaks cursive joining.
+ */
+@import '@fontsource-variable/noto-sans/wght.css';
+@import '@fontsource-variable/noto-sans-arabic/wght.css';
+@import '@fontsource-variable/noto-sans-mono/wght.css';
+
+:root {
+  font-family: var(--ralysa-font-family-sans);
+  font-size: 100%;
+  line-height: var(--ralysa-font-line-height-body);
+  letter-spacing: var(--ralysa-font-letter-spacing-normal);
+  font-synthesis-weight: none;
+}
+
+/*
+ * line-height and letter-spacing inherit as computed values, so an Arabic run inside a page in
+ * another language would keep the root's Latin values. Re-apply the (overridden) tokens there.
+ */
+:lang(ar) {
+  line-height: var(--ralysa-font-line-height-body);
+  letter-spacing: var(--ralysa-font-letter-spacing-normal);
+}
+
+code,
+kbd,
+samp,
+pre {
+  font-family: var(--ralysa-font-family-mono);
+  font-size: 1em;
+}

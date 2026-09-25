@@ -195,6 +195,17 @@ export const BANNED_PACKAGE_GROUPS = [
     message:
       'Vendor APM, crash-reporting, analytics and session-replay SDKs are banned: OpenTelemetry is the only instrumentation API (ADR-0024, SR-21, REQ-101c). An exception needs an ADR.',
   },
+  {
+    // Not a security ban: the icon registry (F-001 design §3.4, AC-7) is the one place that
+    // decides whether an icon mirrors in RTL, so the icon set is imported nowhere else. Apps get
+    // icons through @ralysa/ui's <Icon name>, never a direct dependency.
+    id: 'icon-set',
+    packages: ['lucide-react'],
+    importAllowedIn: ['packages/ui/src/icons/registry.ts'],
+    graphAllowedThrough: [['@ralysa/ui']],
+    message:
+      'Import icons through the @ralysa/ui icon registry (<Icon name="…">), which decides whether an icon mirrors in RTL (F-001 design §3.4, AC-7). Only packages/ui/src/icons/registry.ts imports lucide-react.',
+  },
 ];
 
 /**

@@ -707,6 +707,56 @@ Notes:
 - **Ordering fix.** `base()` drops the loading ban for `LOADING_EXCEPTIONS` files (empty today). Because `reactUi()` comes after `base()`, its combined entry would have re-enabled the ban there. `reactUi()` now adds a matching block for those files that keeps only the UI selector. It takes `workspace` like `base()` does (default `workspaceOf(process.cwd())`); the one edit to main's `base.js` is exporting `workspaceOf`. A test adds a fixture exception and checks both an excepted and a normal file.
 - **Main's loading ban caught two `createRequire` calls in my test code:** the i18n lint test and `packages/ui/test/tailwind.ts`. Both now use static paths (`import.meta.resolve`, or a path relative to the package).
 
+## T09: fonts, icons and text
+
+Branch `feat/F-001-components` (T09 to T12 and the PR #15 nits, one commit each). Date: 2026-09-25.
+
+### What landed
+
+- **Fonts.** `packages/ui/src/styles/fonts.css` (`@ralysa/ui/fonts.css`) imports each Noto package's `wght.css` and sets the base typography from tokens (sans stack, body line height and letter spacing, re-applied under `:lang(ar)`; mono for `code`/`pre`). The font stacks and the `:lang(ar)` token overrides were already in `core.tokens.json` (T06-8), so that file is unchanged.
+- **Licences.** `scripts/font-licenses.ts`: `FONT_PACKAGES`, the licence check (package `license` = `OFL-1.1`; the licence file is OFL 1.1 with a copyright notice and **no Reserved Font Name in the notice**), `writeFontLicenses()` (run by `build`: `dist/licenses/fonts/<font>/OFL.txt` and `dist/THIRD_PARTY_NOTICES`), and the **`fontLicenses()` Vite plugin**, now in `apps/web`'s build. The plugin emits the same files next to the bundle, turns off data-URI inlining for fonts, and fails the build for a font file from outside `FONT_PACKAGES`. `apps/web` imports `fonts.css`, so its production build carries the fonts and the licences: `apps/web/dist/licenses/fonts/{noto-sans,noto-sans-arabic,noto-sans-mono}/OFL.txt` and `dist/THIRD_PARTY_NOTICES`.
+- **Coverage.** `scripts/font-coverage.ts`: a dependency-free WOFF2 reader (table directory, Brotli stream via `node:zlib`, cmap formats 4 and 12) plus the browser's face selection (family order, then `unicode-range`, then cmap). Default-ignorable code points are skipped.
+- **Icons.** `src/icons/registry.ts` (21 icons: 7 directional, 14 not) and `<Icon>`. The lucide restriction is a new `icon-set` group in `boundaries.js` (see T09-2).
+- **Text.** `Text`, `Heading`, `Code`, `CodeBlock`, `Ltr`, `T`, `isolate`, `isolateValues`, and a `cn` class helper.
+- **Examples contract.** `src/examples/` (`@ralysa/ui/examples`): `ComponentExamples`, `EXAMPLE_LABELS` and `ALL_EXAMPLES`. Text and icon examples are registered.
+
+### Versions (npm registry, 2026-09-25; 3-day cut-off 2026-09-22, 30-day policy cut-off 2026-08-26)
+
+| Package | Design | Pinned | Evidence |
+|---|---|---|---|
+| `@fontsource-variable/noto-sans` | 5.x | **5.3.0** | Published 2026-07-19 (68 days). `license: OFL-1.1`; SLSA provenance; no dependencies, no install scripts. LICENSE sha256 `54ec7b5a…a3009e1`. |
+| `@fontsource-variable/noto-sans-arabic` | 5.x | **5.3.0** | Same dates and properties. LICENSE sha256 `91053c23…487c1fff`. |
+| `@fontsource-variable/noto-sans-mono` | 5.x | **5.3.0** | Same. LICENSE sha256 `9e73c367…f34f361cb`. |
+| `lucide-react` | 1.x | **1.34.0** | ISC; peer `react ^16.5.1 … ^19`; SLSA provenance; no install scripts. lucide ships a minor every few days, so the §2.2 rule was applied per minor line (as T04-1 did): 1.34.0 (2026-08-24) is the newest minor at least 30 days old; 1.35.0 to 1.48.0 are younger. |
+| `vite` | 8.3.x | 8.3.0 (catalog) | New **devDependency** of `@ralysa/ui`, for the plugin's type and the test that builds `fonts.css` for real. |
+
+Licence check: all three `LICENSE` files start "Copyright 2022 The Noto Project Authors (https://github.com/notofonts/…)" then "This Font Software is licensed under the SIL Open Font License, Version 1.1." The notice carries no "Reserved Font Name" clause; the one occurrence of the phrase in each file is the OFL body's own definition. `pnpm install` with `strictDepBuilds` passed with `allowBuilds` unchanged: none of the new packages has a build script.
+
+### Recorded decisions and deviations
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T09-1 | Version | `lucide-react` 1.34.0, not the `latest` 1.48.0. | Per-minor application of the §2.2 30-day rule (T04-1 precedent). |
+| T09-2 | Implementation choice | "The lucide import is restricted to the registry" is a `BANNED_PACKAGE_GROUPS` entry, `icon-set` (`importAllowedIn: ['packages/ui/src/icons/registry.ts']`, `graphAllowedThrough: [['@ralysa/ui']]`), not a second `no-restricted-imports` entry in `packages/ui`. | A later flat-config entry for the same rule replaces the base preset's options, which would drop the boundary bans (the reason `boundaryRules()` exists). As a group, one line covers ESLint, dependency-cruiser **and** the lockfile graph: an app can't add its own direct `lucide-react` dependency either. It is not a security ban, and the group's comment says so. |
+| T09-3 | Design detail | The licence copy is done at **each app's build** (`fontLicenses()` Vite plugin), in addition to `packages/ui`'s own `dist/`. | §7.2 says "the build copies each `OFL.txt` into `dist/licenses/fonts/`". `packages/ui` is `shipped: false`; the licences must travel with the app bundle that contains the fonts (`apps/web/dist`). The plugin also closes two gaps: an unreviewed font file fails the build, and a small font can't slip through as an inlined data URI. |
+| T09-4 | Note | Fontsource ships the OFL text as `LICENSE`; it is copied as `OFL.txt`. | Same content (the test compares bytes). |
+| T09-5 | Scope note | `fonts.css` imports each package's full `wght.css`, so `apps/web/dist` holds every subset (about 1.5 MB of woff2, including Cyrillic, Greek, Vietnamese and Devanagari). | Each `@font-face` has a `unicode-range`, so a browser downloads only what a page uses. Narrowing to the Latin and Arabic subsets would mean hand-written `@font-face` rules to keep in sync with Fontsource. Revisit if install size matters (F-021). |
+| T09-6 | Split | TC-F-001-14 here checks the §7.2 coverage list (Arabic letters, harakat, both digit sets, Arabic punctuation, tatweel, lam-alef forms, Basic Latin, quotes and dashes) for the sans stack and Basic Latin for mono, plus a Hebrew/CJK positive control. The **20 samples** are checked with the same functions in `apps/ui-lab` (T12). | The samples live in ui-lab, and `packages/ui` must not read another workspace. |
+| T09-7 | **Design clarification** | Component examples live in `packages/ui` as designed (`*.examples.tsx`), but carry no text: the gallery passes `labels` translated from its `lab` catalog (`EXAMPLE_LABELS`). They are exported from a separate entry point, `@ralysa/ui/examples`. | Literal text would fail AC-5, and example copy in the `ui` catalog would ship inside every app's bundle (AC-13). `lab:` keys can't be typed or extracted inside `packages/ui`. |
+| T09-8 | Implementation choice | `<T>` is not a thin `Trans` wrapper: it interpolates private-use markers, splits the translated string around them and renders each value in `<bdi>`. | react-i18next `Trans` can't wrap an interpolated **value** in an element without markup in the catalog string. The markers never reach the DOM, and values stay text (a test renders `<img …>` as text). `i18next-cli` still extracts `<T i18nKey>` (it is in `transComponents`). |
+| T09-9 | Note for T13 | Tailwind v4's `rtl:-scale-x-100` sets the CSS `scale` property, so a mirrored icon's computed style is `scale: -1 1`, while `transform` stays `none`. TC-F-001-13 expects `transform: matrix(-1, 0, 0, 1, 0, 0)`. | The mirroring spec in T13 should read `scale` (or the bounding-box geometry) instead. The design class is kept. |
+| T09-10 | Implementation choice | `packages/ui` declares `"sideEffects": ["**/*.css"]`, and `ICON_NAMES` is marked `/* @__PURE__ */`. | Without them the web bundle contained lucide although it renders no icon: the top-level `Object.keys(ICONS)` call kept the registry alive. Checked: `lucide` no longer appears in `apps/web/dist/assets/*.js`. |
+| T09-11 | Scope note | `apps/web` (`vite.config.ts`, `src/main.tsx`) is touched although the T09 row doesn't list it. | It is the shipped build, the place where the fonts and their licences must be (AC-8 "redistributable"), and the target of the artefact scans. Both scans pass on the new output (`secret-scan artefacts`: 0 findings; `check-provider-hosts --artefacts`: pass). |
+
+### Tests added (T09)
+
+- `packages/ui/test/font-licence.test.ts` (15), **TC-F-001-17**: the three packages are `OFL-1.1` with Noto copyright notices and no RFN; `licenseProblems` rejects an RFN in the notice, another licence, a missing licence field, a non-OFL text and a missing notice, and accepts the OFL body's own definition of the term; `readFontLicenses` fails on a bad package; `writeFontLicenses` writes byte-identical `OFL.txt` files and notices; `fontPackageOf` ignores look-alikes (`noto-sans-jp`, a local `src/fonts/…`). **A real, offline `vite build` of `fonts.css` with the plugin** emits the Latin, Arabic and mono woff2, the three licences and the notices, and every `url()` in the CSS is local. A fixture `@font-face` pointing at a local woff2 fails the build. `fonts.css` imports exactly the reviewed packages and has no remote URL; every Fontsource `@font-face` uses `font-display: swap` and a local file.
+- `packages/ui/test/font-coverage.test.ts` (16), **TC-F-001-14** (coverage list part): the nine §7.2 groups draw with 0 missing code points; mono draws Basic Latin; Arabic comes from Noto Sans Arabic and Latin from Noto Sans; bidi controls and joiners are skipped; positive controls (Hebrew, CJK, Arabic against the mono stack) are reported missing; a synthetic format-12 cmap ignores `.notdef`.
+- `packages/ui/test/icons.test.tsx` (23): the directional set is exactly back, forward, chevronStart, chevronEnd, send, undo and redo; each of the 21 icons carries `rtl:-scale-x-100` only if directional; decorative and labelled forms.
+- `packages/ui/test/text.test.tsx` (15): LTR islands in an RTL page; `<T>` in en and ar, values as text, a missing key throws; `isolate`; `Text`/`Heading`; every registered example renders in en and ar.
+- `tooling/eslint-config/test/boundaries.test.ts`: only `packages/ui/src/icons/registry.ts` has the lucide import allowed (checked on the computed config for six other paths, including `registry.tsx`, an app's `registry.ts` and a test); a real lint of a lucide import in `src/icons/Icon.js` and of `export * from 'lucide-react/icons'` reports `no-restricted-imports`.
+- `tooling/repo-scripts/test/check-banned-deps.test.ts`: `lucide-react` through `@ralysa/ui` passes; a direct dependency in `apps/ui-lab` fails with `banned-deps/icon-set`.
+
 ## PR #15 review nits (branch `feat/F-001-components`, 2026-09-25)
 
 | # | Nit | Fix | Tests |

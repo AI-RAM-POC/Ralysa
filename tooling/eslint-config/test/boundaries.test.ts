@@ -170,6 +170,45 @@ describe('allowed paths (boundaries.js importAllowedIn)', () => {
     }
   });
 
+  it('only the ui icon registry may import lucide-react (§3.4, AC-7)', async () => {
+    // The registry is a .ts file this package's project service can't type, so the allowed
+    // path is checked on the computed config; the ban itself is linted in a .js file.
+    const restricted = async (path: string, workspace: string): Promise<boolean> => {
+      const eslint = new ESLint({
+        cwd: root,
+        overrideConfigFile: true,
+        overrideConfig: [
+          ...base({ tsconfigRootDir: root, workspace }),
+          ...reactUi({ workspace }),
+          ...tests(),
+        ],
+      });
+      const config = (await eslint.calculateConfigForFile(join(root, path))) as {
+        rules: Record<string, [unknown, { patterns: { regex?: string }[] }]>;
+      };
+      const [, options] = config.rules['no-restricted-imports'] ?? [0, { patterns: [] }];
+      return options.patterns.some(
+        (p) => p.regex !== undefined && new RegExp(p.regex).test('lucide-react'),
+      );
+    };
+    expect(await restricted('src/icons/registry.ts', 'packages/ui')).toBe(false);
+    for (const [path, workspace] of [
+      ['src/icons/Icon.tsx', 'packages/ui'],
+      ['src/icons/registry.tsx', 'packages/ui'],
+      ['src/components/actions/Button.tsx', 'packages/ui'],
+      ['test/icons.test.tsx', 'packages/ui'],
+      ['src/icons/registry.ts', 'apps/web'],
+      ['src/App.tsx', 'apps/ui-lab'],
+    ] as const) {
+      expect(await restricted(path, workspace), `${workspace}/${path}`).toBe(true);
+    }
+    const icon = "import { ArrowLeft } from 'lucide-react';\nexport const a = ArrowLeft;\n";
+    expect(await lint(icon, 'src/icons/Icon.js', 'packages/ui')).toContain('no-restricted-imports');
+    expect(
+      await lint("export * from 'lucide-react/icons';\n", 'src/a.js', 'packages/ui'),
+    ).toContain('no-restricted-imports');
+  });
+
   it('a look-alike workspace name gets no exception', async () => {
     expect(await lint(importOf('openai'), 'src/a.js', 'services/model-gateway-v2')).toContain(
       'no-restricted-imports',
@@ -303,6 +342,8 @@ describe('boundaries.js helpers', () => {
     expect(bannedGroupOf('@anthropic-ai/claude-code')?.id).toBe('model-provider');
     expect(bannedGroupOf('@ai-sdk/react')?.id).toBe('model-provider');
     expect(bannedGroupOf('@sentry/browser')?.id).toBe('telemetry-vendor');
+    expect(bannedGroupOf('lucide-react')?.id).toBe('icon-set');
+    expect(bannedGroupOf('lucide')).toBeUndefined();
     expect(bannedGroupOf('zod')).toBeUndefined();
     expect(bannedGroupOf('@aws-sdk/client-s3')).toBeUndefined();
   });
@@ -324,6 +365,7 @@ describe('boundaries.js helpers', () => {
       ],
       'model-provider': ['services/model-gateway/**'],
       'telemetry-vendor': [],
+      'icon-set': ['packages/ui/src/icons/registry.ts'],
     });
   });
 

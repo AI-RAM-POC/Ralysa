@@ -34,11 +34,22 @@ Components use **semantic** tokens only. Palette values are never emitted as CSS
 
 Components call `useTranslation('ui')` explicitly; an app's own namespace is its `defaultNS`.
 
+## Fonts, icons and text (F-001-T09)
+
+| Path | What |
+|---|---|
+| `src/styles/fonts.css` (`@ralysa/ui/fonts.css`) | Noto Sans, Noto Sans Arabic and Noto Sans Mono (variable weight), self-hosted from the `@fontsource-variable/*` packages: the app's build bundles the woff2 files, with **no font CDN** and no network fetch (residency, air-gapped installs). Also the base typography: the `font.family.sans` stack, body line height and letter spacing from tokens, re-applied under `:lang(ar)` (line height 1.7, letter spacing 0), mono for `code`/`pre`. Import it once in an app after `tokens.css`. |
+| `scripts/font-licenses.ts` (`@ralysa/ui/font-licenses`) | The reviewed font packages (`FONT_PACKAGES`) and their licence check: `package.json` must say `OFL-1.1` and the licence's copyright notice must declare no Reserved Font Name. `build` writes `dist/licenses/fonts/<font>/OFL.txt` and `dist/THIRD_PARTY_NOTICES`. **`fontLicenses()`** is the Vite plugin every app that imports `fonts.css` adds: it emits the same files next to the bundle, never inlines a font as a data URI, and fails the build for a font file from any other package. |
+| `scripts/font-coverage.ts` (`@ralysa/ui/font-coverage`) | Reads the real woff2 cmaps (Brotli via `node:zlib`, cmap formats 4 and 12) and the `@font-face` `unicode-range`s, and reports the code points a font stack can't draw. Used by the coverage tests here and in `apps/ui-lab`. |
+| `src/icons/registry.ts`, `<Icon name>` | The icon registry: the **only** module that imports `lucide-react` (the `icon-set` group in `tooling/eslint-config/boundaries.js` bans it everywhere else, for ESLint, dependency-cruiser and `check-banned-deps`). Each icon is `directional` (mirrored in RTL with `rtl:-scale-x-100`: back, forward, chevrons, send, undo, redo) or not (never mirrored). `<Icon>` is decorative (`aria-hidden`) unless given a translated `label`, and renders `data-icon` and `data-icon-directional`. Unused icons are tree-shaken. |
+| `src/components/text/` | `Text`, `Heading`, and the LTR islands `Code` (`<code dir="ltr">`), `CodeBlock` (`<pre dir="ltr">`, wraps rather than scrolls) and `Ltr` (`<bdi dir="ltr" data-ltr>`), all `translate="no"`. `<T i18nKey values>` renders a translation with each interpolated value in `<bdi>`; `isolate()` / `isolateValues()` wrap values in FSI…PDI for attribute text (`aria-label`, `title`). |
+| `src/examples/` (`@ralysa/ui/examples`) | Every component's `*.examples.tsx`, collected in `ALL_EXAMPLES` for the `apps/ui-lab` gallery. A separate entry point, so apps never bundle them. Examples hold no text: the gallery passes `labels` (`EXAMPLE_LABELS`) from its own `lab` catalog, so example copy stays out of the shipped `ui` catalog. |
+
 ## Scripts
 
 | Script | Does |
 |---|---|
-| `build` | `build-tokens.ts`, then `tsc -p tsconfig.build.json` (browser library emit: no Node types in `src/`) |
+| `build` | `build-tokens.ts`, `font-licenses.ts` (licence check and copies), then `tsc -p tsconfig.build.json` (browser library emit: no Node types in `src/`) |
 | `check:generated` | Regenerates the token outputs and the i18n key types (CI then runs `git status --porcelain`) |
 | `lint` | ESLint (`base`, `react-ui` against `src/styles/tailwind.css`, `tests`), Stylelint (`@ralysa/stylelint-config`) and `i18next-cli extract --ci --dry-run`: raw colours, logical layout, token-backed classes, no hard-coded strings, no missing keys (AC-3 to AC-6) |
 | `test` | Vitest: token schema and generator (TC-F-001-06), contrast gate on the real pairs (TC-F-001-23), theme plumbing, i18n runtime and locale switch (AC-6), extract `--ci` behaviour (TC-F-001-12), contract parity with `check-i18n` and typed keys |
