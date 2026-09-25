@@ -82,15 +82,26 @@ export const MigrateAuditConfig = z.strictObject({
 export type MigrateAuditConfig = z.infer<typeof MigrateAuditConfig>;
 
 /**
- * The sealer process (§4.6; SEC-F002-02, -26): only the audit_sealer credential. T16 adds the
- * checkpoint key and cadence (`checkpoint_key`, `checkpoint_interval_s`).
+ * The sealer process (§4.6, §4.7; SEC-F002-02, -26): the audit_sealer credential, plus the
+ * insert-only audit_writer for its own secret.custody_violation events, and the checkpoint key.
  */
 export const SealerConfig = z.strictObject({
   ...Common,
+  checkpoint_key: z.literal('ralysa-audit-checkpoint'),
   interval_ms: z.int().min(100).max(60_000).default(1000),
   sweep_interval_s: z.int().min(60).max(86_400).default(3600),
-  db_credentials: z.strictObject({ audit_sealer: KvPath }),
+  checkpoint_interval_s: z.int().min(1).max(3600).default(60),
+  custody_poll_s: z.int().min(1).max(300).default(30),
+  db_credentials: z.strictObject({ audit_sealer: KvPath, audit_writer: KvPath }),
 });
 export type SealerConfig = z.infer<typeof SealerConfig>;
 
-export type CommonConfig = MigrateConfig | MigrateAuditConfig | SealerConfig;
+/** `audit-verify` (§4.7): read-only, the reader credential and the checkpoint key's public keys. */
+export const AuditVerifyConfig = z.strictObject({
+  ...Common,
+  checkpoint_key: z.literal('ralysa-audit-checkpoint'),
+  db_credentials: z.strictObject({ audit_reader: KvPath }),
+});
+export type AuditVerifyConfig = z.infer<typeof AuditVerifyConfig>;
+
+export type CommonConfig = MigrateConfig | MigrateAuditConfig | SealerConfig | AuditVerifyConfig;

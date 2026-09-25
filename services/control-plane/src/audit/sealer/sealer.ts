@@ -15,6 +15,12 @@ import type { Database } from '../../db/types.js';
 import type { Logger } from '../../observability/logger.js';
 import { type Metrics, noopMetrics } from '../../observability/metrics.js';
 import { type AuditEventRow, rowEventHash } from './chain.js';
+import {
+  CHECKPOINT_INTERVAL_MS,
+  CUSTODY_POLL_MS,
+  type CheckpointSigner,
+  checkpointOnce,
+} from './checkpoint.js';
 
 export const SEAL_LOOKBACK_ROWS = 10_000;
 export const SEAL_BATCH = 1_000;
@@ -130,6 +136,12 @@ export interface SealerLoopOptions extends Omit<SealOptions, 'sweep'> {
   sweepEveryMs?: number;
   logger: Logger;
   signal: AbortSignal;
+  /** Signed chain-head checkpoints (T16). Without it the loop only seals. */
+  checkpoints?: {
+    signer: CheckpointSigner;
+    intervalMs?: number;
+    custodyPollMs?: number;
+  };
 }
 
 const pause = (ms: number, signal: AbortSignal) =>
@@ -159,6 +171,13 @@ export async function runSealerLoop(options: SealerLoopOptions): Promise<void> {
   const sweepEveryMs = options.sweepEveryMs ?? 3_600_000;
   const metrics = options.metrics ?? noopMetrics;
   let lastSweep = Date.now();
+  const checkpoints = options.checkpoints;
+  let lastCustodyPoll = 0;
+  let lastCheckpoint = 0;
+  if (checkpoints !== undefined) {
+    await checkpoints.signer.poll();
+    lastCustodyPoll = Date.now();
+  }
   while (!options.signal.aborted) {
     const sweep = Date.now() - lastSweep >= sweepEveryMs;
     try {
@@ -170,6 +189,22 @@ export async function runSealerLoop(options: SealerLoopOptions): Promise<void> {
             shard: pass.shard,
             lag_seconds: pass.lagSeconds,
           });
+        }
+      }
+      if (checkpoints !== undefined) {
+        if (Date.now() - lastCustodyPoll >= (checkpoints.custodyPollMs ?? CUSTODY_POLL_MS)) {
+          await checkpoints.signer.poll();
+          lastCustodyPoll = Date.now();
+        }
+        if (Date.now() - lastCheckpoint >= (checkpoints.intervalMs ?? CHECKPOINT_INTERVAL_MS)) {
+          await checkpointOnce({
+            db: options.db,
+            orgId: options.orgId,
+            shards: options.shards ?? SHARDS,
+            signer: checkpoints.signer,
+            logger: options.logger,
+          });
+          lastCheckpoint = Date.now();
         }
       }
     } catch (error) {

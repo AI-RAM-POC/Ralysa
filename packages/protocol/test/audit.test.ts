@@ -9,6 +9,7 @@ import {
   F002_ACTIONS,
   Outcome,
   RESERVED_DETAIL_KEYS,
+  checkpointPayload,
   findReservedKeys,
   isReservedAction,
   outcomeAllowed,
@@ -166,4 +167,28 @@ describe('reserved details keys (SEC-F002-15)', () => {
   it('finds nothing in clean client data, and ignores reserved words used as values', () => {
     expect(findReservedKeys({ pack_id: 'p', note: 'server', list: ['late'] })).toEqual([]);
   });
+});
+
+// No DOM/Node types in the isomorphic tsconfig: decode ASCII by hand.
+const decode = (bytes: Uint8Array): string => String.fromCharCode(...bytes);
+
+describe('checkpointPayload (§4.7)', () => {
+  const head = {
+    org_id: '0192f0a0-7b3c-7d4e-8f00-00000000000f',
+    shard: 'control-plane',
+    seq: 42,
+    hash: '18c0ae2ec72a72445b9152793cde63104e0016b7c957666f4c83c65306706c3d',
+    checkpoint_ts: '2026-09-25T10:01:00.000Z',
+  };
+  it('is the JCS of the five members, byte for byte', () => {
+    expect(decode(checkpointPayload(head))).toBe(
+      '{"checkpoint_ts":"2026-09-25T10:01:00.000Z","hash":"18c0ae2ec72a72445b9152793cde63104e0016b7c957666f4c83c65306706c3d","org_id":"0192f0a0-7b3c-7d4e-8f00-00000000000f","seq":42,"shard":"control-plane"}',
+    );
+  });
+  it.each([{ hash: 'AB' }, { checkpoint_ts: '2026-09-25T10:01:00Z' }, { seq: 0 }])(
+    'refuses %o',
+    (change) => {
+      expect(() => checkpointPayload({ ...head, ...change })).toThrow();
+    },
+  );
 });

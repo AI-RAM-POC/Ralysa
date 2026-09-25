@@ -16,13 +16,14 @@ schema and logs in to OpenBao as its own role (SEC-F002-02). So far:
 | --------------------------------- | --------------------------------------------------------------------- | ------------------------------- |
 | `migrate --config <file>`         | `ralysa_migrator`                                                     | `db_credentials.migrator`       |
 | `migrate --audit --config <file>` | `ralysa_audit_migrator` → `SET ROLE ralysa_audit_owner` (break-glass) | `db_credentials.audit_migrator` |
-| `sealer --config <file>` | `ralysa_audit_sealer` (its own process and deployment) | `db_credentials.audit_sealer` |
+| `sealer --config <file>` | `ralysa_audit_sealer` (its own process and deployment); `ralysa_audit_writer` for its own `secret.custody_violation` | `db_credentials.audit_sealer`, `.audit_writer`; signs with Transit `ralysa-audit-checkpoint` |
+| `audit-verify --config <file> [--org <uuid>] [--shard <s>] [--log-checkpoints <jsonl>]` | `ralysa_audit_reader` (read-only) | `db_credentials.audit_reader`; reads the checkpoint key's public versions |
 
 Both migrate jobs also write one `db.migration.applied` per applied migration (with the
 `migrations.lock.json` checksum) through `db_credentials.audit_writer`. If that write fails the
 job exits non-zero, saying the migrations were applied but not recorded.
 
-`serve`, `audit-verify` and `bootstrap-org` arrive with F-002-T07 and T16.
+`serve` and `bootstrap-org` arrive with F-002-T07.
 
 ## Audit core
 
@@ -47,6 +48,23 @@ job exits non-zero, saying the migrations were applied but not recorded.
   - Metrics: `audit_seal_lag_seconds` (alert above 5 s; the loop also logs
     `audit_seal_lag_high`) and `audit_seal_late_total`.
   - `verifyChain()` recomputes a chain from genesis and reports the first divergent `seq`.
+- **Checkpoints** (`src/audit/sealer/checkpoint.ts`, D-28):
+  - Every `checkpoint_interval_s` (60 s), for each shard with new seals, the sealer signs
+    `JCS({org_id, shard, seq, hash, checkpoint_ts})` with the latest version of
+    `ralysa-audit-checkpoint`. It inserts `audit.audit_checkpoint` and logs the same record as
+    one `audit_checkpoint` line, the off-host copy.
+  - Every `custody_poll_s` (30 s) it re-reads the key's `exportable` and
+    `allow_plaintext_backup`. If either is set, checkpoint signing stops (sealing continues),
+    `secret.custody_violation` is written once, and the `secret_custody_violation` gauge goes
+    to 1.
+- **`audit-verify`** (`src/audit/verify/audit-verify.ts`) checks, per shard, and prints the
+  first divergent `seq`, exiting non-zero on any finding:
+  - every checkpoint signature against its key version;
+  - the chain recomputed from the events (not trusted from the seals);
+  - agreement between that chain and each signed hash;
+  - cadence (≤ 120 s between checkpoints with seals between them, and no seal older than
+    120 s left uncovered: `checkpoint_gap`);
+  - with `--log-checkpoints`, that every logged checkpoint is still in the table unchanged.
   - Metrics and logs go through small ports (`src/observability/`) that T07 binds to the
     service's exporter and pino.
 

@@ -1,6 +1,6 @@
-# Dev-stack config for `control-plane sealer` (F-002 design §3.8, §8.2).
+# Dev-stack config for `control-plane audit-verify` (F-002 design §3.8, §8.2).
 # Identifiers and vault paths only. The OpenBao token is read from the environment variable named
-# below (pnpm --filter @ralysa/control-plane start:sealer:dev loads deploy/docker/dev/.env); token auth
+# below (pnpm --filter @ralysa/control-plane audit-verify:dev loads deploy/docker/dev/.env); token auth
 # is refused outside env dev/test.
 env: dev
 org:
@@ -21,5 +21,4 @@ db:
   ssl: false
 checkpoint_key: ralysa-audit-checkpoint
 db_credentials:
-  audit_sealer: kv/ralysa/control-plane/db/audit_sealer
-  audit_writer: kv/ralysa/control-plane/db/audit_writer
+  audit_reader: kv/ralysa/control-plane/db/audit_reader

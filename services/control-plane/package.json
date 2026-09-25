@@ -4,6 +4,8 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "audit-verify": "node dist/main.js audit-verify",
+    "audit-verify:dev": "node --env-file=../../deploy/docker/dev/.env dist/main.js audit-verify --config ../../deploy/docker/dev/control-plane.audit-verify.dev.yaml",
     "build": "tsc -p tsconfig.build.json",
     "lint": "eslint .",
     "migrate": "node dist/main.js migrate",
