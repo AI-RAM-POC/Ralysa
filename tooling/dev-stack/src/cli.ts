@@ -2,7 +2,9 @@
 // dev-stack CLI (F-002 design §8.2). Runs on Node 24 type stripping, with no installed packages:
 //   node tooling/dev-stack/src/cli.ts env [--out <file>] [--force] [--github-mask]
 //   node tooling/dev-stack/src/cli.ts bootstrap [--env-file <file>]
-// `env` writes deploy/docker/dev/.env; `bootstrap` sets up OpenBao, then the Postgres roles.
+//   node tooling/dev-stack/src/cli.ts mock-idp [control <METHOD> <path> [json]]
+// `env` writes deploy/docker/dev/.env; `bootstrap` sets up OpenBao, then the Postgres roles;
+// `mock-idp` runs the mock IdP on the host (needs `pnpm install`; loaded only for this command).
 import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { rolesScript, runPsql, verifiersFor } from './bootstrap-db.ts';
@@ -19,7 +21,8 @@ import {
 
 const USAGE = `usage:
   node tooling/dev-stack/src/cli.ts env [--out <file>] [--force] [--github-mask]
-  node tooling/dev-stack/src/cli.ts bootstrap [--env-file <file>]`;
+  node tooling/dev-stack/src/cli.ts bootstrap [--env-file <file>]
+  node tooling/dev-stack/src/cli.ts mock-idp [control <METHOD> <path> [json]]`;
 
 function envCommand(args: string[]): void {
   const { values } = parseArgs({
@@ -83,7 +86,12 @@ async function main(argv: string[]): Promise<number> {
   try {
     if (command === 'env') envCommand(rest);
     else if (command === 'bootstrap') await bootstrapCommand(rest);
-    else {
+    else if (command === 'mock-idp') {
+      // Imported here: oidc-provider must not be needed by `env`, which runs before install.
+      const mockIdp = await import('./mock-idp/main.ts');
+      await mockIdp.main(rest);
+      return typeof process.exitCode === 'number' ? process.exitCode : 0;
+    } else {
       console.error(USAGE);
       return 2;
     }
