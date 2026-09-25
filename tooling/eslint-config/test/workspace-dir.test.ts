@@ -2,19 +2,25 @@
 // from the repo root (`eslint packages/x/src/…`) placed the LOADING_EXCEPTIONS globs relative to
 // the root and silently dropped the exception, while `eslint .` inside packages/x kept it. The
 // workspace now comes from `workspaceDir: import.meta.dirname`, like base()'s tsconfigRootDir.
-// This runs the real ESLint CLI in a subprocess from both places and compares the results.
-import { execFileSync } from 'node:child_process';
+// This runs real ESLint in a subprocess from both places and compares the results.
+//
+// One subprocess per working directory (not one per CLI call): each one loads the whole preset
+// stack once, then asks for the resolved config of both files and lints them, through the same
+// ESLint class the CLI uses, with the default cwd (process.cwd()), as the CLI does. The two run
+// concurrently. Eight separate `eslint` CLI runs took ~9 s locally and over 70 s on a loaded CI
+// runner, past the 30 s test timeout (PR #17).
+import { execFile } from 'node:child_process';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { afterAll, describe, expect, it } from 'vitest';
+import { promisify } from 'node:util';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { RESTRICTED_SYNTAX } from '../boundaries.js';
 import { reactUi, UI_RESTRICTED_SYNTAX } from '../react-ui.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const pkg = join(here, '..');
-const eslintBin = join(dirname(fileURLToPath(import.meta.resolve('eslint'))), '../bin/eslint.js');
 const SYNTAX = 'no-restricted-syntax';
 
 // A throwaway repo: pnpm-workspace.yaml at its root and one UI workspace, packages/x, whose
@@ -46,36 +52,47 @@ const LOADER = 'const spec = "x";\nexport const p = import(spec);\n';
 writeFileSync(join(workspace, 'src/legacy/a.js'), LOADER);
 writeFileSync(join(workspace, 'src/a.js'), LOADER);
 
-function eslint(cwd: string, args: string[]): string {
-  try {
-    return execFileSync(process.execPath, [eslintBin, ...args], { cwd, encoding: 'utf8' });
-  } catch (error) {
-    // Exit 1 means lint errors; stdout still holds the report.
-    const { status, stdout } = error as { status: number; stdout: string };
-    if (status === 1) return stdout;
-    throw error;
-  }
+// The driver, written into the throwaway repo. argv: the files, relative to the cwd. It prints
+// { [file]: { rule, errors } }: the resolved no-restricted-syntax setting and how many
+// no-restricted-syntax errors the file gets.
+const driver = join(repo, 'driver.mjs');
+writeFileSync(
+  driver,
+  [
+    `import { ESLint } from ${JSON.stringify(import.meta.resolve('eslint'))};`,
+    'const files = process.argv.slice(2);',
+    'const eslint = new ESLint();',
+    'const results = await eslint.lintFiles(files);',
+    'const out = {};',
+    'for (const [i, file] of files.entries()) {',
+    '  const config = await eslint.calculateConfigForFile(file);',
+    `  const errors = results[i].messages.filter((m) => m.ruleId === ${JSON.stringify(SYNTAX)}).length;`,
+    `  out[file] = { rule: config.rules[${JSON.stringify(SYNTAX)}], errors };`,
+    '}',
+    'process.stdout.write(JSON.stringify(out));',
+    '',
+  ].join('\n'),
+);
+
+type Report = Record<string, { rule: unknown; errors: number }>;
+const FILES = ['src/legacy/a.js', 'src/a.js'];
+
+async function run(cwd: string, prefix: string): Promise<Report> {
+  const { stdout } = await promisify(execFile)(
+    process.execPath,
+    [driver, ...FILES.map((f) => prefix + f)],
+    { cwd, encoding: 'utf8' },
+  );
+  const report = JSON.parse(stdout) as Report;
+  // Key by the workspace-relative path, so both runs are directly comparable.
+  return Object.fromEntries(FILES.map((f) => [f, report[prefix + f]!]));
 }
 
-const syntaxRule = (cwd: string, file: string): unknown => {
-  const config = JSON.parse(eslint(cwd, ['--print-config', file])) as {
-    rules: Record<string, unknown>;
-  };
-  return config.rules[SYNTAX];
-};
-
-const syntaxErrors = (cwd: string, files: string[]): Record<string, number> => {
-  const results = JSON.parse(eslint(cwd, ['--format', 'json', ...files])) as {
-    filePath: string;
-    messages: { ruleId: string | null }[];
-  }[];
-  return Object.fromEntries(
-    results.map((r) => [
-      r.filePath.slice(workspace.length + 1),
-      r.messages.filter((m) => m.ruleId === SYNTAX).length,
-    ]),
-  );
-};
+let fromRoot: Report;
+let fromWorkspace: Report;
+beforeAll(async () => {
+  [fromRoot, fromWorkspace] = await Promise.all([run(repo, 'packages/x/'), run(workspace, '')]);
+}, 60_000);
 
 describe('reactUi({ workspaceDir }): the same result from any working directory', () => {
   it('requires workspaceDir (or an explicit workspace)', () => {
@@ -83,26 +100,17 @@ describe('reactUi({ workspaceDir }): the same result from any working directory'
     expect(() => reactUi({ workspace: 'packages/x' })).not.toThrow();
   });
 
-  it('--print-config: identical from the repo root and from the workspace', () => {
-    for (const file of ['src/legacy/a.js', 'src/a.js']) {
-      const fromRoot = syntaxRule(repo, `packages/x/${file}`);
-      const fromWorkspace = syntaxRule(workspace, file);
-      expect(fromRoot).toEqual(fromWorkspace);
-    }
+  it('resolved config: identical from the repo root and from the workspace', () => {
+    for (const file of FILES) expect(fromRoot[file]?.rule).toEqual(fromWorkspace[file]?.rule);
     // And the exception is really applied: only the UI selector remains in the excepted file.
-    expect(syntaxRule(repo, 'packages/x/src/legacy/a.js')).toEqual([2, ...UI_RESTRICTED_SYNTAX]);
-    expect(syntaxRule(repo, 'packages/x/src/a.js')).toEqual([
-      2,
-      ...RESTRICTED_SYNTAX,
-      ...UI_RESTRICTED_SYNTAX,
-    ]);
+    expect(fromRoot['src/legacy/a.js']?.rule).toEqual([2, ...UI_RESTRICTED_SYNTAX]);
+    expect(fromRoot['src/a.js']?.rule).toEqual([2, ...RESTRICTED_SYNTAX, ...UI_RESTRICTED_SYNTAX]);
   });
 
   it('lint results: the excepted file passes and the other fails, from both places', () => {
+    const errors = (report: Report) => Object.fromEntries(FILES.map((f) => [f, report[f]?.errors]));
     const expected = { 'src/a.js': 1, 'src/legacy/a.js': 0 };
-    expect(syntaxErrors(repo, ['packages/x/src/a.js', 'packages/x/src/legacy/a.js'])).toEqual(
-      expected,
-    );
-    expect(syntaxErrors(workspace, ['src/a.js', 'src/legacy/a.js'])).toEqual(expected);
+    expect(errors(fromRoot)).toEqual(expected);
+    expect(errors(fromWorkspace)).toEqual(expected);
   });
 });
