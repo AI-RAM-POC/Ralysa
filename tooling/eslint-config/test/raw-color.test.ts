@@ -36,6 +36,10 @@ ruleTester.run('ralysa/no-raw-color', noRawColor, {
     "import x from '#internal/fff';\nexport { x };",
     'const n = 0xfff;',
     "const style = { background: 'var(--ralysa-color-bg-subtle)' };",
+    "const style = { color: 'inherit', borderColor: 'transparent', fill: 'currentColor' };",
+    "const style = { background: 'url(/img/red.png) center' };",
+    "const copy = { label: 'red', tone: 'Crimson' };", // not colour-typed keys
+    "const style = { color: 'var(--ralysa-color-status-danger)' };",
     'const el = <div className="bg-surface p-4" />;',
   ],
   invalid: [
@@ -60,6 +64,14 @@ ruleTester.run('ralysa/no-raw-color', noRawColor, {
     { code: 'const el = <div className="text-[rgb(0_0_0)]" />;', errors: [error] },
     { code: 'const el = <div className="border-[oklch(62%_0.2_250)]" />;', errors: [error] },
     { code: "const el = <div style={{ borderColor: 'hsl(0 0% 50%)' }} />;", errors: [error] },
+    // Code review 4: named colours in colour-typed style keys, any case.
+    { code: "const el = <div style={{ color: 'red' }} />;", errors: [error] },
+    { code: "const el = <div style={{ borderColor: 'Crimson' }} />;", errors: [error] },
+    { code: "const el = <div style={{ background: 'url(a.png) navy' }} />;", errors: [error] },
+    { code: "const el = <div style={{ border: '1px solid BLACK' }} />;", errors: [error] },
+    { code: "const el = <div style={{ boxShadow: '0 0 0 1px red' }} />;", errors: [error] },
+    { code: "const s = { 'background-color': 'white' };", errors: [error] },
+    { code: 'const s = { fill: `darkred` };', errors: [error] },
   ],
 });
 

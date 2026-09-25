@@ -11,7 +11,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "lint": "eslint .",
+    "lint": "eslint . && stylelint \"**/*.css\" --allow-empty-input",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json"
   },
@@ -20,6 +20,7 @@
   },
   "devDependencies": {
     "@ralysa/eslint-config": "workspace:*",
+    "@ralysa/stylelint-config": "workspace:*",
     "@ralysa/tsconfig": "workspace:*",
     "@ralysa/vitest-config": "workspace:*",
     "@types/react": "catalog:",
@@ -27,6 +28,7 @@
     "eslint": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
+    "stylelint": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },

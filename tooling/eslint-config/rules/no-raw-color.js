@@ -5,6 +5,22 @@
 // a token-backed Tailwind class, or tokenVar() for the rare inline case. `color-mix()` over
 // `var()` operands is allowed. Token definition files (packages/ui/tokens/**, the generated CSS)
 // are JSON and CSS, so this rule never sees them.
+// Named colours (`red`, `Crimson`) are reported only as the value of a colour-typed style key
+// (`color`, `backgroundColor`, `borderColor`, `border`, `boxShadow`, `fill`, ...), since the words
+// are too common elsewhere (code review 4). Tailwind arbitrary values are no-restricted-classes'.
+import { NAMED_COLOR_IN_VALUE } from '../css-values.js';
+
+/**
+ * Style keys whose value is (or contains) a colour, camelCase or kebab-case, compared with the
+ * dashes removed and lowercased.
+ */
+const COLOR_KEY =
+  /^(?:.*colou?r|background|border(?:top|right|bottom|left|block|inline|blockstart|blockend|inlinestart|inlineend)?|outline|boxshadow|textshadow|fill|stroke|columnrule|textdecoration)$/;
+
+/** @param {string} key */
+export function isColorKey(key) {
+  return COLOR_KEY.test(key.replaceAll('-', '').toLowerCase());
+}
 
 /** `#rgb`, `#rgba`, `#rrggbb`, `#rrggbbaa`, not part of a word, an entity (`&#123;`) or `##`. */
 const HEX = /(?<![\w&#])#(?:[0-9a-f]{8}|[0-9a-f]{6}|[0-9a-f]{3,4})(?![\w-])/i;
@@ -60,6 +76,28 @@ export const noRawColor = {
       },
       TemplateElement(node) {
         check(node, node.value.cooked ?? node.value.raw);
+      },
+      Property(node) {
+        const key =
+          node.key.type === 'Identifier'
+            ? node.key.name
+            : node.key.type === 'Literal' && typeof node.key.value === 'string'
+              ? node.key.value
+              : undefined;
+        if (node.computed || key === undefined || !isColorKey(key)) return;
+        const texts =
+          node.value.type === 'Literal' && typeof node.value.value === 'string'
+            ? [node.value.value]
+            : node.value.type === 'TemplateLiteral'
+              ? node.value.quasis.map((quasi) => quasi.value.cooked ?? quasi.value.raw)
+              : [];
+        for (const text of texts) {
+          const named = NAMED_COLOR_IN_VALUE.exec(text)?.[0];
+          if (named !== undefined) {
+            context.report({ node: node.value, messageId: 'rawColor', data: { value: named } });
+            return;
+          }
+        }
       },
     };
   },

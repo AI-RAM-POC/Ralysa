@@ -108,6 +108,9 @@ importers:
       '@ralysa/eslint-config':
         specifier: workspace:*
         version: link:../../tooling/eslint-config
+      '@ralysa/stylelint-config':
+        specifier: workspace:*
+        version: link:../../tooling/stylelint-config
       '@ralysa/tsconfig':
         specifier: workspace:*
         version: link:../../tooling/tsconfig
@@ -129,6 +132,9 @@ importers:
       i18next-cli:
         specifier: 'catalog:'
         version: 1.74.1(@types/node@24.13.6)(react-dom@19.3.0(react@19.3.0))(react@19.3.0)(typescript@6.0.3)
+      stylelint:
+        specifier: 'catalog:'
+        version: 17.15.0(supports-color@10.2.2)(typescript@6.0.3)
       typescript:
         specifier: 'catalog:'
         version: 6.0.3

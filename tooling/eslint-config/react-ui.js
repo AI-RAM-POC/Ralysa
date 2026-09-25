@@ -19,12 +19,28 @@ import jsxA11y from 'eslint-plugin-jsx-a11y';
 import reactHooks from 'eslint-plugin-react-hooks';
 import globals from 'globals';
 import { dirname } from 'node:path';
-import { JS_FILES } from './base.js';
+import { boundaryRules, JS_FILES } from './base.js';
 import { ralysaPlugin } from './rules/index.js';
 import { LOGICAL_IGNORE, NO_THEME_ENTRY_POINT, RESTRICTED_CLASSES } from './tailwind.js';
 import { TEST_FILES } from './tests.js';
 
 export const UI_FILES = ['**/*.{js,mjs,jsx,ts,tsx}'];
+
+/**
+ * eslint-plugin-i18next skips the whole initialiser of an ALL-CAPS variable (it treats
+ * `const FAQ = …` as a constant), so JSX text there escaped AC-5 (code review 1). This selector
+ * closes that gap: any letter-bearing JSX text or string/template child under such a variable.
+ * esquery accepts the `u` flag, so `\p{L}` covers Arabic as well as Latin.
+ * @type {import('./boundaries.js').RestrictedSyntax[]}
+ */
+export const UI_RESTRICTED_SYNTAX = [
+  {
+    selector:
+      'VariableDeclarator[id.name=/^[A-Z][A-Z0-9_]*$/] :matches(JSXText[value=/\\p{L}/u], JSXExpressionContainer > Literal[value=/\\p{L}/u], JSXExpressionContainer > TemplateLiteral > TemplateElement[value.raw=/\\p{L}/u])',
+    message:
+      'User-visible text must come from an i18n key, e.g. t("ns:area.element") (AC-5). ALL-CAPS variables are not exempt.',
+  },
+];
 
 /**
  * JSX attributes whose string value a user reads or hears (§7.4.4). The design's list is
@@ -115,6 +131,12 @@ export function reactUi({ files = UI_FILES, tailwindEntryPoint = NO_THEME_ENTRY_
           },
         ],
         'ralysa/no-literal-attribute-text': ['error', { attributes: USER_VISIBLE_ATTRIBUTES }],
+        'ralysa/no-unpaired-direction-variant': 'error',
+        // Base's boundary selectors plus the UI one. A flat-config rule entry replaces earlier
+        // options, so the base entries are merged in through boundaryRules(), never dropped.
+        'no-restricted-syntax': boundaryRules({ syntax: UI_RESTRICTED_SYNTAX })[
+          'no-restricted-syntax'
+        ],
       },
     },
   ];

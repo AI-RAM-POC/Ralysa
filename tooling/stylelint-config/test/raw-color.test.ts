@@ -37,10 +37,18 @@ describe('raw colours in CSS (AC-3)', () => {
     expect(await rulesFor(code)).toEqual([]);
   });
 
-  it.each(['packages/ui/tokens/brand.css', 'packages/ui/dist/css/tokens.css'])(
-    'ignores token definition and generated files: %s',
+  // Paths are relative to the config base, which is the workspace in real use (the cwd here).
+  it.each(['tokens/brand.css', 'dist/css/tokens.css'])(
+    'ignores the workspace-root token folder and the generated tokens.css: %s',
     async (file) => {
       expect(await rulesFor('.a { color: #fff; }', file)).toEqual([]);
+    },
+  );
+
+  it.each(['src/components/tokens/probe.css', 'src/tokens/theme.css', 'src/dist-like/x.css'])(
+    'lints a tokens/ folder anywhere else (code review 6): %s',
+    async (file) => {
+      expect(await rulesFor('.a { color: #fff; }', file)).toEqual(['color-no-hex']);
     },
   );
 

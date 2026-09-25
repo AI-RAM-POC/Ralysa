@@ -10,9 +10,10 @@
 //     by declaration-property-value-disallowed-list.
 //   - focus (§7.7): an outline can't be removed without a described disable (the replacement
 //     ring is then visible in review).
-// Token definition files are exempt: packages/ui/tokens/** is JSON, and the generated
-// dist/css/tokens.css is ignored below.
+// Token definition files are exempt: the workspace-root tokens/ (packages/ui/tokens/**, JSON) and
+// the generated dist/css/tokens.css are ignored below, relative to the config base only.
 // Every disable comment needs a description (`/* stylelint-disable-next-line rule -- why */`).
+import { ASYMMETRIC_FOUR_VALUES, CSS_VALUE_TOKEN } from '@ralysa/eslint-config/css-values';
 import logicalCss from 'stylelint-plugin-logical-css';
 
 /** Colour functions that take literal channel values. `color-mix` is not on the list. */
@@ -77,15 +78,9 @@ export const NON_DIRECTIONAL_KEYWORD_PROPERTIES = [
   'resize',
 ];
 
-// One CSS value token: a word, optionally followed by a (once-nested) parenthesised argument
-// list, so `calc(var(--a) + 1px)` counts as one value.
-const PARENS = String.raw`\((?:[^()]|\([^()]*\))*\)`;
-const TOKEN = String.raw`(?:[^\s()/,]+(?:${PARENS})?|${PARENS})`;
-
-/** `a b c d` where the 2nd (right) and 4th (left) values differ. */
-export const ASYMMETRIC_FOUR_VALUES = new RegExp(
-  String.raw`^\s*${TOKEN}\s+(${TOKEN})\s+${TOKEN}\s+(?!\1\s*$)${TOKEN}\s*$`,
-);
+// Shared with the ESLint rules, so the inline-style and CSS checks can't drift apart.
+const TOKEN = CSS_VALUE_TOKEN;
+export { ASYMMETRIC_FOUR_VALUES };
 /**
  * Corner radii (before an optional `/`) that differ between the left and right sides. Allowed:
  * one value, all values equal, or four values `a a b b` (top corners equal, bottom corners
@@ -94,7 +89,8 @@ export const ASYMMETRIC_FOUR_VALUES = new RegExp(
 export const UNEVEN_RADII = new RegExp(
   String.raw`^(?!\s*(${TOKEN})\s+\1\s+(${TOKEN})\s+\2\s*(?:\/|$))\s*(${TOKEN})(?:\s+\3(?=\s|\/|$))*\s+(?!\3(?=\s|\/|$))${TOKEN}`,
 );
-const LEFT_OR_RIGHT = /(?<![\w-])(?:left|right)(?![\w-])/i;
+/** A `left`/`right` keyword, not part of a word, a URL path or a file name (`url(img/left.png)`). */
+const LEFT_OR_RIGHT = /(?<![\w\-./])(?:left|right)(?![\w\-./])/i;
 /** A horizontal translate() in a transform, unless it uses the direction sign. */
 const TRANSFORM_TRANSLATE_X =
   /^(?![\s\S]*--ralysa-dir-sign)[\s\S]*\btranslate(?:x|3d)?\(\s*(?!0[a-z%]*\s*[,)])/i;
@@ -116,6 +112,7 @@ const FOUR_VALUE_SHORTHANDS = [
 const DISALLOWED_VALUES = {
   ...Object.fromEntries(FOUR_VALUE_SHORTHANDS.map((prop) => [prop, [ASYMMETRIC_FOUR_VALUES]])),
   'border-radius': [UNEVEN_RADII],
+  background: [LEFT_OR_RIGHT],
   'background-position': [LEFT_OR_RIGHT],
   'background-position-x': [LEFT_OR_RIGHT],
   'transform-origin': [LEFT_OR_RIGHT],
@@ -164,7 +161,10 @@ const tokenMessage = (label) => (value) =>
 /** @type {import('stylelint').Config} */
 const config = {
   plugins: [...logicalCss],
-  ignoreFiles: ['**/dist/**', '**/node_modules/**', '**/coverage/**', '**/tokens/**'],
+  // Anchored to the config base (the UI workspace running Stylelint): the token source folder at
+  // the workspace root (packages/ui/tokens/, JSON today) and the build output, which holds the
+  // generated dist/css/tokens.css. A `tokens/` folder anywhere else is linted (code review 6).
+  ignoreFiles: ['tokens/**', 'dist/**', 'coverage/**', '**/node_modules/**'],
   reportDescriptionlessDisables: true,
   reportNeedlessDisables: true,
   reportInvalidScopeDisables: true,

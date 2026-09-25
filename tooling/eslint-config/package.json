@@ -12,6 +12,10 @@
     "./boundaries": {
       "types": "./dist/boundaries.d.ts",
       "default": "./boundaries.js"
+    },
+    "./css-values": {
+      "types": "./dist/css-values.d.ts",
+      "default": "./css-values.js"
     }
   },
   "scripts": {

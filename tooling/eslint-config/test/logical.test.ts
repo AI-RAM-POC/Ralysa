@@ -23,6 +23,7 @@ const ruleTester = new RuleTester({
 
 const property = { messageId: 'property' } as const;
 const value = { messageId: 'value' } as const;
+const shorthand = { messageId: 'shorthand' } as const;
 
 ruleTester.run('ralysa/no-physical-inline-style', noPhysicalInlineStyle, {
   valid: [
@@ -31,6 +32,8 @@ ruleTester.run('ralysa/no-physical-inline-style', noPhysicalInlineStyle, {
     '<div style={{ marginTop: 4, paddingBottom: 4, top: 0, bottom: 0, width: 10, height: 10 }} />',
     '<div style={{ textAlign: "start", float: "inline-end", clear: "inline-start" }} />',
     '<div style={{ textAlign: "center" }} />',
+    "<div style={{ margin: '0 1px 0 1px', padding: '0 1rem', inset: '0 auto' }} />",
+    "<div style={{ margin: '1px 2px 3px 2px', borderWidth: '1px' }} />",
     '<div style={{ ["marginLeft"]: 4 }} />', // computed keys are not analysed
     '<div data-left="1" left={4} />',
     '<div style={styles} />',
@@ -73,6 +76,15 @@ ruleTester.run('ralysa/no-physical-inline-style', noPhysicalInlineStyle, {
     { code: '<div style={{ ...{ marginRight: 4 } }} />', errors: [property] },
     { code: '<div style={{ left: 0 } as CSSProperties} />', errors: [property] },
     { code: '<div style={{ right: 0 } satisfies CSSProperties} />', errors: [property] },
+    // Code review 7: 4-value shorthands whose right and left differ.
+    ...[
+      "margin: '0 1px 0 2px'",
+      "padding: '4px 8px 4px 0'",
+      "inset: '0 auto 0 0'",
+      "scrollPadding: '0 0 0 1rem'",
+      "borderWidth: '1px 2px 1px 0'",
+      "borderColor: 'var(--a) var(--b) var(--a) var(--c)'",
+    ].map((entry) => ({ code: `<div style={{ ${entry} }} />`, errors: [shorthand] })),
   ],
 });
 
@@ -217,6 +229,76 @@ describe('Tailwind classes (better-tailwindcss)', () => {
       expect(await ruleIdsFor(`export const x = ${call};\n`)).toEqual([LOGICAL]);
     },
   );
+
+  // Code review 4: named colours in arbitrary values and properties, any case.
+  it.each([
+    'bg-[red]',
+    'text-[red]',
+    'outline-[red]',
+    'bg-[color:red]',
+    '[color:red]',
+    'shadow-[0_0_0_1px_red]',
+    'bg-[Crimson]',
+    'hover:border-[darkslategray]',
+  ])('named colour %s → no-restricted-classes (AC-3)', async (className) => {
+    expect(await classRules(className)).toEqual([RESTRICTED]);
+  });
+
+  it.each([
+    'bg-[transparent]',
+    'text-[currentcolor]',
+    'bg-[inherit]',
+    'bg-[url(/img/red.png)]',
+    'grid-cols-[1fr_auto]',
+  ])('allowed arbitrary value %s', async (className) => {
+    expect(await classRules(className)).toEqual([]);
+  });
+
+  // Code review 7: arbitrary horizontal translates.
+  it.each([
+    ['translate-[10px_0]', 'translate-[0_10px]'],
+    ['-translate-[50%_0]', 'translate-y-4'],
+    ['[translate:10px_0]', '[translate:0_10px]'],
+    ['[transform:translateX(4px)]', '[transform:translateY(4px)]'],
+  ])('%s → no-restricted-classes; %s passes', async (physical, logical) => {
+    expect(await classRules(physical)).toEqual([RESTRICTED]);
+    expect(await classRules(logical)).toEqual([]);
+  });
+
+  // Code review 5: ltr:/rtl: classes must come in mirrored pairs within one class list.
+  const UNPAIRED = 'ralysa/no-unpaired-direction-variant';
+  it.each([
+    'ltr:translate-x-2',
+    'rtl:origin-left',
+    'ltr:translate-x-2 rtl:translate-x-2',
+    'ltr:bg-left rtl:bg-left',
+    'rtl:bg-linear-to-r',
+    'hover:ltr:translate-x-2 rtl:-translate-x-2',
+  ])('unpaired %s → no-unpaired-direction-variant', async (className) => {
+    const ids = await classRules(className);
+    expect(ids.length).toBeGreaterThan(0);
+    expect(new Set(ids)).toEqual(new Set([UNPAIRED]));
+  });
+
+  it.each([
+    'ltr:translate-x-2 rtl:-translate-x-2',
+    'rtl:-translate-x-2 ltr:translate-x-2',
+    'hover:ltr:translate-x-2 hover:rtl:-translate-x-2',
+    'ltr:origin-top-left rtl:origin-top-right',
+    'ltr:bg-linear-to-tl rtl:bg-linear-to-tr',
+    'rtl:-scale-x-100',
+  ])('paired or non-directional %s passes', async (className) => {
+    expect(await classRules(className)).toEqual([]);
+  });
+
+  it('checks pairs across the arguments of a callee', async () => {
+    expect(
+      await ruleIdsFor("export const x = cn('ltr:translate-x-2', 'rtl:-translate-x-2');\n"),
+    ).toEqual([]);
+    expect(await ruleIdsFor("export const x = cn('ltr:translate-x-2', cond && 'p-2');\n")).toEqual([
+      UNPAIRED,
+    ]);
+  });
 
   it('does not apply the design-system rules to test files', async () => {
     expect(

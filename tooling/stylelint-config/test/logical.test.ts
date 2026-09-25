@@ -98,6 +98,8 @@ describe('shorthands and values (declaration-property-value-disallowed-list)', (
     ['background-position: left top', 'background-position: center top'],
     ['background-position: right 1rem bottom 1rem', 'background-position: 50% 100%'],
     ['background-position-x: right', 'background-position-y: bottom'],
+    ['background: url(a.png) left top no-repeat', 'background: url(a.png) center top no-repeat'],
+    ['background: var(--x) right 1rem center', 'background: url(img/left.png) center'],
     ['transform-origin: left center', 'transform-origin: center top'],
     ['transform: translateX(4px)', 'transform: translateY(4px)'],
     ['transform: translate(-50%, 0)', 'transform: translate(0, -50%)'],

@@ -80,6 +80,14 @@ describe('no hard-coded UI strings (AC-5)', () => {
     ['label on a component', '<Button label="Submit" />'],
     ['a literal inside an expression', '<Button label={"Submit"} />'],
     ['a literal branch of a condition', "<span title={open ? 'Open' : t('ui:state.closed')} />"],
+    // Code review 8: string concatenation.
+    ['a concatenation', "<button type=\"button\" aria-label={'Close ' + 'dialog'} />"],
+    ['a concatenation with an expression', "<span title={'Hello ' + t('ui:x.y')} />"],
+    // Code review 2: value is the visible label of submit/reset/button inputs.
+    ['value on input type=reset', '<input type="reset" value="Clear form" />'],
+    ['value on input type=submit', '<input type="submit" value="Send" />'],
+    ['value on input type={"button"}', '<input type={"button"} value="Go" />'],
+    ['value on input type={`submit`}', '<input type={`submit`} value="Send" />'],
   ])('ralysa/no-literal-attribute-text reports %s', async (_what, body) => {
     expect(await ruleIds(body.replace('open ?', '(Math.random() > 0.5) ?'))).toEqual([
       ATTRIBUTE_RULE,
@@ -99,6 +107,18 @@ describe('no hard-coded UI strings (AC-5)', () => {
     ['a non-visible component prop', '<Button kind="primary">{t(\'ui:button.save\')}</Button>'],
     ['punctuation and digits only', '<span>— 42 % · 3/4</span>'],
     ['an attribute with no letters', '<span title="—" />'],
+    [
+      'value on a text input or an option',
+      '<><input type="text" value="draft" readOnly /><select><option value="en">{t(\'ui:locale.name.en\')}</option></select></>',
+    ],
+    [
+      'value on an input with a dynamic type',
+      '<input type={kind} value="x" readOnly />'.replace(
+        'kind',
+        "(Math.random() > 0.5 ? 'text' : 'search')",
+      ),
+    ],
+    ['a concatenation without letters', "<span title={'#' + '1'} />"],
     ['a string outside JSX', "(() => { const mode = 'compact'; return null; })()"],
   ])('allows %s', async (_what, body) => {
     expect(await ruleIds(body)).toEqual([]);
@@ -125,14 +145,45 @@ describe('no hard-coded UI strings (AC-5)', () => {
     expect(resolved.rules[ATTRIBUTE_RULE]?.[0]).toBe(2);
   });
 
-  it('known plugin limitation: text under an ALL-CAPS variable name is not reported', async () => {
-    // eslint-plugin-i18next treats `const FAQ = …` as a constant and skips its whole initialiser.
-    // Recorded in implementation-notes.md (T08-7); the runtime missing-key check and review are
-    // the backstop. If this starts failing, the plugin fixed it: turn the case into a report test.
-    const file = join(scratch, 'caps.tsx');
-    writeFileSync(file, 'export const FAQ = () => <p>Question</p>;\n');
+  // T08-7, closed (code review 1): eslint-plugin-i18next skips the initialiser of an ALL-CAPS
+  // variable; the react-ui no-restricted-syntax entry reports the text there instead.
+  const SYNTAX = 'no-restricted-syntax';
+  async function fileRuleIds(code: string): Promise<(string | null)[]> {
+    const file = join(scratch, `caps${String((counter += 1))}.tsx`);
+    writeFileSync(file, code);
     const [result] = await eslint.lintFiles([file]);
-    const ids = result?.messages.map((m) => m.ruleId).filter((id) => id === RULE);
-    expect(ids).toEqual([]);
+    return (result?.messages ?? [])
+      .map((m) => m.ruleId)
+      .filter((id) => id === RULE || id === SYNTAX || id === ATTRIBUTE_RULE);
+  }
+
+  it.each([
+    'export const FAQ = () => <p>Question</p>;\n',
+    'export const ROUTES = [{ element: <main><h1>Home page</h1></main> }];\n',
+    'const LABELS = { save: <span>Save</span> };\nexport default LABELS;\n',
+    "const LABELS = { save: <span>{'Save'}</span> };\nexport default LABELS;\n",
+    'const LABELS = { save: <span>{`Save`}</span> };\nexport default LABELS;\n',
+    'const LABELS = { save: <span>حفظ</span> };\nexport default LABELS;\n',
+  ])('closed: JSX text under an ALL-CAPS variable is reported: %s', async (code) => {
+    expect(await fileRuleIds(code)).toEqual([SYNTAX]);
+  });
+
+  it('closed: t() keys and letter-free text under an ALL-CAPS variable pass', async () => {
+    expect(
+      await fileRuleIds(
+        "declare const t: (key: string) => string;\nexport const LABELS = { save: <span>{t('ui:button.save')}</span>, sep: <span> · </span> };\n",
+      ),
+    ).toEqual([]);
+  });
+
+  it('keeps the base preset no-restricted-syntax entries when adding the UI one', async () => {
+    const resolved = (await eslint.calculateConfigForFile(join(scratch, 'a.tsx'))) as {
+      rules: Record<string, [number, ...{ selector: string }[]]>;
+    };
+    const [severity, ...entries] = resolved.rules[SYNTAX] ?? [0];
+    expect(severity).toBe(2);
+    const { RESTRICTED_SYNTAX } = await import('../boundaries.js');
+    for (const entry of RESTRICTED_SYNTAX) expect(entries).toContainEqual(entry);
+    expect(entries.some((e) => e.selector.includes('VariableDeclarator'))).toBe(true);
   });
 });

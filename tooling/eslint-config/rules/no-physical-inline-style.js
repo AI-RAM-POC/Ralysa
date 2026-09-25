@@ -1,7 +1,22 @@
 // ralysa/no-physical-inline-style (F-001 design §7.3.5; AC-4): React `style={{ … }}` objects may not
 // use inline-axis physical properties, or left/right values for textAlign, float and clear. Every
 // object literal inside the style expression is checked, including the branches of `a ? {…} : {…}`
-// and `a && {…}`. The message names the logical property to use instead.
+// and `a && {…}`. The message names the logical property to use instead. Four-value shorthands
+// (`margin: '0 1px 0 2px'`) whose right and left values differ are reported with the same regex
+// Stylelint uses for CSS (code review 7).
+import { ASYMMETRIC_FOUR_VALUES } from '../css-values.js';
+
+/** Style shorthands whose 4-value form sets top, right, bottom, left. */
+export const FOUR_VALUE_STYLE_KEYS = new Set([
+  'margin',
+  'padding',
+  'inset',
+  'scrollMargin',
+  'scrollPadding',
+  'borderWidth',
+  'borderStyle',
+  'borderColor',
+]);
 
 /** Physical inline-axis style keys → their logical equivalents. */
 export const PHYSICAL_STYLE_KEYS = {
@@ -99,6 +114,8 @@ export const noPhysicalInlineStyle = {
         'Physical style property "{{ key }}" does not mirror in right-to-left layouts. Use "{{ logical }}" (AC-4).',
       value:
         '"{{ key }}: {{ value }}" does not mirror in right-to-left layouts. Use "{{ logical }}" (AC-4).',
+      shorthand:
+        '"{{ key }}: \'{{ value }}\'" sets the left and right sides differently, which does not mirror. Use {{ key }}Block and {{ key }}Inline (or the -InlineStart/-InlineEnd longhands) (AC-4).',
     },
   },
   create(context) {
@@ -128,6 +145,17 @@ export const noPhysicalInlineStyle = {
                 node: property.value,
                 messageId: 'value',
                 data: { key, value: raw, logical: `${key}: '${values[raw]}'` },
+              });
+            }
+            if (
+              FOUR_VALUE_STYLE_KEYS.has(key) &&
+              typeof raw === 'string' &&
+              ASYMMETRIC_FOUR_VALUES.test(raw)
+            ) {
+              context.report({
+                node: property.value,
+                messageId: 'shorthand',
+                data: { key, value: raw },
               });
             }
           }

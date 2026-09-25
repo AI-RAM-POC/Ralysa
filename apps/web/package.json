@@ -7,7 +7,7 @@
     "build": "vite build",
     "check:generated": "i18next-cli types --quiet",
     "dev": "vite",
-    "lint": "eslint . && i18next-cli extract --ci --dry-run --quiet",
+    "lint": "eslint . && stylelint \"**/*.css\" --allow-empty-input && i18next-cli extract --ci --dry-run --quiet",
     "preview": "vite preview",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json"
@@ -21,6 +21,7 @@
   },
   "devDependencies": {
     "@ralysa/eslint-config": "workspace:*",
+    "@ralysa/stylelint-config": "workspace:*",
     "@ralysa/tsconfig": "workspace:*",
     "@ralysa/vitest-config": "workspace:*",
     "@types/react": "catalog:",
@@ -28,6 +29,7 @@
     "@vitejs/plugin-react": "catalog:",
     "eslint": "catalog:",
     "i18next-cli": "catalog:",
+    "stylelint": "catalog:",
     "typescript": "catalog:",
     "vite": "catalog:",
     "vitest": "catalog:"

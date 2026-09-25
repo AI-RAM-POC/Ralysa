@@ -8,11 +8,13 @@
 //   ralysa-repo check-tsrefs             tsconfig project references
 //   ralysa-repo check-turbo-config       remote cache off, globalDependencies, uncached checks
 //   ralysa-repo check-i18n               i18n catalogs: parity, plurals, grammar, native review
+//   ralysa-repo check-ui-lint            UI workspaces run eslint (react-ui) and stylelint
 //   ralysa-repo placeholder-guard        run inside a placeholder package (its four scripts)
 //   ralysa-repo scaffold <path> --kind <kind>
 //   ralysa-repo summary [--file <run.json>] [--out <file>]
 import { appendFileSync } from 'node:fs';
 import { checkI18n } from './check-i18n.ts';
+import { checkUiLint } from './check-ui-lint.ts';
 import { checkTsrefs } from './check-tsrefs.ts';
 import { checkConfigGate } from './config-gate.ts';
 import { checkTurboConfigFile } from './check-turbo-config.ts';
@@ -31,6 +33,7 @@ const REPO_CHECKS: Record<string, Check> = {
   'check-workspaces': (root) => checkWorkspaces({ root }),
   'check-tsrefs': (root) => checkTsrefs({ root }),
   'check-turbo-config': (root) => checkTurboConfigFile(root),
+  'check-ui-lint': (root) => checkUiLint({ root }),
   'check-i18n': (root) => {
     const { findings, warnings, needsReview } = checkI18n({ root });
     for (const warning of warnings)

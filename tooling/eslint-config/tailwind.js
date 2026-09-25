@@ -2,6 +2,7 @@
 // reactUi() with eslint-plugin-better-tailwindcss. Class strings are checked in className/class
 // attributes and in the cn, clsx, cva and tv callees (the plugin's default selectors cover them).
 import { fileURLToPath } from 'node:url';
+import { NAMED_COLOR_ALTERNATION } from './css-values.js';
 
 /** Fallback entry point: an empty theme, so every token-backed class is unknown (see the file). */
 export const NO_THEME_ENTRY_POINT = fileURLToPath(
@@ -57,8 +58,28 @@ export const RESTRICTED_CLASSES = [
     message: '"$0" uses a physical keyword. Use text-start/text-end, float-start/float-end (AC-4).',
   },
   {
+    // An arbitrary translate whose first (horizontal) value isn't 0 (code review 7). There is no
+    // mechanical mirror for it; use the translate-x pair or a --ralysa-dir-sign calc in CSS.
+    pattern: `${VARIANTS}-?translate-\\[(?!0(?:[a-z%]+)?(?:_|\\]))`,
+    message:
+      '"$0" moves in a fixed horizontal direction. Use ltr:translate-x-N rtl:-translate-x-N, or translate-y for vertical-only moves (AC-4).',
+  },
+  {
+    pattern: `${VARIANTS}\\[(?:translate:(?!0(?:[a-z%]+)?(?:_|\\]))|transform:[^\\]]*translate(?:X|x|3d)?\\((?!0(?:[a-z%]+)?[,_)]))`,
+    message:
+      '"$0" moves in a fixed horizontal direction. Use ltr:translate-x-N rtl:-translate-x-N, or var(--ralysa-dir-sign) in CSS (AC-4).',
+  },
+  {
     pattern: `${VARIANTS}[\\w-]*\\[[^\\]]*(?:#[0-9a-fA-F]{3,8}(?![\\w-])|(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\\().*$`,
     message:
       '"$0" hard-codes a colour. Use a token-backed class such as bg-canvas, text-fg or border-border-control (AC-3).',
+  },
+  {
+    // A CSS named colour (any case) as a whole token of an arbitrary value or property:
+    // bg-[red], bg-[color:red], [color:red], shadow-[0_0_0_1px_red] (code review 4).
+    // transparent, currentcolor and inherit aren't named colours, so they pass.
+    pattern: `${VARIANTS}[\\w-]*\\[[^\\]]*(?<=[\\[_:,(])(?i:${NAMED_COLOR_ALTERNATION})(?=[\\]_,)]).*$`,
+    message:
+      '"$0" hard-codes a named colour. Use a token-backed class such as bg-canvas, text-fg or border-border-control (AC-3).',
   },
 ];
