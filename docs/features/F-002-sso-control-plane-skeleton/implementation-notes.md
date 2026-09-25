@@ -1438,3 +1438,120 @@ Items marked **self-decided** were open questions decided under the standing aut
 | R33-11 (N6) | A null outcome stored as `success` was indistinguishable from a client `success`. | `details.server.outcome_defaulted: true` is set when the server supplies the outcome. | "R33-4" and the 503 test assert it. |
 
 Tests after the review (both PRs merged here): control-plane unit 24 files, 369 tests (R32-4's verifier case; R33-6 is an added assertion); `audit-routes.int.ts` 32 (6 new: R33-1, -2, -3, -4, -7, -8); the full control-plane integration suite 10 files, 155 tests, 3 consecutive local runs green.
+
+## T14: scans and exclusion
+
+Branch `feat/F-002-scans`, from `main` at 45cd12d (T01–T12 and T16 merged). Built in parallel with T13 (rotation, soak, runbooks), so it doesn't touch `src/secrets/runtime.ts`, `test/soak`, `soak.yml` or the control-plane README.
+
+### What landed
+
+- **gitleaks rules** `ralysa-refresh-token` (`rly_rt_[A-Za-z0-9_-]{43}`) and `ralysa-auth-code` (`rly_ac_[A-Za-z0-9_-]{43}`), identical in `.gitleaks.toml` and `.gitleaks.artefacts.toml`, with `secretGroup = 1`, `entropy = 3.5` and the prefix as keyword. `CUSTOM_RULE_IDS` (check-gitleaks-config), `RULE_ENTROPY` and the self-test's synthetic set carry them, so the `dir`, `git` and `artefact` self-tests plant both. `gitleaks-rules.test.ts` adds four positives (JSON body, form body, loopback callback URL, object literal) and five negatives (42 characters, a short value, a low-entropy placeholder, the bare prefixes as the code and docs use them). No `rly_rt_`/`rly_ac_` value exists in the tree or history.
+- **`check-no-password`** in `repo:check` (`tooling/repo-scripts/src/check-no-password.ts`, AC-3):
+  - Every committed `**/openapi/*.json`, and the control plane's must exist. It checks every path, parameter, header and property **name**, and every `enum`/`const` value, against TC-F-002-05's pattern. Prose (`description`, `summary`, `title`) is not read.
+  - Client code in `packages/auth`, `apps/cli`, `apps/desktop` and `apps/web`, with tests and comment lines skipped: a password input, the password grant, a client secret, or a password, PIN or one-time-code prompt or field.
+- **dependency-cruiser rule `no-dev-only-in-shipped`** (SEC-F002-13 a): `@ralysa/dev-stack`, `oidc-provider` or a relative path into `tooling/dev-stack/`, imported from anywhere outside `tooling/**` and `**/test/**`. `boundaries.js` gains `DEV_ONLY_IMPORT_ALLOWED_IN` and `DEV_ONLY_MESSAGE` beside `DEV_ONLY_PACKAGES`, which it documents as the list for all four layers.
+- **`check-banned-deps` production-closure mode** (SEC-F002-13 b): from every `shipped: true` workspace, only production edges are followed: the importer's `dependencies` and `optionalDependencies`, then those of every package, through linked workspaces. The finding is `banned-deps/dev-only-in-shipped`, with a witness path. `npm:` aliases are resolved, and a shipped workspace missing from the lockfile fails closed.
+- **`deploy/docker/control-plane.Dockerfile`** and **`/.dockerignore`** (SEC-F002-29):
+  - Multi-stage, with `node:24.21.0-alpine` pinned by the same digest as the compose `mock-idp` service.
+  - The build stage runs the pre-install gate before pnpm, then `pnpm install --frozen-lockfile --filter "@ralysa/control-plane..."`, the filtered build and `pnpm --filter @ralysa/control-plane deploy --prod /out`.
+  - Third-party test folders are removed, then a module-graph smoke import runs (T14-6).
+  - The runtime stage drops npm, corepack and yarn, copies `/out` owned by root, and runs as `USER 1000:1000`, with `ENTRYPOINT ["node", "dist/main.js"]` and `CMD ["serve", "--config", "/etc/ralysa/control-plane.yaml"]`.
+  - There is no `ARG`, and no `ENV` other than `NODE_ENV` (plus the base image's `NODE_VERSION`, `YARN_VERSION` and `PATH`).
+  - `.dockerignore` excludes `**/.env*`, `deploy/docker/dev/`, `.git`, `**/*.pem`, `**/*.key`, other key stores, `.npmrc`/`.netrc`, `.tools`, `.claude`, `node_modules`, build output, `docs`, `requirements` and `packs`.
+  - `"files": ["dist"]` was added to `@ralysa/control-plane`, `@ralysa/auth` and `@ralysa/secrets`, and `["dist", "src/schema/generated"]` to `@ralysa/protocol` (its `./schema/*.json` export). This makes `pnpm deploy` copy no `src/` or `test/`: the tests name `@ralysa/dev-stack`.
+  - The image is 275 MB on disk (65.7 MB compressed). Building it locally took about 45 s.
+- **`secret-scan-cli.ts image`** (`src/secret-scan-image.ts`, SEC-F002-13 c, -29): see the README.
+  - It builds (`--dockerfile`) or takes (`--image`) an image, `docker export`s the merged root filesystem, and scans all of it with the artefact config.
+  - It scans the `docker image inspect` config and the `docker history --no-trunc` instructions the same way.
+  - It fails on a root user, or on a secret-named `ENV` or build `ARG` (both BuildKit history forms).
+  - It searches every `--exact-values` value byte for byte.
+  - It fails if the dev stack or `oidc-provider` is present by path, is a production dependency in a `package.json`, or appears in a lockfile.
+  - The positive control is a `package.json` in `WorkingDir`.
+  - The container and the scan tag are removed afterwards.
+- **`secret-scan-cli.ts dir <path>`**: one folder with the artefact config and the exact-value search. An empty folder is refused.
+- **CI `integration` job**:
+  - The hash-pinned gitleaks install moved before the tests.
+  - A new step **"Image secret scan (AC-9)"** runs `secret-scan-cli.ts image --dockerfile deploy/docker/control-plane.Dockerfile --exact-values deploy/docker/dev/.env` after the tests (`if: !cancelled()`).
+  - New invariant **`ci/integration-image-scan`**: the step must be there, uncommented, with that Dockerfile and that `.env`.
+- **`services/control-plane/test/integration/scans.int.ts`** (TC-F-002-14, -20). One pino instance at `debug` captures everything two apps log while these run:
+  - flow A (device code through `@ralysa/auth`, then the exchange over HTTP);
+  - a refresh, then refresh-token reuse;
+  - flow B (authorize, the mock IdP, the callback, the redemption), `/v1/me` and sign-out;
+  - a second redemption of the same code;
+  - a tampered bearer;
+  - a flow-B callback with no binding cookie and the IdP's `code` and `state` in its URL;
+  - an exchange whose Graph directory reads the IdP client secret from real OpenBao as the serve AppRole, at a path that role may not read (403);
+  - a direct failed OpenBao read, logged through the same instance.
+
+  The scans then run:
+  - The log text is checked for JWT, `rly_rt_`/`rly_ac_`, query-string, fixture-email and OpenBao-token shapes, and for **every value the flows produced**: user code, Entra access token, access and refresh tokens, IdP code and state, PKCE verifier, `state` and authorization code. It must also hold no secret: the IdP client secret, the audit HMAC key, both AppRole secret ids, the Postgres password, the OpenBao root token and all six DB role passwords. `user_id`-like fields must be UUIDs, and no `email` or `display_name` field may appear. Then the log file goes through `secret-scan-cli.ts dir` with the ≥ 16-character values as exact values.
+  - `pg_dump --data-only` of the test database (through `docker compose exec -T postgres`) goes through the same scan. Its positive control is `COPY cp.app_user`, `COPY audit.audit_event` and alice's oid in the dump.
+  - `cp.credential`: a vault path is accepted, a secret-shaped value is refused by the CHECK (23514), and every row matches the path pattern.
+  - `transit/keys/ralysa-rts-signing` and `ralysa-audit-checkpoint` report `exportable: false` and `allow_plaintext_backup: false`.
+  - The tracked `deploy/**` files (`git ls-files`, so the committed configs) go through the same scan.
+- READMEs: `tooling/repo-scripts` (the new check, the `image` and `dir` commands, the production-closure mode, the dependency-cruiser rule and the new invariant), `deploy/docker` (the Dockerfile and the scan command), and `docs/engineering/repo-conventions.md` (the `integration` job row and the invariant). No new environment variable or configuration.
+
+### SEC-F002-13 and SEC-F002-29 status
+
+| Item | Status | Where |
+|---|---|---|
+| SEC-F002-13 (a) dependency-cruiser rule | Done | `no-dev-only-in-shipped` in `.dependency-cruiser.cjs`; `check-imports.test.ts` TC-F-002-35 case |
+| SEC-F002-13 (b) `oidc-provider` not in any shipped production closure | **Confirmed and extended.** T01's `check-workspaces` `deps/dev-only-in-shipped` enforces it over the workspace graph: it is in `repo:check`, and both `services/control-plane` and `packages/secrets` hold `@ralysa/dev-stack` as a devDependency only. T14 adds the lockfile closure, which also catches a third-party package that pulls `oidc-provider` in at any depth. | `check-banned-deps` production-closure mode; `check-banned-deps.test.ts` |
+| SEC-F002-13 (c) image assertion; `pnpm deploy --prod` | Done | `secret-scan-cli.ts image`; the CI `integration` step; `secret-scan-image.test.ts` |
+| SEC-F002-13 (d), (e) per-run keys; loopback control API with a per-run bearer | Done in T09 | `tooling/dev-stack/test/mock-idp.test.ts` ("refuses a request without the per-run bearer, or with another one") |
+| SEC-F002-29 `.dockerignore`; multi-stage with `pnpm deploy --prod`; no secret in `ARG`/`ENV`; scan of the image config and history | Done | `/.dockerignore`, the Dockerfile, `checkImageConfig` plus the config and history gitleaks run |
+| SEC-F002-29 `.env` generator hygiene; role passwords over stdin | Done in T02 and T05 | T02-2, T05-2 |
+
+### Recorded decisions and deviations
+
+Items marked **self-decided** were open questions decided under the standing authorization (CLAUDE.md), taking the recommended option.
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T14-1 | Implementation choice | The rule regexes are the design's, used as the secret group with no word boundary or terminator. `entropy = 3.5`. | A leading `\b` would miss a token glued to `_` or a letter (`token_rly_rt_…`). A real token (32 random bytes, base64url) measures about 5 bits per character with its prefix, while a placeholder such as `rly_rt_AAAA…` measures under 1.5. 3.5 is the floor of the other alphanumeric custom rules. |
+| T14-2 | Scope (**self-decided**) | `check-no-password` reads every committed `**/openapi/*.json` and requires the control plane's. For client code it covers `packages/auth` and the three user-facing apps (`cli`, `desktop`, `web`). Tests and comment lines are skipped. OpenAPI prose is not read. | The design names `packages/auth` and "(later) `apps/cli`". Desktop and web sign users in too (F-005, F-007), so the rule is in place before their code lands. Tests must be able to assert that the password grant is refused, and prose may say that no password exists. TC-F-002-05's substring pattern stays on the whole document in `openapi.test.ts`. |
+| T14-3 | Scope (**self-decided**) | No ESLint `no-restricted-imports` entry for the development-only packages; the import layer is dependency-cruiser alone. | The design's T14 row asks for a dependency-cruiser rule. dependency-cruiser already sees static imports, `require()`, literal `import()` and type-only imports in every workspace and in `packs/`, and it runs in `repo:check`. An ESLint copy would need per-workspace `test/**` exceptions, and it would add no coverage. `boundaries.js` still holds the lists, so an ESLint rule can be added from them later. |
+| T14-4 | Implementation choice | The production closure starts only from `shipped: true` workspaces. Today that is `services/control-plane`; the libraries are `shipped: false` and are reached through it. | This matches SEC-F002-13 (b) ("the production closure of any `shipped: true` workspace"). An unshipped library that took `oidc-provider` as a dependency would still fail once a shipped workspace depends on it. |
+| T14-5 | Addition (**self-decided**) | `"files"` fields on the four workspaces the image contains. | Without them, `pnpm deploy` copies each injected workspace whole (`src/`, `test/`, configs). Their tests name `@ralysa/dev-stack`, and an image scan that allowed that name inside test files would be weaker. `files` also keeps TypeScript sources and test fixtures out of the image. |
+| T14-6 | Addition (**self-decided**) | The build stage deletes `test`, `tests` and `__tests__` folders and `*.test.*`/`*.spec.*` files inside third-party packages (`find … -mindepth 4`, under `node_modules/.pnpm`). It then imports `dist/serve.js` and `dist/app.js`, so the build fails if anything needed was removed. | The first image scan found **2 `jwt` findings in zod's published tests** (`zod/src/v4/mini/tests/string.test.ts`, sample JWTs). There were three other options. An allow-list is ruled out: the artefact config must never have one (T05-1). Scanning only `/app` would leave the rest of the image unscanned. Accepting the findings would make the scan useless. None of the 38 pruned folders is loaded at run time, and the import check proves that for the serve module graph. |
+| T14-7 | Implementation choice | The `image` subcommand scans the **whole** exported root filesystem (the Alpine and Node base included), not only `/app`. `docker export` is used rather than walking the layer tarballs. | This is what a pod actually sees. A secret in a base layer would ship just the same. The export is the merged view, so a file deleted in a later layer is not reported: it is not in the running container. The history scan still sees every instruction. The base image scanned clean with the artefact config. |
+| T14-8 | Implementation choice | "Development-only package in the image" means: a path under `node_modules/<name>` or `.pnpm/<name>@`, a `package.json` whose `name` or production fields name it, or any lockfile mention. `devDependencies` in a third-party manifest don't count. | `openid-client` and `oauth4webapi` list `oidc-provider` among their own devDependencies. That is not an install, and a plain text search flagged them. |
+| T14-9 | Addition (**self-decided**) | A `dir` subcommand; exact values come from a mode-0600 `KEY=VALUE` file, never argv. Values shorter than 16 characters are refused. | The integration suite needs the same artefact config and exact-value logic for the DB dump, the logs and `deploy/**`, without a second implementation. Keeping values off argv keeps them out of the process list. A short value would give false positives. The one short value the flows produce, the device user code, is checked inside the test. |
+| T14-10 | CI decision | The image is built and scanned **in the `integration` job**, after the tests, with `if: !cancelled()`. The gitleaks install moved before the tests. No new job. | Docker is on the hosted runner, and the job already has this run's generated `.env`, which provides the exact values the design's YAML names. Local timing: build about 45 s, scan about 6 s. CI pays the npm download that the local pnpm store hides, which is within the design's "about 2 min" budget. Every existing invariant still holds (no `secrets.*`, `contents: read`, the gate first, Postgres-only logs). `ci/integration-image-scan` keeps the step from being dropped. |
+| T14-11 | Interpretation | TC-F-002-20 says "logs captured during TC-07 and TC-15". `scans.int.ts` drives its own representative flows (listed above), on the same pino options `serve` uses (`createPinoLogger`, §6.6), rather than collecting other files' logs. | Test files run in parallel in separate workers, so one file can't read another's logger. TC-07's paths (flow A, flow B, refused and reused codes) are all exercised here. **TC-15 (rotation) is T13's.** Once T13 lands, the rotation flow should log through the same capture, or `scans.int.ts` should run a rotation. This is in the open items. |
+| T14-12 | Implementation choice | `pg_dump` runs inside the Postgres container (`docker compose … exec -T postgres pg_dump --data-only`), as the superuser, over the per-file test database. | No host `pg_dump` is needed, and its version matches the server. The positive control (the `COPY` blocks and alice's oid) stops an empty dump from passing. |
+| T14-13 | Interpretation | The `deploy/**` scan covers **tracked** files only (`git ls-files deploy`). | The generated, git-ignored `deploy/docker/dev/.env` *is* the source of the exact values, so scanning it would always report. "Committed config" is exactly the tracked set. The test also asserts that no `.env` is tracked. |
+| T14-14 | Known local effect | The control-plane `test:integration` suite now needs the hash-pinned gitleaks (`pnpm tools:install`), like the repo-scripts tests. | The scans run the same CLI as CI. Without the binary the scan exits 2, and the test fails with the CLI's install hint. It never passes silently. |
+
+### Tests (T14)
+
+- `tooling/repo-scripts`:
+  - `gitleaks-rules.test.ts`: TC-F-001-39 extended with the two rules, in both configs.
+  - `secret-scan-selftest.test.ts` and the `selftest` command plant both rules in the dir, git and artefact cases.
+  - `secret-scan-entropy.test.ts`: `RULE_ENTROPY` matches the configs, and 2,000 generated sets clear every floor.
+  - `check-gitleaks-config.test.ts`: the real configs pass, and the custom-rule sync covers the new ids.
+  - `check-no-password.test.ts` (21), **TC-F-002-06** and the OpenAPI half of **TC-F-002-05**:
+    - the real repository passes;
+    - comments and tests are clean;
+    - 10 client fixtures fail: a password input in TSX and JSX, an Ink or inquirer prompt, a readline prompt, a PIN field, an OTP field, a one-time code prompt, the password grant, a client secret, and a catalog string;
+    - a missing OpenAPI document fails;
+    - 6 OpenAPI fixtures fail: a property, a query parameter, a header, a grant-type enum value, `client_secret`, and a path.
+  - `check-imports.test.ts`, **TC-F-002-35**: shipped code that imports `@ralysa/dev-stack/mock-idp`, `require('oidc-provider')`, a type from `oidc-provider`, or `import()` of `tooling/dev-stack/…` fails (4 findings). The same imports from `test/integration/**` and `tooling/dev-stack` pass.
+  - `check-banned-deps.test.ts` (6 new), **TC-F-002-35**:
+    - devDependency-only (the real layout) passes;
+    - `@ralysa/dev-stack` as a production dependency fails (two findings: it and `oidc-provider`);
+    - `oidc-provider` three levels down through a library workspace and an optional dependency fails, with the witness path;
+    - an `npm:` alias fails;
+    - an unshipped workspace is ignored, and a missing shipped importer fails closed;
+    - the real lockfile is clean.
+  - `secret-scan-image.test.ts` (24), **TC-F-002-14 and -35 image parts**. It uses a fake `docker` that serves a fixture root filesystem as a tar, and the real gitleaks:
+    - exact values: parsing, and refusals of short, malformed and empty input; a value is found and only its key reported;
+    - dev-only: 5 fixtures fail (the virtual store, hoisted, the linked dev stack, the dev stack in the virtual store, outside `/app`); third-party devDependencies pass; production fields and lockfiles fail; the positive control fails without an application;
+    - config: 6 root-user forms fail; secret-named `ENV` and both `ARG` history forms fail;
+    - `scanImage`: a clean image passes and the container is removed; a canary in the filesystem, a canary in `Env`, an exact value in a file and in the history, and `oidc-provider` are each found, and the value never appears in the result; a Dockerfile build and tag removal; a docker failure is a scanner error;
+    - `scanDirectory`: gitleaks and exact-value findings; an empty folder is refused.
+  - `check-ci-invariants.test.ts` (4 new): no step, no `--exact-values`, another Dockerfile, and the command commented out each fail `ci/integration-image-scan`.
+- `services/control-plane` `test:integration` `scans.int.ts` (6), **TC-F-002-20** and **TC-F-002-14**, as listed above. It passed locally against the dev stack. A mutation check (logging the Postgres password once) made TC-F-002-20 fail with "POSTGRES_PASSWORD is in the log".
+- The real image, locally: `secret-scan-cli.ts image --dockerfile deploy/docker/control-plane.Dockerfile --exact-values deploy/docker/dev/.env` reported 0 findings for the image checks, the filesystem and the config and history. Before T14-6 it reported the zod JWTs; before T14-8 it reported the third-party devDependencies.
+- **TC-F-002-05**, the rest: `openapi.test.ts` (the substring pattern over the whole document), `app.test.ts` (metadata advertises `none` and `private_key_jwt` only, with no `password` grant) and `sessions.int.ts` (the token endpoint refuses `password`, unknown grants, client secrets and Basic auth) were already green from T07, T08 and T10.
+- Full local run (Node 24.21.0): `pnpm lint`, `pnpm typecheck`, `pnpm test` (repo-scripts 28 files, 685 tests; control-plane 24 files, 369), `pnpm build` (23 tasks) and `pnpm repo:check` (including `check-no-password` and prettier) all pass. `turbo run test:integration` against the dev stack passes: control-plane 11 files, 161 tests; dev-stack 66; secrets 5.
