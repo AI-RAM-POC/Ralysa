@@ -10,6 +10,8 @@
     "migrate:audit": "node dist/main.js migrate --audit",
     "migrate:audit:dev": "node --env-file=../../deploy/docker/dev/.env dist/main.js migrate --audit --config ../../deploy/docker/dev/control-plane.migrate-audit.dev.yaml",
     "migrate:dev": "node --env-file=../../deploy/docker/dev/.env dist/main.js migrate --config ../../deploy/docker/dev/control-plane.migrate.dev.yaml",
+    "start:sealer": "node dist/main.js sealer",
+    "start:sealer:dev": "node --env-file=../../deploy/docker/dev/.env dist/main.js sealer --config ../../deploy/docker/dev/control-plane.sealer.dev.yaml",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "typecheck": "tsc -p tsconfig.json"

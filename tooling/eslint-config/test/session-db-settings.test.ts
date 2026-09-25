@@ -50,6 +50,13 @@ ruleTester.run('ralysa/no-session-db-settings', noSessionDbSettings, {
     { code: 'const q = `set session authorization ${who}`;', errors: [banned] },
     { code: "const q = 'set app.org_id = 1';", errors: [banned] },
     { code: "const q = 'SET LOCAL app.org_id = 1';", errors: [banned] },
+    // Unclosed calls: the rest of the statement is concatenated or in another string.
+    { code: 'const q = "select set_config(\'role\', " + role;', errors: [banned] },
+    {
+      code: "const q = \"select set_config('app.org_id', \" + org + ', false)';",
+      errors: [banned],
+    },
+    { code: "const q = `select set_config('session_authorization',`;", errors: [banned] },
   ],
 });
 

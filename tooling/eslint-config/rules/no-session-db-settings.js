@@ -55,8 +55,12 @@ export function findSessionSetting(sql) {
   const statement = SET_STATEMENT.exec(sql);
   if (statement !== null) return statement[0].replace(/\s+/g, ' ');
   for (const match of sql.matchAll(SET_CONFIG)) {
-    const args = callArguments(sql, (match.index ?? 0) + match[0].length);
-    const name = args?.[0]?.toLowerCase() ?? '';
+    const open = (match.index ?? 0) + match[0].length;
+    const args = callArguments(sql, open);
+    // The setting name is read on its own, so an unclosed call (the rest of the SQL in another
+    // string, or built by concatenation) is still judged by its first argument.
+    const first = /^\s*('[^']*')/.exec(sql.slice(open));
+    const name = (first?.[1] ?? args?.[0] ?? '').toLowerCase();
     if (/^'(role|session_authorization)'$/.test(name)) return `set_config(${name}, …)`;
     if (/^'app\.[a-z0-9_.]*'$/.test(name)) {
       // Unclosed call (the rest is in another string): refuse, it can't be shown to be local.
