@@ -25,7 +25,7 @@ export function SkipLink({ target = 'main' }: SkipLinkProps): JSX.Element {
   return (
     <a
       href={`#${target}`}
-      className="sr-only rounded-md bg-surface px-4 py-2 text-link shadow-md focus:not-sr-only focus:fixed focus:top-2 focus:inset-s-2 focus:z-(--ralysa-elevation-layer-toast) focus-visible:focus-ring"
+      className="sr-only rounded-md bg-surface px-4 py-2 text-link shadow-md focus:not-sr-only focus:px-4 focus:py-2 focus:fixed focus:top-2 focus:inset-s-2 focus:z-(--ralysa-elevation-layer-toast) focus-visible:focus-ring"
     >
       {t('skipLink.label')}
     </a>
