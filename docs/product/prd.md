@@ -329,4 +329,4 @@ Each item follows G1-approved direction in `docs/market/summary.md`. The spec te
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| | | | | |
+| Ram Mohan Rao Adduri | Founder / Product owner | Approved | 2026-09-25 | Approved with conditions: Phase 1 scope to be re-estimated by the tech lead; REQ-090, DV-16 and *(proposed)* numeric targets to be confirmed at design; add an onboarding/training REQ in the next PRD revision. Approval given in chat; recorded by Claude on the approver's instruction. |
