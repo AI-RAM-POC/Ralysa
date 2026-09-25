@@ -312,7 +312,6 @@ export async function bootstrapVault(
   return { keys, kvCreated, policies, appRoles };
 }
 
-/** Reads a DB role password from KV with an operator/root token (bootstrap-db only). */
 /** Records a completed bootstrap (see BOOTSTRAP_MARKER). Call after the Postgres roles exist. */
 export async function markBootstrapped(
   bao: BaoRequest,
@@ -338,6 +337,7 @@ export async function isBootstrapped(
   return true;
 }
 
+/** Reads a DB role password from KV with an operator/root token (bootstrap-db only). */
 export async function readDbPassword(
   bao: BaoRequest,
   key: DbRoleKey,
