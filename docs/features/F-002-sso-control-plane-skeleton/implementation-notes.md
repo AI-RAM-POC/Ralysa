@@ -1279,3 +1279,131 @@ Items marked **self-decided** were open questions decided under the standing aut
 - `packages/auth` `service-token-verifier.test.ts` (13): a registered service token yields the service; refused as `wrong_token_use` (a user token, an unregistered service), `malformed` (`client_id` ≠ `sub`, a `sub` that isn't `svc:<name>`), `wrong_audience` (another audience or org), `wrong_typ`, `forbidden_header`, `unknown_kid`, `expired`; no `isRegistered` accepts any authentic service; a throwing local key set is `VerifierUnavailableError` and no rejection. The existing 95 tests pass unchanged.
 - control-plane `verifier.test.ts` (5): registered services only, and each verifier refuses the other token kind; the own key set re-reads the rows at most once a second; a bare token is `malformed`, recorded under the config org (an `X-Org-Id` header is ignored); a lower-case `bearer` passes; an unreadable key set is 503 with no rejection.
 - The control-plane integration suite passes unchanged (9 files, 123 tests), including `/v1/me`, the governance feed, principals and TC-F-002-10's fake gateway.
+
+## T12: audit endpoints, part 2 (the audit routes and the service rejection path)
+
+Branch `feat/F-002-audit-routes`, stacked on part 1 (`feat/F-002-audit-endpoints`).
+
+### What landed
+
+- **`POST /v1/audit/events`** (`src/audit/routes/service-events.ts`, AC-11):
+  - A registered service's token only. A user token or an unregistered service gets 403 and `auth.token_rejected wrong_token_use`.
+  - The envelope, I-JSON and outcome rules apply (422), and user actors must exist (422).
+  - The per-service allow-list (`src/audit/action-allowlist.ts`) re-checks the reserved namespaces at runtime. One `audit.ingest_rejected` is written per disallowed action before the 403 [SEC-F002-03].
+  - `source` comes from the service name.
+  - Each event goes through the writer's savepoint INSERT, which fails closed in 250 ms (503) [AR-8].
+  - **SEC-F002-23** is met by D-35: this route is the only audit write path for services, and no per-service writer role exists.
+- **Service rejection path (T11-2)**:
+  - `@ralysa/auth` `createRejectionReporter()`:
+    - `record` is for the verifier's `onReject`. It never throws or waits.
+    - The queue is bounded at 1,000. What doesn't fit is counted per reason and sent as `dropped_count`.
+    - Every second it sends batches of 100 to the service path with the service's token.
+    - A retryable failure is resent with the same ids. A refusal is dropped and reported through `onError`.
+  - `src/audit/service-rejections.ts`:
+    - one `createRejectionAggregator` per reporting service, which gives the per-verifier cap of 600 a minute and separate /24 and /64 buckets;
+    - the org from the service token (pinned to config), and `source` = the service;
+    - fire-and-forget writes;
+    - report ids de-duplicated for 10 minutes;
+    - `recordSuppressed()` (new on the aggregator) for dropped counts.
+- **`POST /v1/audit/client-events`** (`src/audit/routes/client-events.ts`, `src/audit/client-sessions.ts`, AC-16):
+  - the actor is overwritten;
+  - the allow-list and reserved keys (422), and 4 KB per event (413);
+  - server-issued sessions bound to `sid`, with the cap of 20 (409/429) [SEC-F002-14];
+  - `client_seq` gaps, late events and `final_seq`, with `audit.client_seq_gap` at `session.ended` [AR-14];
+  - kill-switch scopes through `src/governance/kill-switch.ts` (423 and `tool.call.denied`, TM-48);
+  - 503 with `ack = false` on an insert failure;
+  - 600 events a minute per user.
+
+  `src/audit/client-sweep.ts` finalises idle gaps and flags unterminated sessions. `serve` runs it every minute.
+- **`GET /v1/audit/events`** (`src/audit/routes/query.ts`, AC-12):
+  - needs the session role and a current admin-group membership;
+  - commits `audit.query success` before the read, else 503 [SEC-F002-06 c];
+  - writes `audit.query denied not_platform_admin` before a 403;
+  - keyset paging, with seals;
+  - reads through the reader role in a read-only transaction.
+- `serve` gains the `ralysa_audit_reader` pool, the service-rejection aggregators (flushed with the others), the client sweep, and a `service_without_audit_source` warning.
+- `@ralysa/protocol/control-plane`:
+  - `ServiceIngestStatus` (adds `aggregated`);
+  - `TokenRejectedReportDetails` and `ClientEventsUnavailable`, both registered with the schema generator (25 schemas);
+  - the client-path constants `CLIENT_EVENTS_PER_USER_PER_MINUTE`, `CLIENT_GAP_FINAL_AFTER_MS` and `CLIENT_SESSION_UNTERMINATED_AFTER_MS`.
+- `RateLimiter.take(key, weight)`: one request can count as several (the events of a batch).
+- Route contracts, the regenerated OpenAPI document, the READMEs (control plane "Audit endpoints", `@ralysa/auth` "Rejection reports") and design revision 5.
+
+### Recorded decisions and deviations
+
+Items marked **self-decided** were open questions decided under the standing authorization (CLAUDE.md), taking the recommended option.
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T12-7 | Protocol additions (**self-decided**) | `ServiceEventsResponse` gets the status `aggregated`. New `TokenRejectedReportDetails` (`audience`, `reason`, optional `client_ip`, optional `dropped_count`) and `ClientEventsUnavailable` (problem+json with `acks`). | §3.4.4's response knows only `stored` and `duplicate`, and an aggregated report is neither. The report's shape is a contract between `@ralysa/auth` and the control plane, so it belongs in the protocol. §3.4.5 says "503 with `ack=false` for every intent" but gives no body; a problem with the acks keeps the `/v1` error format. |
+| T12-8 | T11-2 resolution (**self-decided**) | The aggregator stays in the control plane, because it needs `node:net`. Gateways send each rejection as a report through the service path. The control plane keeps **one aggregator per reporting service**, which is the "per-verifier cap" of SEC-F002-16. The reporter in `@ralysa/auth` bounds its own memory and counts what it drops. | There is one aggregation implementation and no isomorphic copy of `networkOf`, and the service path stays the only audit write path (D-35). A per-service aggregator stops one flooded gateway from using up another's budget. |
+| T12-9 | Design gap, filled (**self-decided**) | `source` is derived from the service name: `model-gateway`, `mcp-gateway` and `workspace-runtime` map to themselves, and `agent-host` to `agent-host-server`. A registered service with any other name gets 403 and `audit.ingest_rejected reason_code=no_audit_source` for every batch, and `serve` warns at start. | §3.4.4 says "source from the service token", but `source` is a closed set (a column CHECK) and a token carries only `svc:<name>`. A config rule instead of a runtime refusal would also reject services that never write audit. |
+| T12-10 | Interpretation | 403 (not 401) for `wrong_token_use` applies only to `POST /v1/audit/events`, as its error table says. The internal routes keep answering 401. | The §3.4.4 table is specific to that route, and changing the other routes' answers is outside T12. |
+| T12-11 | Interpretation | 422 for a body that fails the schema, non-I-JSON `details`, `failure` outside `auth.*`, or an unknown user actor. 400 for JSON that doesn't parse (Fastify). | §3.4.4 names 422 for schema and I-JSON failures, and an actor that doesn't exist is the same kind of refusal. |
+| T12-12 | Implementation choice | On the client path:<ul><li>Duplicates are found by `event_id` with the **reader** role before the cursor is touched (the writer has no SELECT).</li><li>A batch with any conflicting `client_seq` is refused whole (409).</li><li>A batch made only of stored events is answered (`duplicate`) even when its session has ended.</li><li>A duplicate intent is answered from the current kill-switch state.</li></ul> | [AR-14] requires duplicates to be detected by `event_id`. A retry of a batch whose answer was lost (for example the one with `session.ended`) must not look like a conflict. Refusing the whole batch keeps the cursor and the store consistent. |
+| T12-13 | Design gap, filled (**self-decided**) | A null client `outcome` (an intent, `session.started`, `session.ended`, `approval.presented`) is stored as `success`. | The envelope's `outcome` is required (a NOT NULL column), and the event itself (a request made, a session started) did happen. |
+| T12-14 | Interpretation | A refused intent keeps its `event_id` and is stored as `tool.call.denied`: `outcome denied`, `reason_code kill_switch`, and `details.server.kill_switch` and `requested_action`. The answer is 423 when any intent in the batch is halted, with `reason_category: kill_switch`. | §3.4.5 says to store `tool.call.denied` instead of acking. Keeping the id makes a retry a duplicate. |
+| T12-15 | Implementation choice | A batch runs in one `cp_app` transaction under a transaction-scoped advisory lock on the `sid`, with the cursor row `FOR UPDATE`. The audit write (writer pool) happens inside that transaction, and the cursor is advanced only after the write succeeded. | The open-session cap and the cursor can't race, and a failed write leaves nothing advanced, so the retry goes through without a false gap (tested). |
+| T12-16 | Interpretation | Gaps become final after 15 minutes without an event. A session is "unterminated" after **24 hours without an event** (`updated_at`), not 24 hours after it started.<ul><li>The sweep runs every minute on every replica with `SKIP LOCKED`.</li><li>Its event ids are derived from the session and range.</li><li>`audit.client_seq_gap` carries `cause` (`session_ended`, `idle`, `unterminated`) and has the session's user as actor.</li></ul> | A long-running but active host session must not be flagged. Derived ids make the route, the sweep and retries idempotent. |
+| T12-17 | Implementation choice | The client path's per-user limit is per instance and counts events, not requests (`RateLimiter.take(key, weight)`). A refused batch still counts. | Same reason as R29-n4: a shared limiter needs Redis (F-012). |
+| T12-18 | Implementation choice | Query details:<ul><li>`from` is inclusive and `to` exclusive; the default limit is 100.</li><li>The cursor is opaque (base64url of `[ts, event_id]`).</li><li>The admin check needs an **active** session.</li><li>`audit.query` records the filters, with the cursor only as `cursor: true`.</li><li>A missing reader pool is 503 before anything is written.</li></ul> | §3.4.6 doesn't set these details. |
+| T12-19 | Hardening | Every string in `details.client` loses C0/C1, bidi and zero-width characters (keys are unchanged). `resource.id`, `operation`, `reason_code`, `turn_id` and `tool_call_id` are sanitised as display text. | SEC-F002-30 covers "every display field on the client path". |
+| T12-20 | Test change | TC-F-002-10's fake gateway is now the service `model-gateway`. It signs with the dev stack's `ralysa-svc-model-gateway` Transit key instead of a throwaway `t11gw-*` key. | Its reports must be stored under a real `source` (T12-9). The key is only used to sign; nothing rotates or deletes it. |
+| T12-21 | Residual | If the answer to a batch that **opened** a session is lost, the retry opens a second session, because the host never learned the first id. The first one is later flagged `audit.client_session_unterminated`. | Nothing identifies the first session to the host. The events themselves are not duplicated (their ids are). |
+
+### Tests (T12 part 2)
+
+- **Unit**:
+  - `audit-ingest.test.ts` (32):
+    - the allow-list: exact actions only; reserved actions never pass, even if listed; each disallowed action reported once, in order;
+    - the source mapping;
+    - **TC-F-002-37**: every reserved namespace is refused at config load, and the two exceptions are accepted;
+    - `client_seq`: int8multirange parsing and formatting; next, gap, late and conflict; the tail up to `final_seq`; gap events with stable ids that pass the envelope rules;
+    - kill-switch scopes: tenant with or without an id, department, pack and agent, and no match without a declared value;
+    - service reports: 20 individual events then a summary under the service's source; a repeated id is a duplicate; dropped counts go to the overflow summary; each service has its own 600 cap;
+    - the query cursor.
+  - `openapi.test.ts`, **TC-F-002-17 part**: `/v1/audit` has only `POST /events`, `GET /events` and `POST /client-events`, and no PUT, PATCH or DELETE is routed.
+  - `@ralysa/auth` `rejection-reporter.test.ts` (10):
+    - the report shape and the bearer;
+    - odd input never throws, and a non-IP address is left out;
+    - at most 100 per request;
+    - a 503 keeps the batch and resends the same ids;
+    - 403 and 422 drop it with `onError`;
+    - no service token keeps it;
+    - queue overflow is counted and sent as `dropped_count`;
+    - flush is single flight;
+    - start and stop, with fake timers;
+    - URL validation.
+  - `@ralysa/protocol` (3): `aggregated`, the report details, and the 503 body.
+- **Integration** (`test/integration/audit-routes.int.ts`, 26, dev stack):
+  - **TC-F-002-17**:
+    - an event is stored with `event_id`, `ts`, the actor, action, resource, outcome, `trace_id`, `session_id`, `endpoint_region`, `inference_region`, `details.model_id`, tokens, `source = model-gateway` and `attestation = server`;
+    - `source` or `attestation` in the body is 422;
+    - a duplicate mid-batch;
+    - no token is 401; a user token and an unregistered service are 403, with `auth.token_rejected`;
+    - `auth.sign_in`, `audit.query`, `db.migration.applied` and an action outside the list are 403, with `audit.ingest_rejected`, and nothing of the batch is stored;
+    - a service without a source;
+    - non-I-JSON, `failure` and an unknown actor are 422, and over 256 KB is 413;
+    - **503 when `audit_event` is locked** (the 250 ms bound);
+    - reports are aggregated and stored under `model-gateway`; a repeated report id is `duplicate`; a non-IP address becomes network `unknown`; bad report details are 422.
+  - **TC-F-002-18**:
+    - an admin's query by user, action, outcome and range returns exactly the matching events;
+    - **a query for `audit.query` events returns itself**, which shows it was committed before the read;
+    - the stored event has the filters and the `p0-static` policy version;
+    - keyset paging over 5 events gives 3 pages with no gap or repeat, and each event carries its seal after a seal pass;
+    - a non-admin gets 403, and the denied event is queryable;
+    - the session role without a current admin membership is 403;
+    - **503 with no events when `audit.query` can't commit**;
+    - 400 for a range over 31 days, a reversed range, `limit=501`, a bad cursor and an unknown parameter.
+  - **TC-F-002-22**:
+    - the actor, org, source, attestation, surface and session are the server's; forged fields stay in `details.client`, and bidi characters are stripped; an `actor` member is 422;
+    - a non-allow-listed action, four reserved keys and `final_seq` outside `session.ended` are 422; a 5 KB event is 413;
+    - 409 without `session.started`, for an unknown session, for another user's, for another `sid`'s, and for a second `session.started`; the 21st open session is 429;
+    - a gap; a late event that closes part of it; a duplicate retry; two conflicts; `session.ended` with `final_seq` writes three `audit.client_seq_gap` events;
+    - an ended session refuses new events but answers a retry;
+    - intents are acked with the epoch, then refused (423, `tool.call.denied kill_switch`) for a tenant, a department and a pack switch, and not for another pack;
+    - **503 with `ack = false` while `audit_event` is locked**: nothing is stored, and the retry is stored without a gap;
+    - 600 events a minute, then 429 with `Retry-After`;
+    - the sweep finalises an idle gap and flags and closes an unterminated session; a second pass does nothing; closed gaps and sessions refuse later events.
+  - **TC-F-002-10** (`gateway.int.ts`): the fake gateway's 20 rejections go through `createRejectionReporter` and `POST /v1/audit/events`. **20 `auth.token_rejected` events are stored** under the configured org, with `source = model-gateway`, the 20 expected reasons, the trace id, `client_ip` and the `/24`, no summary, and no token in anything stored. **This closes T11-2.**
+- Full control-plane integration suite: 10 files, 149 tests, all passed locally.
