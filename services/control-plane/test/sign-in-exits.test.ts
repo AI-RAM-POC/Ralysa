@@ -172,14 +172,14 @@ const SCENARIOS: Scenario[] = [
   },
   {
     name: 'Entra sessions revoked after the IdP token was issued',
-    directory: { ...ok, sessionsValidFrom: new Date(Date.now() + 5_000) },
+    directory: { ...ok, sessionsValidFrom: new Date(Date.now() + 3_600_000) },
     expect: { outcome: 'failure', reason: 'expired' },
     error: { status: 400, error: 'invalid_grant' },
   },
   {
     // R29-n7 (unit exit, R29 follow-up): a known user is also revoked, and that is recorded.
     name: 'Entra sessions revoked after the IdP token was issued, known user',
-    directory: { ...ok, sessionsValidFrom: new Date(Date.now() + 5_000) },
+    directory: { ...ok, sessionsValidFrom: new Date(Date.now() + 3_600_000) },
     knownUser: true,
     expect: { outcome: 'failure', reason: 'expired' },
     error: { status: 400, error: 'invalid_grant' },

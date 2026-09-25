@@ -7,7 +7,8 @@
 // - revocation: read DIRECTLY from the database for every user token, never through the feed
 //   [SEC-F002-18 d]. The session is checked before the user (a revoked or foreign session is
 //   `session_revoked`, then `iat` before the user's `revoked_before` is `user_revoked`), as the
-//   T08 verifier did.
+//   T08 verifier did. A database fault there is VerifierUnavailableError (503), like an
+//   unreadable key set, never a token rejection (review of #32).
 //
 // Service tokens must belong to a registered service (`services[]`), else `wrong_token_use`.
 import {
@@ -16,6 +17,7 @@ import {
   type RevocationSource,
   type RevocationVerdict,
   type ServiceTokenVerifier,
+  VerifierUnavailableError,
   createAccessTokenVerifier,
   createServiceTokenVerifier,
 } from '@ralysa/auth';
@@ -34,9 +36,9 @@ export interface ControlPlaneVerifier {
 
 /** Revocation state read from cp.auth_session and cp.app_user under the org (§3.2.6). */
 export function createDbRevocationSource(db: Kysely<Database>, orgId: string): RevocationSource {
-  return {
-    async check(token): Promise<RevocationVerdict> {
-      const state = await withOrg(
+  const readState = async (token: { sid: string; iat: number }) => {
+    try {
+      return await withOrg(
         db,
         orgId,
         async (trx) =>
@@ -54,6 +56,13 @@ export function createDbRevocationSource(db: Kysely<Database>, orgId: string): R
             .executeTakeFirst(),
         { readOnly: true },
       );
+    } catch {
+      throw new VerifierUnavailableError('the revocation state could not be read');
+    }
+  };
+  return {
+    async check(token): Promise<RevocationVerdict> {
+      const state = await readState(token);
       if (state === undefined || state.status !== 'active' || state.user_id !== token.sub) {
         return 'session_revoked';
       }

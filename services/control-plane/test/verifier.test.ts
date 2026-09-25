@@ -143,6 +143,20 @@ describe('route authentication', () => {
     expect(rejected).toEqual([]);
   });
 
+  it('a revocation read that fails answers 503 and records no rejection (review of #32)', async () => {
+    // fakeRts's database is unreachable (127.0.0.1:1): the user token is authentic, so the
+    // verifier reaches the database revocation source, which can't answer.
+    const { instance, rejected, fake } = await app();
+    const token = await mintAccessToken(fake.keys, userClaims());
+    const res = await instance.inject({
+      url: '/v1/me',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(res.statusCode).toBe(503);
+    expect(res.json()).toMatchObject({ code: 'temporarily_unavailable' });
+    expect(rejected).toEqual([]);
+  });
+
   it('an unreadable key set answers 503 and records no rejection', async () => {
     const { instance, rejected, fake } = await app();
     const token = await mintAccessToken(fake.keys, serviceClaims());

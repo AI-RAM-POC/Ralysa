@@ -142,8 +142,8 @@ export interface ServiceTokenVerifier {
 }
 
 export class VerifierUnavailableError extends Error {
-  constructor() {
-    super('the verification keys could not be fetched');
+  constructor(message = 'the verification keys could not be fetched') {
+    super(message);
     this.name = 'VerifierUnavailableError';
   }
 }
