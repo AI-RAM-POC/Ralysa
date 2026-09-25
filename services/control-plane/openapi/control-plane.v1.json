@@ -361,6 +361,729 @@
         }
       }
     },
+    "/oauth2/revoke": {
+      "post": {
+        "summary": "RFC 7009 revocation = sign-out: revokes the refresh token's whole session",
+        "tags": [
+          "oauth"
+        ],
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "client_id": {
+                    "type": "string",
+                    "const": "ralysa-cli"
+                  },
+                  "token": {
+                    "type": "string",
+                    "maxLength": 128
+                  },
+                  "token_type_hint": {
+                    "type": "string",
+                    "const": "refresh_token"
+                  }
+                },
+                "required": [
+                  "client_id",
+                  "token"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Revoked, or the token was unknown (RFC 7009)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {},
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "invalid_request",
+                        "invalid_client",
+                        "invalid_grant",
+                        "unauthorized_client",
+                        "unsupported_grant_type",
+                        "invalid_scope",
+                        "access_denied",
+                        "temporarily_unavailable"
+                      ]
+                    },
+                    "error_description": {
+                      "type": "string"
+                    },
+                    "ralysa_error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "idp_error",
+                            "invalid_idp_token",
+                            "untrusted_issuer",
+                            "expired",
+                            "replay",
+                            "mfa_claim_missing",
+                            "browser_binding_failed",
+                            "code_not_redeemed",
+                            "not_in_access_group",
+                            "user_disabled",
+                            "device_code_disabled",
+                            "admin_requires_strong_flow",
+                            "loopback_ip_mismatch",
+                            "idp_unavailable",
+                            "group_overage_unresolved",
+                            "revoked",
+                            "reuse_detected",
+                            "idp_session_revoked"
+                          ]
+                        },
+                        "i18n_key": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "i18n_key"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "invalid_client",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "invalid_request",
+                        "invalid_client",
+                        "invalid_grant",
+                        "unauthorized_client",
+                        "unsupported_grant_type",
+                        "invalid_scope",
+                        "access_denied",
+                        "temporarily_unavailable"
+                      ]
+                    },
+                    "error_description": {
+                      "type": "string"
+                    },
+                    "ralysa_error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "idp_error",
+                            "invalid_idp_token",
+                            "untrusted_issuer",
+                            "expired",
+                            "replay",
+                            "mfa_claim_missing",
+                            "browser_binding_failed",
+                            "code_not_redeemed",
+                            "not_in_access_group",
+                            "user_disabled",
+                            "device_code_disabled",
+                            "admin_requires_strong_flow",
+                            "loopback_ip_mismatch",
+                            "idp_unavailable",
+                            "group_overage_unresolved",
+                            "revoked",
+                            "reuse_detected",
+                            "idp_session_revoked"
+                          ]
+                        },
+                        "i18n_key": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "i18n_key"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "invalid_request",
+                        "invalid_client",
+                        "invalid_grant",
+                        "unauthorized_client",
+                        "unsupported_grant_type",
+                        "invalid_scope",
+                        "access_denied",
+                        "temporarily_unavailable"
+                      ]
+                    },
+                    "error_description": {
+                      "type": "string"
+                    },
+                    "ralysa_error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "idp_error",
+                            "invalid_idp_token",
+                            "untrusted_issuer",
+                            "expired",
+                            "replay",
+                            "mfa_claim_missing",
+                            "browser_binding_failed",
+                            "code_not_redeemed",
+                            "not_in_access_group",
+                            "user_disabled",
+                            "device_code_disabled",
+                            "admin_requires_strong_flow",
+                            "loopback_ip_mismatch",
+                            "idp_unavailable",
+                            "group_overage_unresolved",
+                            "revoked",
+                            "reuse_detected",
+                            "idp_session_revoked"
+                          ]
+                        },
+                        "i18n_key": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "i18n_key"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/oauth2/token": {
+      "post": {
+        "summary": "Token endpoint: refresh_token and client_credentials (private_key_jwt); authorization_code and token exchange arrive with F-002-T10. No client secret is ever accepted.",
+        "tags": [
+          "oauth"
+        ],
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "oneOf": [
+                  {
+                    "type": "object",
+                    "properties": {
+                      "grant_type": {
+                        "type": "string",
+                        "const": "authorization_code"
+                      },
+                      "client_id": {
+                        "type": "string",
+                        "const": "ralysa-cli"
+                      },
+                      "code": {
+                        "type": "string",
+                        "pattern": "^rly_ac_[A-Za-z0-9_-]{43}$"
+                      },
+                      "redirect_uri": {
+                        "type": "string",
+                        "maxLength": 64
+                      },
+                      "code_verifier": {
+                        "type": "string",
+                        "pattern": "^[A-Za-z0-9._~-]{43,128}$"
+                      }
+                    },
+                    "required": [
+                      "grant_type",
+                      "client_id",
+                      "code",
+                      "redirect_uri",
+                      "code_verifier"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "grant_type": {
+                        "type": "string",
+                        "const": "refresh_token"
+                      },
+                      "client_id": {
+                        "type": "string",
+                        "const": "ralysa-cli"
+                      },
+                      "refresh_token": {
+                        "type": "string",
+                        "pattern": "^rly_rt_[A-Za-z0-9_-]{43}$"
+                      },
+                      "audience": {
+                        "type": "string",
+                        "enum": [
+                          "control-plane",
+                          "agent-host",
+                          "model-gateway",
+                          "mcp-gateway",
+                          "workspace-runtime"
+                        ]
+                      }
+                    },
+                    "required": [
+                      "grant_type",
+                      "client_id",
+                      "refresh_token"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "grant_type": {
+                        "type": "string",
+                        "const": "urn:ietf:params:oauth:grant-type:token-exchange"
+                      },
+                      "client_id": {
+                        "type": "string",
+                        "const": "ralysa-cli"
+                      },
+                      "subject_token": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 8192
+                      },
+                      "subject_token_type": {
+                        "type": "string",
+                        "const": "urn:ietf:params:oauth:token-type:access_token"
+                      },
+                      "audience": {
+                        "type": "string",
+                        "enum": [
+                          "control-plane",
+                          "agent-host",
+                          "model-gateway",
+                          "mcp-gateway",
+                          "workspace-runtime"
+                        ]
+                      },
+                      "device_label": {
+                        "type": "string",
+                        "maxLength": 64
+                      }
+                    },
+                    "required": [
+                      "grant_type",
+                      "client_id",
+                      "subject_token",
+                      "subject_token_type"
+                    ],
+                    "additionalProperties": false
+                  },
+                  {
+                    "type": "object",
+                    "properties": {
+                      "grant_type": {
+                        "type": "string",
+                        "const": "client_credentials"
+                      },
+                      "client_assertion_type": {
+                        "type": "string",
+                        "const": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+                      },
+                      "client_assertion": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 4096
+                      },
+                      "client_id": {
+                        "type": "string",
+                        "maxLength": 64
+                      }
+                    },
+                    "required": [
+                      "grant_type",
+                      "client_assertion_type",
+                      "client_assertion"
+                    ],
+                    "additionalProperties": false
+                  }
+                ]
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Tokens",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "access_token": {
+                      "type": "string"
+                    },
+                    "token_type": {
+                      "type": "string",
+                      "const": "Bearer"
+                    },
+                    "expires_in": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "refresh_token": {
+                      "type": "string"
+                    },
+                    "issued_token_type": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "access_token",
+                    "token_type",
+                    "expires_in"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "invalid_request, invalid_grant, invalid_scope or unsupported_grant_type",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "invalid_request",
+                        "invalid_client",
+                        "invalid_grant",
+                        "unauthorized_client",
+                        "unsupported_grant_type",
+                        "invalid_scope",
+                        "access_denied",
+                        "temporarily_unavailable"
+                      ]
+                    },
+                    "error_description": {
+                      "type": "string"
+                    },
+                    "ralysa_error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "idp_error",
+                            "invalid_idp_token",
+                            "untrusted_issuer",
+                            "expired",
+                            "replay",
+                            "mfa_claim_missing",
+                            "browser_binding_failed",
+                            "code_not_redeemed",
+                            "not_in_access_group",
+                            "user_disabled",
+                            "device_code_disabled",
+                            "admin_requires_strong_flow",
+                            "loopback_ip_mismatch",
+                            "idp_unavailable",
+                            "group_overage_unresolved",
+                            "revoked",
+                            "reuse_detected",
+                            "idp_session_revoked"
+                          ]
+                        },
+                        "i18n_key": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "i18n_key"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "invalid_client",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "invalid_request",
+                        "invalid_client",
+                        "invalid_grant",
+                        "unauthorized_client",
+                        "unsupported_grant_type",
+                        "invalid_scope",
+                        "access_denied",
+                        "temporarily_unavailable"
+                      ]
+                    },
+                    "error_description": {
+                      "type": "string"
+                    },
+                    "ralysa_error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "idp_error",
+                            "invalid_idp_token",
+                            "untrusted_issuer",
+                            "expired",
+                            "replay",
+                            "mfa_claim_missing",
+                            "browser_binding_failed",
+                            "code_not_redeemed",
+                            "not_in_access_group",
+                            "user_disabled",
+                            "device_code_disabled",
+                            "admin_requires_strong_flow",
+                            "loopback_ip_mismatch",
+                            "idp_unavailable",
+                            "group_overage_unresolved",
+                            "revoked",
+                            "reuse_detected",
+                            "idp_session_revoked"
+                          ]
+                        },
+                        "i18n_key": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "i18n_key"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "invalid_request",
+                        "invalid_client",
+                        "invalid_grant",
+                        "unauthorized_client",
+                        "unsupported_grant_type",
+                        "invalid_scope",
+                        "access_denied",
+                        "temporarily_unavailable"
+                      ]
+                    },
+                    "error_description": {
+                      "type": "string"
+                    },
+                    "ralysa_error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "idp_error",
+                            "invalid_idp_token",
+                            "untrusted_issuer",
+                            "expired",
+                            "replay",
+                            "mfa_claim_missing",
+                            "browser_binding_failed",
+                            "code_not_redeemed",
+                            "not_in_access_group",
+                            "user_disabled",
+                            "device_code_disabled",
+                            "admin_requires_strong_flow",
+                            "loopback_ip_mismatch",
+                            "idp_unavailable",
+                            "group_overage_unresolved",
+                            "revoked",
+                            "reuse_detected",
+                            "idp_session_revoked"
+                          ]
+                        },
+                        "i18n_key": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "i18n_key"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "temporarily_unavailable (IdP directory unreachable; the token is not consumed)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string",
+                      "enum": [
+                        "invalid_request",
+                        "invalid_client",
+                        "invalid_grant",
+                        "unauthorized_client",
+                        "unsupported_grant_type",
+                        "invalid_scope",
+                        "access_denied",
+                        "temporarily_unavailable"
+                      ]
+                    },
+                    "error_description": {
+                      "type": "string"
+                    },
+                    "ralysa_error": {
+                      "type": "object",
+                      "properties": {
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "idp_error",
+                            "invalid_idp_token",
+                            "untrusted_issuer",
+                            "expired",
+                            "replay",
+                            "mfa_claim_missing",
+                            "browser_binding_failed",
+                            "code_not_redeemed",
+                            "not_in_access_group",
+                            "user_disabled",
+                            "device_code_disabled",
+                            "admin_requires_strong_flow",
+                            "loopback_ip_mismatch",
+                            "idp_unavailable",
+                            "group_overage_unresolved",
+                            "revoked",
+                            "reuse_detected",
+                            "idp_session_revoked"
+                          ]
+                        },
+                        "i18n_key": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "code",
+                        "i18n_key"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "error"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/readyz": {
       "get": {
         "summary": "Readiness: database, an active signing key, no custody violation",
@@ -547,6 +1270,784 @@
           },
           "429": {
             "description": "Rate limited",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "pattern": "^urn:ralysa:problem:[a-z_]+$"
+                    },
+                    "title": {
+                      "type": "string",
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "detail": {
+                      "type": "string",
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "maxLength": 200
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "invalid_request",
+                        "unauthorized",
+                        "forbidden",
+                        "not_found",
+                        "conflict",
+                        "locked",
+                        "payload_too_large",
+                        "unprocessable",
+                        "rate_limited",
+                        "audit_unavailable",
+                        "temporarily_unavailable",
+                        "internal"
+                      ]
+                    },
+                    "i18n_key": {
+                      "type": "string",
+                      "maxLength": 100
+                    },
+                    "trace_id": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{32}$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status",
+                    "code"
+                  ],
+                  "additionalProperties": {}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/internal/governance": {
+      "get": {
+        "summary": "Revocations, kill-switch state and epoch for every PEP (service token; G-1)",
+        "tags": [
+          "internal"
+        ],
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "description": "The cursor of the previous response; without it the feed covers the maximum access-token TTL + 5 min",
+            "schema": {
+              "type": "string",
+              "format": "date-time",
+              "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Governance state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "epoch": {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    "issued_at": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    "cursor": {
+                      "type": "string",
+                      "maxLength": 256
+                    },
+                    "revoked_sessions": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "sid": {
+                            "type": "string",
+                            "format": "uuid",
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                          },
+                          "revoked_at": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                          }
+                        },
+                        "required": [
+                          "sid",
+                          "revoked_at"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "users_revoked_before": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "user_id": {
+                            "type": "string",
+                            "format": "uuid",
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                          },
+                          "revoked_before": {
+                            "type": "string",
+                            "format": "date-time",
+                            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                          }
+                        },
+                        "required": [
+                          "user_id",
+                          "revoked_before"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "kill_switches": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "scope": {
+                            "type": "string",
+                            "enum": [
+                              "tenant",
+                              "department",
+                              "pack",
+                              "agent"
+                            ]
+                          },
+                          "scope_id": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "maxLength": 200
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          },
+                          "active": {
+                            "type": "boolean"
+                          }
+                        },
+                        "required": [
+                          "scope",
+                          "scope_id",
+                          "active"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "epoch",
+                    "issued_at",
+                    "cursor",
+                    "revoked_sessions",
+                    "users_revoked_before",
+                    "kill_switches"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid cursor",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "pattern": "^urn:ralysa:problem:[a-z_]+$"
+                    },
+                    "title": {
+                      "type": "string",
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "detail": {
+                      "type": "string",
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "maxLength": 200
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "invalid_request",
+                        "unauthorized",
+                        "forbidden",
+                        "not_found",
+                        "conflict",
+                        "locked",
+                        "payload_too_large",
+                        "unprocessable",
+                        "rate_limited",
+                        "audit_unavailable",
+                        "temporarily_unavailable",
+                        "internal"
+                      ]
+                    },
+                    "i18n_key": {
+                      "type": "string",
+                      "maxLength": 100
+                    },
+                    "trace_id": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{32}$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status",
+                    "code"
+                  ],
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid service token",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "pattern": "^urn:ralysa:problem:[a-z_]+$"
+                    },
+                    "title": {
+                      "type": "string",
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "detail": {
+                      "type": "string",
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "maxLength": 200
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "invalid_request",
+                        "unauthorized",
+                        "forbidden",
+                        "not_found",
+                        "conflict",
+                        "locked",
+                        "payload_too_large",
+                        "unprocessable",
+                        "rate_limited",
+                        "audit_unavailable",
+                        "temporarily_unavailable",
+                        "internal"
+                      ]
+                    },
+                    "i18n_key": {
+                      "type": "string",
+                      "maxLength": 100
+                    },
+                    "trace_id": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{32}$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status",
+                    "code"
+                  ],
+                  "additionalProperties": {}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/internal/principals/{user_id}": {
+      "get": {
+        "summary": "Groups, roles and status of a user (service token)",
+        "tags": [
+          "internal"
+        ],
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "user_id",
+            "in": "path",
+            "required": true,
+            "description": "Ralysa user id",
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The principal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "user_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "org_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "active",
+                        "disabled"
+                      ]
+                    },
+                    "roles": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "user",
+                          "platform_admin"
+                        ]
+                      }
+                    },
+                    "groups": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "idp_group_id": {
+                            "type": "string",
+                            "format": "uuid",
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                          },
+                          "role": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "access",
+                                  "platform_admin"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "idp_group_id",
+                          "role"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "as_of": {
+                      "type": "string",
+                      "format": "date-time",
+                      "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    }
+                  },
+                  "required": [
+                    "user_id",
+                    "org_id",
+                    "status",
+                    "roles",
+                    "groups",
+                    "as_of"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid user id",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "pattern": "^urn:ralysa:problem:[a-z_]+$"
+                    },
+                    "title": {
+                      "type": "string",
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "detail": {
+                      "type": "string",
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "maxLength": 200
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "invalid_request",
+                        "unauthorized",
+                        "forbidden",
+                        "not_found",
+                        "conflict",
+                        "locked",
+                        "payload_too_large",
+                        "unprocessable",
+                        "rate_limited",
+                        "audit_unavailable",
+                        "temporarily_unavailable",
+                        "internal"
+                      ]
+                    },
+                    "i18n_key": {
+                      "type": "string",
+                      "maxLength": 100
+                    },
+                    "trace_id": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{32}$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status",
+                    "code"
+                  ],
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid service token",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "pattern": "^urn:ralysa:problem:[a-z_]+$"
+                    },
+                    "title": {
+                      "type": "string",
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "detail": {
+                      "type": "string",
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "maxLength": 200
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "invalid_request",
+                        "unauthorized",
+                        "forbidden",
+                        "not_found",
+                        "conflict",
+                        "locked",
+                        "payload_too_large",
+                        "unprocessable",
+                        "rate_limited",
+                        "audit_unavailable",
+                        "temporarily_unavailable",
+                        "internal"
+                      ]
+                    },
+                    "i18n_key": {
+                      "type": "string",
+                      "maxLength": 100
+                    },
+                    "trace_id": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{32}$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status",
+                    "code"
+                  ],
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such user",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "pattern": "^urn:ralysa:problem:[a-z_]+$"
+                    },
+                    "title": {
+                      "type": "string",
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "detail": {
+                      "type": "string",
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "maxLength": 200
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "invalid_request",
+                        "unauthorized",
+                        "forbidden",
+                        "not_found",
+                        "conflict",
+                        "locked",
+                        "payload_too_large",
+                        "unprocessable",
+                        "rate_limited",
+                        "audit_unavailable",
+                        "temporarily_unavailable",
+                        "internal"
+                      ]
+                    },
+                    "i18n_key": {
+                      "type": "string",
+                      "maxLength": 100
+                    },
+                    "trace_id": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{32}$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status",
+                    "code"
+                  ],
+                  "additionalProperties": {}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/me": {
+      "get": {
+        "summary": "The signed-in user, the calling session's roles and the user's groups",
+        "tags": [
+          "directory"
+        ],
+        "security": [
+          {
+            "bearer": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The user",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "org_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "idp_subject": {
+                      "type": "string"
+                    },
+                    "email": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "display_name": {
+                      "type": [
+                        "string",
+                        "null"
+                      ]
+                    },
+                    "locale": {
+                      "type": "string"
+                    },
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "active",
+                        "disabled"
+                      ]
+                    },
+                    "roles": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "user",
+                          "platform_admin"
+                        ]
+                      }
+                    },
+                    "groups": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string",
+                            "format": "uuid",
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                          },
+                          "idp_group_id": {
+                            "type": "string",
+                            "format": "uuid",
+                            "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                          },
+                          "display_name": {
+                            "type": [
+                              "string",
+                              "null"
+                            ]
+                          },
+                          "role": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "enum": [
+                                  "access",
+                                  "platform_admin"
+                                ]
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ]
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "idp_group_id",
+                          "display_name",
+                          "role"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "org_id",
+                    "idp_subject",
+                    "email",
+                    "display_name",
+                    "locale",
+                    "status",
+                    "roles",
+                    "groups"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, invalid or revoked access token",
             "content": {
               "application/problem+json": {
                 "schema": {

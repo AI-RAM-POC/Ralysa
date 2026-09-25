@@ -6,8 +6,13 @@ import { parseArgs } from 'node:util';
 import { CustodyViolationError, type KeyCustody } from '@ralysa/secrets';
 import { sql } from 'kysely';
 import { buildApp } from './app.js';
+import { tokenRejectedEvent } from './audit/events.js';
+import { createRejectionAggregator } from './audit/rejections.js';
 import { openAuditSpool } from './audit/spool.js';
 import { createAuditWriter } from './audit/writer.js';
+import { CLEANUP_INTERVAL_MS, runCleanup } from './auth/cleanup.js';
+import { unconfiguredDirectory } from './auth/directory-port.js';
+import { policyVersion } from './auth/policy-version.js';
 import { createSigningKeys } from './auth/tokens/signing-keys.js';
 import { openBaoStorageRefusals, serveProductionRefusals } from './config/guards.js';
 import { ConfigError, loadConfigFile } from './config/load.js';
@@ -104,9 +109,23 @@ export async function serveCommand(args: string[]): Promise<number> {
   });
   await keys.poll();
 
+  // auth.token_rejected, aggregated per client network and reason (§6.4); the org is config's.
+  const rejections = createRejectionAggregator({
+    emit: (rejection) =>
+      void writer
+        .writeOrSpool(config.org.id, [tokenRejectedEvent(rejection)])
+        .catch((error: unknown) => {
+          logger.warn('token_rejected_write_failed', { error: String(error) });
+        }),
+  });
+  // Until F-002-T10 wires Microsoft Graph, every refresh re-check is `unavailable`: refresh
+  // fails closed with temporarily_unavailable and consumes nothing.
+  logger.warn('idp_directory_unconfigured', { effect: 'refresh answers temporarily_unavailable' });
+
   const app = await buildApp({
     config,
     keys,
+    rts: { db, custody, directory: unconfiguredDirectory, writer, rejections },
     logger: pinoLogger,
     pingDatabase: async () => {
       await sql`select 1`.execute(db);
@@ -124,6 +143,21 @@ export async function serveCommand(args: string[]): Promise<number> {
           }),
       SPOOL_REPLAY_MS,
     ),
+    setInterval(() => {
+      rejections.flush();
+    }, 5_000),
+    setInterval(
+      () =>
+        void runCleanup({
+          db,
+          orgId: config.org.id,
+          writer,
+          policyVersion: policyVersion(config.access),
+        }).catch((error: unknown) => {
+          logger.warn('session_cleanup_failed', { error: String(error) });
+        }),
+      CLEANUP_INTERVAL_MS,
+    ),
   ];
   await app.listen({ host: config.listen.host, port: config.listen.port });
   logger.info('serve_started', { org_id: config.org.id, port: config.listen.port });
@@ -135,6 +169,7 @@ export async function serveCommand(args: string[]): Promise<number> {
     }
   });
   for (const timer of timers) clearInterval(timer);
+  rejections.flush(true);
   await app.close();
   await Promise.all([pool.end(), writerPool.end()]);
   logger.info('serve_stopped');

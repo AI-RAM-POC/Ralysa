@@ -15,6 +15,7 @@ interface Version {
 interface Key {
   versions: Version[];
   minAvailableVersion: number;
+  minDecryptionVersion: number;
   exportable: boolean;
   allowPlaintextBackup: boolean;
 }
@@ -25,6 +26,8 @@ export interface InMemoryKeyCustody extends KeyCustody {
   setFlags(key: string, flags: { exportable?: boolean; allowPlaintextBackup?: boolean }): void;
   /** Like Transit `min_decryption_version`/trimming: versions below it can't sign or be listed. */
   setMinAvailableVersion(key: string, version: number): void;
+  /** Transit `min_decryption_version`: versions below it are still listed but no longer verify. */
+  setMinDecryptionVersion(key: string, version: number): void;
 }
 
 export function createInMemoryKeyCustody(options: { now?: () => Date } = {}): InMemoryKeyCustody {
@@ -53,6 +56,7 @@ export function createInMemoryKeyCustody(options: { now?: () => Date } = {}): In
       const entry = keys.get(key) ?? {
         versions: [],
         minAvailableVersion: 0,
+        minDecryptionVersion: 1,
         exportable: false,
         allowPlaintextBackup: false,
       };
@@ -72,6 +76,10 @@ export function createInMemoryKeyCustody(options: { now?: () => Date } = {}): In
       existing(key).minAvailableVersion = version;
     },
 
+    setMinDecryptionVersion(key, version) {
+      existing(key).minDecryptionVersion = version;
+    },
+
     describe(key): Promise<KeyDescription> {
       try {
         const entry = existing(key);
@@ -84,6 +92,7 @@ export function createInMemoryKeyCustody(options: { now?: () => Date } = {}): In
         return Promise.resolve({
           latestVersion: entry.versions.length,
           minAvailableVersion: entry.minAvailableVersion,
+          minDecryptionVersion: entry.minDecryptionVersion,
           exportable: false,
           allowPlaintextBackup: false,
           versions: entry.versions

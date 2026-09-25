@@ -16,6 +16,7 @@
 // already check (vault.addr, db.ssl, public_base_url, graph_base_url) may be overridden; the
 // guards still apply. The NAMES of applied overrides are reported at start, never the values.
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { parse } from 'yaml';
 import type { z } from 'zod';
 import { type CommonConfig, crossFieldIssues } from './schema.js';
@@ -111,19 +112,22 @@ export function parseConfig<S extends z.ZodType>(schema: S, raw: unknown): z.inf
 }
 
 /** Reports applied override names at start (one JSON line; names only). */
-export const reportOverridesToStdout = (names: readonly string[]): void => {
-  if (names.length > 0) {
-    process.stdout.write(
-      `${JSON.stringify({ ts: new Date().toISOString(), level: 'info', msg: 'config_overrides', names })}\n`,
-    );
-  }
+/**
+ * One start-up line per entry point: the resolved config file path and the names (never the
+ * values) of applied overrides. Production pins the path (a fixed --config argument or a
+ * read-only mount, SEC-F002-12); logging it lets operators confirm which file a process read.
+ */
+export const reportConfigToStdout = (path: string, overrides: readonly string[]): void => {
+  process.stdout.write(
+    `${JSON.stringify({ ts: new Date().toISOString(), level: 'info', msg: 'config_loaded', path, overrides })}\n`,
+  );
 };
 
 export function loadConfigFile<S extends z.ZodType>(
   schema: S,
   path: string,
   env: Readonly<Record<string, string | undefined>> = process.env,
-  report: (names: readonly string[]) => void = reportOverridesToStdout,
+  report: (path: string, overrides: readonly string[]) => void = reportConfigToStdout,
 ): z.infer<S> {
   let raw: unknown;
   try {
@@ -135,6 +139,6 @@ export function loadConfigFile<S extends z.ZodType>(
   }
   const applied: string[] = [];
   const config = parseConfig(schema, applyEnvOverrides(raw, env, applied));
-  report(applied);
+  report(resolve(path), applied);
   return config;
 }

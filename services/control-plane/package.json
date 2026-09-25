@@ -29,7 +29,6 @@
     "@types/node": "catalog:",
     "@types/pg": "catalog:",
     "eslint": "catalog:",
-    "jose": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },
@@ -46,6 +45,7 @@
     "@ralysa/protocol": "workspace:*",
     "@ralysa/secrets": "workspace:*",
     "fastify": "5.12.5",
+    "jose": "catalog:",
     "kysely": "catalog:",
     "pg": "catalog:",
     "pino": "10.3.1",

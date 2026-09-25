@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { REDACT_PATHS, loggerOptions, scrubText, scrubValue } from '../src/http/logging.js';
 import { createJsonLogger } from '../src/observability/logger.js';
 import { createPinoLogger, loggerFromPino } from '../src/observability/pino.js';
+import { fakeRts } from './fixtures/fake-rts.js';
 
 // Token-shaped fixtures are built at runtime from low-entropy filler, so the repository's own
 // secret scanner doesn't read the test data as credentials; the scrubber patterns still match.
@@ -79,7 +80,7 @@ describe('logger options', () => {
     expect(err).toEqual({
       type: 'Error',
       message: 'user a@b.qa [REDACTED]',
-      code: 'X',
+      error_code: 'X',
       status: undefined,
     });
     expect(JSON.stringify(err)).not.toMatch(/display_name|email/);
@@ -136,6 +137,7 @@ describe('re-review of #25: interpolation cannot escape scrubbing', () => {
     const app = await buildApp({
       config: serveConfig(),
       keys: (await fakeKeys()).keys,
+      rts: fakeRts(),
       pingDatabase: () => Promise.resolve(true),
       logger: createPinoLogger('info', { write: (line: string) => lines.push(line) }),
     });
@@ -146,5 +148,39 @@ describe('re-review of #25: interpolation cannot escape scrubbing', () => {
     const out = lines.join('');
     expect(out).not.toContain('rly_rt_Ab1');
     expect(out.match(/\[REDACTED\]/g)?.length).toBeGreaterThanOrEqual(3);
+  });
+});
+
+describe('review of #26: errors logged through a Fastify request logger', () => {
+  it('keep their type and scrubbed message; the serializer never throws', async () => {
+    const { default: Fastify } = await import('fastify');
+    const lines: string[] = [];
+    const app = Fastify({
+      loggerInstance: createPinoLogger('info', { write: (line: string) => lines.push(line) }),
+    });
+    const { handleError } = await import('../src/http/errors.js');
+    app.setErrorHandler((error, request, reply) => handleError(error, request, reply));
+    app.get('/oauth2/x', () => {
+      const error = new Error(`boom rly_rt_${filler(43)}`) as Error & { code: string };
+      error.name = 'SigningUnavailableError';
+      error.code = 'E_SIGN';
+      throw error;
+    });
+    app.get('/x', (request) => {
+      request.log.error({ err: new Error('plain') }, 'err_key'); // Fastify/pino path: must not throw
+      return 'ok';
+    });
+    const reply = await app.inject('/oauth2/x');
+    expect(reply.statusCode).toBe(503);
+    expect(reply.json()).toEqual({ error: 'temporarily_unavailable' });
+    expect((await app.inject('/x')).statusCode).toBe(200);
+    const unhandled = lines
+      .map((l) => JSON.parse(l) as Record<string, unknown>)
+      .find((l) => l.msg === 'unhandled_error');
+    expect(unhandled?.error).toEqual({
+      type: 'SigningUnavailableError',
+      message: 'boom [REDACTED]',
+      error_code: 'E_SIGN',
+    });
   });
 });

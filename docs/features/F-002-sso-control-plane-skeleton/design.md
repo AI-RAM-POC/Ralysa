@@ -14,6 +14,7 @@
 |---|---|---|
 | 2026-09-25 | 1 | First draft (`fa27aaf`). |
 | 2026-09-25 | 2 | **Architect review applied**: "Architect review notes" section (Part A) inserted; body edits [AR-1] to [AR-18] (RC-1 to RC-12); ADR-0021 and ADR-0025 clarified (wording only). AD-1 to AD-4 accepted with conditions. G3 escalations listed (ADR-0004 decision 4, proposed ADR-0030, ADR-0031). **Security review applied** ([security.md](./security.md), copied verbatim): all ten §5 required changes (SEC-F002-01 to -08, -11 to -15) plus Q1, Q2 and Q8 decided under the standing authorization: Transit-signed chain-head checkpoints and `audit-verify` brought into F-002 (new task T16); flow-B callback/redemption IP mismatch denied by default; switching device code off revokes flow-A sessions. Dedicated `ralysa_audit_owner` role and a break-glass audit-migration path; per-entry-point OpenBao policies and configs; per-service audit action allow-list; consume-first IdP-token replay key; GUID-only groups with Graph always authoritative; runtime custody monitoring; single `env` source with production guards; enforced mock-IdP exclusion; server-issued client-audit sessions. Low and Info findings (SEC-F002-09, -10, -16 to -33) added to task Definitions of Done. OQ-D1, -D2, -D3, -D4, -D5, -D7, -D8 decided. AC→design→test table and task list updated. |
+| 2026-09-25 | 3 | Implementation feedback (F-002-T08, code review of #26), recorded under the standing authorization: §3.5 `auth.session.revoked` gains cause `not_in_access_group` and is written only when a revocation changed something. The governance feed's `cursor` lags `issued_at` by 60 s, and revocation transactions are capped at 15 s so that overlap always covers them (implementation notes T08-1, R26-3). |
 
 ---
 
@@ -701,7 +702,7 @@ export const AuditEvent = AuditEventInput.extend({
 | `auth.token.reuse_detected` | `denied` | `sid`, `revoked_count`, `token_kind` (`refresh`, `authorization_code`) | RTS |
 | `auth.token_rejected` | `denied`: `TokenRejectReason` | `audience`, `reason`, `client_ip`, `suppressed_count` (§6.4) | every verifying service |
 | `auth.sign_out` | `success` | `sid`, `surface` | RTS |
-| `auth.session.revoked` | `success` | `sid` or `user_id`, `revoked_by` (`system`), `cause` (`reuse_detected`, `user_disabled`, `idp_sessions_revoked`, `device_code_disabled`, `loopback_ip_mismatch`, `audit_unavailable`) | RTS |
+| `auth.session.revoked` | `success` | `sid` or `user_id`, `revoked_by` (`system`), `cause` (`reuse_detected`, `user_disabled`, `idp_sessions_revoked`, `not_in_access_group`, `device_code_disabled`, `loopback_ip_mismatch`, `audit_unavailable`); written only when the call actually revoked something | RTS |
 | `audit.query` | `success` / `denied`: `not_platform_admin` | `filters`, `policy_version` (envelope) | control plane |
 | `audit.ingest_rejected` | `denied` | `service`, `action` | control plane [SEC-F002-03] |
 | `audit.modify_denied` | `denied` | `op` (`UPDATE`/`DELETE`), `table`, `db_role`, `row_count` | DB trigger (§4.5); one per statement |

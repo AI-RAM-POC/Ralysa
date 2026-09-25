@@ -15,6 +15,7 @@ import {
   auditRow,
   createTestDatabase,
   insertAs,
+  runBootstrapRoles,
   sqlState,
 } from './support/db.js';
 
@@ -57,6 +58,7 @@ describe.skipIf(stack === undefined)('database (F-002-T05)', () => {
       '0002_cp_identity',
       '0003_cp_sessions_and_tokens',
       '0004_usage_credential_governance',
+      '0005_governance_epoch',
     ]);
     // Two organizations, inserted by the app role inside each org's scope.
     const app = await db.pool('cp_app');
@@ -152,11 +154,8 @@ describe.skipIf(stack === undefined)('database (F-002-T05)', () => {
     });
 
     it('bootstrap-roles.sql is idempotent', async () => {
-      const { readFileSync } = await import('node:fs');
-      const { BOOTSTRAP_ROLES_SQL } = await import('@ralysa/dev-stack/harness');
-      await expect(
-        t().superuser.query(readFileSync(BOOTSTRAP_ROLES_SQL, 'utf8')),
-      ).resolves.toBeDefined();
+      // Under the shared lock: another test file may be bootstrapping its database right now.
+      await expect(runBootstrapRoles(stack!, t().superuser)).resolves.toBeUndefined();
     });
 
     it('no Ralysa role may set session_replication_role (SEC-F002-25)', async () => {

@@ -71,8 +71,14 @@ export function createTransitKeyCustody(bao: AuthedBao, mount = 'transit'): KeyC
       });
       const latest = data.latest_version;
       const minAvailable = data.min_available_version;
+      const minDecryption = data.min_decryption_version;
       const keys = record(data.keys);
-      if (typeof latest !== 'number' || typeof minAvailable !== 'number' || keys === undefined) {
+      if (
+        typeof latest !== 'number' ||
+        typeof minAvailable !== 'number' ||
+        typeof minDecryption !== 'number' ||
+        keys === undefined
+      ) {
         throw new SecretsError('invalid_response', `describe ${key}: missing versions`);
       }
       const versions: PublicKeyVersion[] = [];
@@ -91,6 +97,7 @@ export function createTransitKeyCustody(bao: AuthedBao, mount = 'transit'): KeyC
       return {
         latestVersion: latest,
         minAvailableVersion: minAvailable,
+        minDecryptionVersion: minDecryption,
         exportable: false,
         allowPlaintextBackup: false,
         versions,

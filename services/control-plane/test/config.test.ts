@@ -132,6 +132,12 @@ db_credentials: {migrator: kv/ralysa/control-plane/db/migrator, audit_writer: kv
 `,
     );
     expect(loadConfigFile(MigrateConfig, path).db.port).toBe(5432);
+    // The resolved path and the override names (never values) are reported (SEC-F002-12).
+    const reports: [string, readonly string[]][] = [];
+    loadConfigFile(MigrateConfig, path, { RALYSA_CFG__DB__HOST: 'db2' }, (p, names) =>
+      reports.push([p, names]),
+    );
+    expect(reports).toEqual([[path, ['db.host']]]);
     expect(() => loadConfigFile(MigrateConfig, join(dir, 'missing.yaml'))).toThrow(
       /cannot read config/,
     );

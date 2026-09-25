@@ -66,6 +66,28 @@ export function scrubValue(value: unknown, depth = 0): unknown {
   return out;
 }
 
+/**
+ * What an error line may contain: type, scrubbed message, and its code and status. Total over any
+ * input. Callers log it under `error` (not `err`): pino's wildcard redact (`*.code`) copies an
+ * Error before a serializer sees it, which drops its non-enumerable name and message, and the
+ * field is `error_code` so that redaction doesn't hide it (review of #26).
+ */
+export function errorSummary(error: unknown): Record<string, unknown> {
+  if (typeof error !== 'object' || error === null) return { type: typeof error };
+  const e = error as {
+    name?: unknown;
+    message?: unknown;
+    code?: unknown;
+    statusCode?: unknown;
+  };
+  return {
+    type: typeof e.name === 'string' ? e.name : 'Error',
+    message: typeof e.message === 'string' ? scrubText(e.message) : undefined,
+    error_code: typeof e.code === 'string' ? e.code : undefined,
+    status: typeof e.statusCode === 'number' ? e.statusCode : undefined,
+  };
+}
+
 /** What a request line may contain: no URL, no query, no headers, no body. */
 export function requestSummary(request: FastifyRequest): Record<string, unknown> {
   return {
@@ -98,12 +120,7 @@ export function loggerOptions(level: string): PinoLoggerOptions {
       // Nothing from the raw request or response objects: only the summaries above are logged.
       req: () => undefined,
       res: () => undefined,
-      err: (error: Error & { code?: unknown; statusCode?: unknown }) => ({
-        type: error.name,
-        message: scrubText(error.message),
-        code: typeof error.code === 'string' ? error.code : undefined,
-        status: typeof error.statusCode === 'number' ? error.statusCode : undefined,
-      }),
+      err: (error: unknown) => errorSummary(error),
     },
     // The message string is scrubbed too: formatters.log only sees the merged object.
     hooks: {
