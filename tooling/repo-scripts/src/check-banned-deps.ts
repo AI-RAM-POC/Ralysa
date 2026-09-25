@@ -8,10 +8,18 @@
 // of the group's `graphAllowedThrough` sequences (boundaries.js); a group with none is banned
 // outright. The check runs a breadth-first search over (node, progress along each sequence)
 // states, so it never enumerates paths, and reports one witness path per finding.
+//
+// Production-closure mode (F-002-T14; SEC-F002-13 b, AR-12): from every `shipped: true` workspace,
+// only production edges are followed (an importer's dependencies and optionalDependencies, then
+// every package's dependencies and optionalDependencies, through linked workspaces too). No
+// DEV_ONLY_PACKAGES entry (the mock IdP's `oidc-provider`, `@ralysa/dev-stack`) may be reachable,
+// at any depth. devDependencies stay allowed: integration tests import the harness from test/**.
 import { existsSync } from 'node:fs';
 import { join, posix } from 'node:path';
 import {
   BANNED_PACKAGE_GROUPS,
+  DEV_ONLY_MESSAGE,
+  DEV_ONLY_PACKAGES,
   WORKSPACE_DEPENDENCY_RULES,
   bannedGroupOf,
   globSource,
@@ -19,6 +27,7 @@ import {
 import { type Finding, isRecord, listWorkspaceDirs, readJson, readYaml } from './lib/repo.ts';
 
 const IMPORTER_FIELDS = ['dependencies', 'devDependencies', 'optionalDependencies'] as const;
+const IMPORTER_PROD_FIELDS = ['dependencies', 'optionalDependencies'] as const;
 const SNAPSHOT_FIELDS = ['dependencies', 'optionalDependencies'] as const;
 const SUPPORTED_LOCKFILE = '9.0';
 
@@ -36,6 +45,8 @@ interface GraphNode {
 export interface DependencyGraph {
   nodes: Map<NodeId, GraphNode>;
   edges: Map<NodeId, NodeId[]>;
+  /** Production edges only: what `pnpm deploy --prod` installs (no devDependencies). */
+  prodEdges: Map<NodeId, NodeId[]>;
   importers: string[];
   problems: Finding[];
 }
@@ -46,6 +57,8 @@ export interface CheckBannedDepsOptions {
   lockfile?: unknown;
   /** Workspace path → package name; defaults to reading each workspace's package.json. */
   workspaceNames?: Map<string, string>;
+  /** Paths of the `shipped: true` workspaces; defaults to reading each package.json. */
+  shipped?: string[];
 }
 
 /** `name@1.2.3(peer@4)` → `name`. */
@@ -83,6 +96,7 @@ export function buildGraph(
   const graph: DependencyGraph = {
     nodes: new Map(),
     edges: new Map(),
+    prodEdges: new Map(),
     importers: [],
     problems: [],
   };
@@ -146,25 +160,41 @@ export function buildGraph(
     return undefined;
   };
 
-  const addEdges = (from: NodeId, entries: unknown, importer: string | undefined): void => {
+  const addEdges = (
+    from: NodeId,
+    entries: unknown,
+    importer: string | undefined,
+    prod: boolean,
+  ): void => {
     if (!isRecord(entries)) return;
     const list = graph.edges.get(from) ?? [];
+    const prodList = graph.prodEdges.get(from) ?? [];
     for (const [name, raw] of Object.entries(entries)) {
       const version = isRecord(raw) ? raw.version : raw;
       if (typeof version !== 'string') continue;
       const to = target(importer, name, version);
-      if (to !== undefined) list.push(to);
+      if (to === undefined) continue;
+      list.push(to);
+      if (prod) prodList.push(to);
     }
     graph.edges.set(from, list);
+    graph.prodEdges.set(from, prodList);
   };
 
   for (const [path, entry] of Object.entries(importers)) {
     if (!isRecord(entry)) continue;
-    for (const field of IMPORTER_FIELDS) addEdges(importerId(path), entry[field], path);
+    for (const field of IMPORTER_FIELDS) {
+      addEdges(
+        importerId(path),
+        entry[field],
+        path,
+        (IMPORTER_PROD_FIELDS as readonly string[]).includes(field),
+      );
+    }
   }
   for (const [key, entry] of Object.entries(snapshots)) {
     if (!isRecord(entry)) continue;
-    for (const field of SNAPSHOT_FIELDS) addEdges(packageId(key), entry[field], undefined);
+    for (const field of SNAPSHOT_FIELDS) addEdges(packageId(key), entry[field], undefined, true);
   }
   return graph;
 }
@@ -294,6 +324,62 @@ export function checkBannedDepsGraph(graph: DependencyGraph): Finding[] {
   return findings;
 }
 
+const isDevOnly = (name: string): boolean =>
+  DEV_ONLY_PACKAGES.some((pattern) => matchesName(pattern, name));
+
+/**
+ * Production-closure mode (SEC-F002-13 b): no development-only package is reachable from a shipped
+ * workspace through production edges. One finding per (workspace, package), with a witness path.
+ */
+export function checkProductionClosure(graph: DependencyGraph, shipped: string[]): Finding[] {
+  const findings: Finding[] = [];
+  for (const start of shipped) {
+    const first = importerId(start);
+    if (!graph.nodes.has(first)) {
+      findings.push({
+        rule: 'banned-deps/dev-only-in-shipped',
+        path: start,
+        message: `shipped workspace ${start} is not an importer in pnpm-lock.yaml; run pnpm install`,
+      });
+      continue;
+    }
+    const parents = new Map<NodeId, NodeId | undefined>([[first, undefined]]);
+    const queue: NodeId[] = [first];
+    const reported = new Set<string>();
+    for (let id = queue.shift(); id !== undefined; id = queue.shift()) {
+      const node = graph.nodes.get(id);
+      if (node !== undefined && id !== first && isDevOnly(node.name) && !reported.has(node.name)) {
+        reported.add(node.name);
+        const labels: string[] = [];
+        for (let at: NodeId | undefined = id; at !== undefined; at = parents.get(at)) {
+          labels.unshift(graph.nodes.get(at)?.label ?? at);
+        }
+        findings.push({
+          rule: 'banned-deps/dev-only-in-shipped',
+          path: start,
+          message: `${node.name} is in the production closure of a shipped workspace. ${DEV_ONLY_MESSAGE} Path: ${labels.join(' → ')}`,
+        });
+      }
+      for (const next of graph.prodEdges.get(id) ?? []) {
+        if (parents.has(next)) continue;
+        parents.set(next, id);
+        queue.push(next);
+      }
+    }
+  }
+  return findings;
+}
+
+/** Paths of the workspaces whose package.json says `ralysa.shipped: true`. */
+export function readShippedWorkspaces(root: string): string[] {
+  return listWorkspaceDirs(root).filter((dir) => {
+    const manifest = join(root, dir, 'package.json');
+    if (!existsSync(manifest)) return false;
+    const pkg = readJson(manifest);
+    return isRecord(pkg) && isRecord(pkg.ralysa) && pkg.ralysa.shipped === true;
+  });
+}
+
 export function checkBannedDeps(options: CheckBannedDepsOptions): Finding[] {
   const { root } = options;
   const lockfilePath = join(root, 'pnpm-lock.yaml');
@@ -302,5 +388,9 @@ export function checkBannedDeps(options: CheckBannedDepsOptions): Finding[] {
   }
   const lockfile = options.lockfile ?? readYaml(lockfilePath);
   const names = options.workspaceNames ?? readWorkspaceNames(root);
-  return checkBannedDepsGraph(buildGraph(lockfile, names));
+  const graph = buildGraph(lockfile, names);
+  return [
+    ...checkBannedDepsGraph(graph),
+    ...checkProductionClosure(graph, options.shipped ?? readShippedWorkspaces(root)),
+  ];
 }
