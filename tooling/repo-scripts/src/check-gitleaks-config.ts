@@ -22,6 +22,9 @@ export const CUSTOM_RULE_IDS = [
   'litellm-key',
   'mistral-api-key',
   'groq-api-key',
+  // F-002-T14: Ralysa's own opaque tokens (F-002 design §3.2.1), so a leaked one is found.
+  'ralysa-refresh-token',
+  'ralysa-auth-code',
   'ralysa-selftest-canary',
 ] as const;
 

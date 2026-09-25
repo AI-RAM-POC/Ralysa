@@ -23,6 +23,7 @@ const UPPER = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 const LOWER = 'abcdefghijklmnopqrstuvwxyz';
 const DIGITS = '0123456789';
 const ALNUM = UPPER + LOWER + DIGITS;
+const BASE64URL = `${ALNUM}_-`;
 
 /**
  * Joins fragments at runtime. Token prefixes are kept apart in the source, so no scanner (ours
@@ -63,6 +64,8 @@ export const RULE_ENTROPY = {
   'litellm-key': 3,
   'mistral-api-key': 3.5,
   'groq-api-key': 3.5,
+  'ralysa-refresh-token': 3.5,
+  'ralysa-auth-code': 3.5,
   'ralysa-selftest-canary': 3,
 } as const;
 
@@ -141,8 +144,20 @@ export function syntheticSet(): Plant[] {
       rule: 'groq-api-key',
       line: `groq = "${detectable(frag('gs', 'k_'), ALNUM, 52, RULE_ENTROPY['groq-api-key'])}"`,
     },
+    { rule: 'ralysa-refresh-token', line: `refresh_token = "${ralysaRefreshToken()}"` },
+    { rule: 'ralysa-auth-code', line: `code = "${ralysaAuthCode()}"` },
     { rule: 'ralysa-selftest-canary', line: `canary = "${canary()}"` },
   ];
+}
+
+/** A synthetic Ralysa refresh token (F-002 design §3.2.1): `rly_rt_` + 43 base64url characters. */
+export function ralysaRefreshToken(): string {
+  return detectable(frag('rly', '_rt_'), BASE64URL, 43, RULE_ENTROPY['ralysa-refresh-token']);
+}
+
+/** A synthetic Ralysa authorization code: `rly_ac_` + 43 base64url characters. */
+export function ralysaAuthCode(): string {
+  return detectable(frag('rly', '_ac_'), BASE64URL, 43, RULE_ENTROPY['ralysa-auth-code']);
 }
 
 /**
