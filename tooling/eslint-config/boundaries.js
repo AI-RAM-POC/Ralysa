@@ -47,6 +47,20 @@ export const RESTRICTED_SYNTAX = [
     selector: "CallExpression[callee.name='require'][arguments.length=0]",
     message: LOADING_MESSAGE,
   },
+  // `module.require(x)`, `mod['require'](x)` and the like (code review finding 5).
+  {
+    selector:
+      "CallExpression[callee.type='MemberExpression'][callee.property.name='require'][arguments.0.type!='Literal']",
+    message: LOADING_MESSAGE,
+  },
+  {
+    selector:
+      "CallExpression[callee.type='MemberExpression'][callee.property.value='require'][arguments.0.type!='Literal']",
+    message: LOADING_MESSAGE,
+  },
+  // `process.mainModule.require` and any alias of it: ban the handle itself.
+  { selector: "MemberExpression[property.name='mainModule']", message: LOADING_MESSAGE },
+  { selector: "MemberExpression[property.value='mainModule']", message: LOADING_MESSAGE },
   // Any mention: the import, `module.createRequire(...)` and a destructured alias all name it.
   { selector: "Identifier[name='createRequire']", message: LOADING_MESSAGE },
   { selector: "Identifier[name='getBuiltinModule']", message: LOADING_MESSAGE },

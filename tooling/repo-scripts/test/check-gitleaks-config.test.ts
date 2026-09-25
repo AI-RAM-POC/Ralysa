@@ -1,4 +1,4 @@
-// TC-F-001-38, config part (SEC-F001-05, -24; T05-1 decision): check-gitleaks-config fails on an
+// TC-F-001-38, config part (SEC-F001-05, -24; T05-1 decision; code review findings 1 to 3): check-gitleaks-config fails on an
 // artefact config that gains [extend] or any allow-list, an unanchored repo path allow-list,
 // diverging custom rules, copied rules that drift from the vendored gitleaks default, and a
 // vendored default that isn't the pinned file.
@@ -43,27 +43,61 @@ describe('check-gitleaks-config', () => {
       ['[extend] useDefault = true', '[extend]\nuseDefault = true\n'],
       ['[extend] path', '[extend]\npath = "other.toml"\n'],
       ['an empty [extend]', '[extend]\n'],
+      // Code review finding 1: gitleaks (viper) reads keys case-insensitively.
+      ['[Extend] UseDefault = true', '[Extend]\nUseDefault = true\n'],
+      ['[EXTEND]', '[EXTEND]\nuseDefault = true\n'],
     ])('fails on %s', (_, extend) => {
-      // [extend] must come before the first [[rules]] table to stay top-level.
+      // Top-level tables must come before the first [[rules]] table.
       const artefacts = beforeRules(realArtefacts, extend);
-      expect(check(realRepo, artefacts).join('\n')).toContain(`${A}: must not have [extend]`);
+      expect(check(realRepo, artefacts).join('\n')).toMatch(
+        /\.gitleaks\.artefacts\.toml: "(extend|Extend|EXTEND)" is not an allowed key: the artefact config must not have \[extend\] in any spelling/,
+      );
     });
 
     it.each([
       ['a global [allowlist] with paths', "[allowlist]\npaths = ['''^node_modules/''']\n"],
       ['[[allowlists]]', "[[allowlists]]\npaths = ['''(?i)\\.svg$''']\n"],
       ['an empty [allowlist]', '[allowlist]\n'],
+      // Code review finding 1: other capitalisations.
+      ['[Allowlist]', "[Allowlist]\npaths = ['''.*''']\n"],
+      ['[[AllowLists]]', "[[AllowLists]]\npaths = ['''.*''']\n"],
+      ['[ALLOWLIST]', "[ALLOWLIST]\nregexes = ['''.*''']\n"],
     ])('fails on %s', (_, table) => {
       const artefacts = beforeRules(realArtefacts, table);
-      expect(check(realRepo, artefacts).join('\n')).toContain(`${A}: has an allow-list`);
+      expect(check(realRepo, artefacts).join('\n')).toMatch(
+        /\.gitleaks\.artefacts\.toml: "\w+" is not an allowed key: the artefact config must never have an allow-list, in any spelling/,
+      );
     });
 
-    it('fails on a rule-level allow-list (the defaults carry some; the copy must not)', () => {
-      const findings = check(
-        realRepo,
-        `${realArtefacts}\n[[rules.allowlists]]\nregexes = ['''x''']\n`,
+    it.each(['allowlists', 'Allowlists', 'AllowList'])(
+      'fails on a rule-level [[rules.%s]] (the defaults carry some; the copy must not)',
+      (key) => {
+        const findings = check(
+          realRepo,
+          `${realArtefacts}\n[[rules.${key}]]\nregexes = ['''x''']\n`,
+        );
+        expect(findings.join('\n')).toContain(
+          `${A}: rules[jwt]."${key}" is not an allowed key: a rule-level allow-list silences findings`,
+        );
+      },
+    );
+
+    it.each([
+      ['an unknown top-level key', 'minVersion = "8.0.0"\n', /"minVersion" is not an allowed key/],
+      [
+        'Rules spelled differently',
+        "[[Rules]]\nid = 'x'\nregex = '''x'''\n",
+        /"Rules" is not an allowed key: gitleaks matches keys case-insensitively; write it exactly as "rules"/,
+      ],
+    ])('fails on %s', (_, table, message) => {
+      expect(check(realRepo, beforeRules(realArtefacts, table)).join('\n')).toMatch(message);
+    });
+
+    it('fails on a differently spelled rule key (Regex)', () => {
+      const changed = realArtefacts.replace('id = "jwt"\n', "id = \"jwt\"\nRegex = '''x'''\n");
+      expect(check(realRepo, changed).join('\n')).toContain(
+        `rules[jwt]."Regex" is not an allowed key: gitleaks matches keys case-insensitively; write it exactly as "regex"`,
       );
-      expect(findings.join('\n')).toContain(`${A}: has an allow-list (rules[jwt].allowlists[0])`);
     });
   });
 
@@ -169,27 +203,73 @@ describe('check-gitleaks-config', () => {
   });
 
   describe('the repository config', () => {
-    it('fails on an unanchored path entry and passes an anchored one', () => {
-      expect(check(`${realRepo}\n[allowlist]\npaths = ['''dist/''']\n`).join('\n')).toMatch(
-        /paths entry "dist\/" must be anchored at the repo root/,
-      );
-      expect(check(`${realRepo}\n[[allowlists]]\npaths = ['''^apps/web/fixtures/''']\n`)).toEqual(
-        [],
+    const withList = (list: string) => `${realRepo}\n[[allowlists]]\n${list}\n`;
+
+    it.each([
+      ['dist/'],
+      ['^.*'],
+      ['^.*\\.env$'],
+      ['^.+/secrets\\.txt$'],
+      ['^apps/'],
+      ['^apps/web/fixtures/'],
+      ['^[a-z]+/x\\.txt$'],
+      ['^apps/web/(a|b)\\.txt$'],
+      ['^/etc/passwd$'],
+      ['^apps/web/x.txt$'],
+    ])('fails on the path entry %s (not one exact anchored file)', (path) => {
+      expect(check(withList(`paths = ['''${path}''']`)).join('\n')).toContain(
+        'must be one exact file anchored at the repo root',
       );
     });
 
+    it('passes an exact anchored file', () => {
+      expect(check(withList("paths = ['''^apps/web/fixtures/sample-1\\.txt$''']"))).toEqual([]);
+    });
+
     it.each(['regexes', 'stopwords', 'commits'])('fails on a content allow-list (%s)', (key) => {
-      expect(check(`${realRepo}\n[allowlist]\n${key} = ['''x''']\n`).join('\n')).toMatch(
-        new RegExp(`allowlist\\.${key} is a content allow-list`),
+      expect(check(withList(`paths = ['''^a\\.txt$''']\n${key} = ['''x''']`)).join('\n')).toContain(
+        `allowlists[1]."${key}" is not an allowed key: a content allow-list`,
       );
     });
 
     it.each([
+      ['[allowlist]', "[allowlist]\npaths = ['''^a\\.txt$''']"],
+      ['[Allowlist]', "[Allowlist]\npaths = ['''.*''']"],
+      ['[[AllowLists]]', "[[AllowLists]]\npaths = ['''.*''']"],
+    ])('fails on %s (only [[allowlists]] in its exact spelling)', (_, table) => {
+      expect(check(`${realRepo}\n${table}\n`).join('\n')).toMatch(/is not an allowed key/);
+    });
+
+    it.each([
       ['useDefault = false', 'useDefault = true is required'],
-      ['useDefault = true\npath = "other.toml"', 'may not load another config file'],
+      [
+        'useDefault = true\npath = "other.toml"',
+        '"path" is not an allowed key: it would load another config',
+      ],
+      ['useDefault = true\nurl = "https://example.invalid/x.toml"', '"url" is not an allowed key'],
+      // Code review finding 2: disabledRules switches default rules off in PR/tree/history scans.
+      [
+        'useDefault = true\ndisabledRules = ["github-pat"]',
+        '"disabledRules" is not an allowed key: it would switch default rules off',
+      ],
+      [
+        'useDefault = true\nDisabledRules = ["github-pat"]',
+        '"DisabledRules" is not an allowed key: it would switch default rules off',
+      ],
+      // Code review finding 1: UseDefault is a different key to this check, the same to gitleaks.
+      [
+        'UseDefault = true',
+        '"UseDefault" is not an allowed key: gitleaks matches keys case-insensitively; write it exactly as "useDefault"',
+      ],
     ])('fails on [extend] %s', (replacement, message) => {
       expect(check(realRepo.replace('useDefault = true', replacement)).join('\n')).toContain(
         message,
+      );
+    });
+
+    it('fails on [Extend] spelled differently', () => {
+      expect(check(realRepo.replace('[extend]', '[Extend]')).join('\n')).toContain(
+        '"Extend" is not an allowed key: gitleaks matches keys case-insensitively; write it exactly as "extend"',
       );
     });
   });

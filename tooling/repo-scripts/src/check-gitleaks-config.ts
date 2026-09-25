@@ -77,36 +77,140 @@ export const VENDORED_DEFAULT = 'tooling/repo-scripts/vendor/gitleaks-8.30.1-def
 export const VENDORED_DEFAULT_SHA256 =
   'e163e53b9e7e8a8511e77271e2b323ed057759542a6d988258afe3a1fa329caf';
 
-const ALLOWLIST_KEYS = ['allowlist', 'allowlists'] as const;
-const CONTENT_KEYS = ['regexes', 'stopwords', 'commits'] as const;
+/**
+ * The keys each table may have, in their exact spelling (code review finding 1). gitleaks reads
+ * its config through viper, which matches keys case-insensitively, so `[Allowlist]`,
+ * `[[AllowLists]]`, `[Extend]` or `UseDefault` would take effect in gitleaks while a
+ * case-sensitive lookup here saw nothing. So this is an allow-list of exact keys: anything
+ * else, including another capitalisation of an allowed key, is a finding.
+ */
+export const CONFIG_KEYS = {
+  repoTop: ['title', 'description', 'rules', 'extend', 'allowlists'],
+  artefactTop: ['title', 'description', 'rules'],
+  // Only useDefault: disabledRules would switch default rules off in the PR, tree and history
+  // scans, and path/url would load another config (finding 2).
+  repoExtend: ['useDefault'],
+  // Only path entries: no regexes, stopwords, commits, condition or targetRules.
+  repoAllowlist: ['description', 'paths'],
+  rule: ['id', 'description', 'regex', 'secretGroup', 'entropy', 'keywords', 'path', 'tags'],
+} as const;
+
+/**
+ * A repo allow-list path entry must be one exact file: `^`, a literal repo-relative path (letters,
+ * digits, `_ @ / -` and escaped dots only), then `$`. `^.*`, `^.*\.env$` or a directory prefix
+ * would silence far more than one reviewed file (finding 3).
+ */
+export const ANCHORED_LITERAL_PATH = /^\^[A-Za-z0-9_@-](?:[A-Za-z0-9_@/-]|\\\.)*\$$/;
+
+type Add = (path: string, message: string) => void;
+
+/** Reports every key of `table` that isn't in `allowed` with that exact spelling. */
+function checkKeys(
+  file: string,
+  where: string,
+  table: Record<string, unknown>,
+  allowed: readonly string[],
+  add: Add,
+  explain: (key: string) => string | undefined = () => undefined,
+): void {
+  for (const key of Object.keys(table)) {
+    if (allowed.includes(key)) continue;
+    const sameLetters = allowed.find((a) => a.toLowerCase() === key.toLowerCase());
+    const reason =
+      explain(key.toLowerCase()) ??
+      (sameLetters === undefined
+        ? `allowed keys are ${allowed.join(', ')}`
+        : `gitleaks matches keys case-insensitively; write it exactly as "${sameLetters}"`);
+    add(file, `${where}"${key}" is not an allowed key: ${reason}`);
+  }
+}
+
+function tablesOf(value: unknown): Record<string, unknown>[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  return value.every(isRecord) ? value : undefined;
+}
+
+function checkRules(file: string, config: Record<string, unknown>, add: Add): void {
+  if (config.rules === undefined) return;
+  const rules = tablesOf(config.rules);
+  if (rules === undefined) {
+    add(file, '"rules" must be an array of [[rules]] tables');
+    return;
+  }
+  for (const rule of rules) {
+    checkKeys(file, `rules[${String(rule.id)}].`, rule, CONFIG_KEYS.rule, add, (key) =>
+      key === 'allowlist' || key === 'allowlists'
+        ? 'a rule-level allow-list silences findings; neither config may have one'
+        : undefined,
+    );
+  }
+}
+
+function checkRepoSchema(repo: Record<string, unknown>, add: Add): void {
+  checkKeys(REPO_CONFIG, '', repo, CONFIG_KEYS.repoTop, add, (key) =>
+    key === 'allowlist' ? 'use [[allowlists]] with exact anchored paths only' : undefined,
+  );
+  checkRules(REPO_CONFIG, repo, add);
+
+  const extend = repo.extend;
+  if (!isRecord(extend)) {
+    add(REPO_CONFIG, '[extend] useDefault = true is required: the default rules must stay on');
+  } else {
+    checkKeys(REPO_CONFIG, 'extend.', extend, CONFIG_KEYS.repoExtend, add, (key) => {
+      if (key === 'disabledrules')
+        return 'it would switch default rules off in the PR, tree and history scans';
+      if (key === 'path' || key === 'url')
+        return 'it would load another config file, which could bring an allow-list';
+      return undefined;
+    });
+    if (extend.useDefault !== true) {
+      add(REPO_CONFIG, '[extend] useDefault = true is required: the default rules must stay on');
+    }
+  }
+
+  if (repo.allowlists !== undefined) {
+    const lists = tablesOf(repo.allowlists);
+    if (lists === undefined) {
+      add(REPO_CONFIG, '"allowlists" must be an array of [[allowlists]] tables');
+      return;
+    }
+    for (const [index, list] of lists.entries()) {
+      const where = `allowlists[${String(index)}]`;
+      checkKeys(REPO_CONFIG, `${where}.`, list, CONFIG_KEYS.repoAllowlist, add, (key) =>
+        ['regexes', 'stopwords', 'commits'].includes(key)
+          ? 'a content allow-list; only exact anchored paths are allowed'
+          : undefined,
+      );
+      const paths = Array.isArray(list.paths) ? (list.paths as unknown[]) : [];
+      if (paths.length === 0) add(REPO_CONFIG, `${where} has no paths`);
+      for (const path of paths) {
+        if (typeof path !== 'string' || !ANCHORED_LITERAL_PATH.test(path)) {
+          add(
+            REPO_CONFIG,
+            `${where}.paths entry ${JSON.stringify(path)} must be one exact file anchored at the repo root: ^literal/path$ (escaped dots only, no wildcards)`,
+          );
+        }
+      }
+    }
+  }
+}
+
+function checkArtefactSchema(artefacts: Record<string, unknown>, add: Add): void {
+  checkKeys(ARTEFACT_CONFIG, '', artefacts, CONFIG_KEYS.artefactTop, add, (key) => {
+    if (key === 'extend')
+      return "the artefact config must not have [extend] in any spelling: useDefault would inherit gitleaks' global allow-list (node_modules, images, fonts, vendor bundles), and path/url could load one";
+    if (key === 'allowlist' || key === 'allowlists')
+      return 'the artefact config must never have an allow-list, in any spelling';
+    return undefined;
+  });
+  checkRules(ARTEFACT_CONFIG, artefacts, add);
+}
 
 export interface GitleaksConfigs {
   repo: unknown;
   artefacts: unknown;
   /** The parsed vendored default config. */
   vendoredDefault: unknown;
-}
-
-/** Every allow-list table in a config: top level and per rule, both spellings. */
-function allowlistsOf(
-  config: Record<string, unknown>,
-): { where: string; list: Record<string, unknown> }[] {
-  const out: { where: string; list: Record<string, unknown> }[] = [];
-  const collect = (where: string, owner: Record<string, unknown>): void => {
-    for (const key of ALLOWLIST_KEYS) {
-      const value = owner[key];
-      const lists = Array.isArray(value) ? value : value === undefined ? [] : [value];
-      for (const [index, list] of lists.entries()) {
-        out.push({
-          where: `${where}${key}${Array.isArray(value) ? `[${String(index)}]` : ''}`,
-          list: isRecord(list) ? list : {},
-        });
-      }
-    }
-  };
-  collect('', config);
-  for (const rule of rulesOf(config)) collect(`rules[${String(rule.id)}].`, rule);
-  return out;
 }
 
 function rulesOf(config: Record<string, unknown>): Record<string, unknown>[] {
@@ -158,46 +262,11 @@ export function checkGitleaksConfigs(
     }
   }
 
-  // The repo config: default rules on, no other config loaded.
-  const extend = isRecord(repo.extend) ? repo.extend : {};
-  if (extend.useDefault !== true) {
-    add(REPO_CONFIG, '[extend] useDefault = true is required: the default rules must stay on');
-  }
-  if (extend.path !== undefined || extend.url !== undefined) {
-    add(REPO_CONFIG, '[extend] may not load another config file: it could bring an allow-list');
-  }
+  // Strict, exact-case schemas (code review findings 1 to 3).
+  checkRepoSchema(repo, add);
+  checkArtefactSchema(artefacts, add);
   if (rulesOf(repo).some((rule) => !isCustom(rule.id))) {
     add(REPO_CONFIG, 'only the custom rules belong here; the default rules come from [extend]');
-  }
-
-  // The repo config: path entries anchored at the repo root; no content entries.
-  for (const { where, list } of allowlistsOf(repo)) {
-    const paths = Array.isArray(list.paths) ? list.paths : [];
-    for (const path of paths) {
-      if (typeof path !== 'string' || !path.startsWith('^')) {
-        add(
-          REPO_CONFIG,
-          `${where}.paths entry ${JSON.stringify(path)} must be anchored at the repo root with ^`,
-        );
-      }
-    }
-    for (const key of CONTENT_KEYS) {
-      if (Array.isArray(list[key]) && list[key].length > 0) {
-        add(REPO_CONFIG, `${where}.${key} is a content allow-list; the design allows none`);
-      }
-    }
-  }
-
-  // The artefact config: no [extend] at all (useDefault would inherit the default config's
-  // global allow-list), and no allow-list of any kind (SEC-F001-05, T05-1).
-  if (artefacts.extend !== undefined) {
-    add(
-      ARTEFACT_CONFIG,
-      "must not have [extend]: useDefault would inherit gitleaks' global allow-list (node_modules, images, fonts, vendor bundles), and path/url could load one",
-    );
-  }
-  for (const { where } of allowlistsOf(artefacts)) {
-    add(ARTEFACT_CONFIG, `has an allow-list (${where}); the artefact config must never have one`);
   }
 
   // Custom rules identical in both files, in the same order.

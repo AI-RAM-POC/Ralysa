@@ -445,11 +445,26 @@ Two configs, both passed explicitly with `--config` on **every** invocation (SEC
 
 | File | Used by | Allow-lists |
 |---|---|---|
-| `.gitleaks.toml` | PR-range, tree and full-history scans; pre-commit and agent commit hooks | **None at start.** The tree scan runs in the `secret-scan` job on a clean checkout with no install and no build, so `node_modules/`, `.turbo/` and `dist/` don't exist there and need no allow-list. Any future path entry must be anchored at the repo root (`^apps/…`). No content allow-list entries. |
-| `.gitleaks.artefacts.toml` | Shipped-artefact scans in `quality` | **None, ever.** |
+| `.gitleaks.toml` | PR-range, tree and full-history scans; pre-commit and agent commit hooks | Only `[[allowlists]]` path entries, and each must be **one exact file anchored at the repo root**: `^literal/path$`, escaped dots only, no wildcards. The tree scan runs in the `secret-scan` job on a clean checkout with no install and no build, so `node_modules/`, `.turbo/` and `dist/` don't exist there and need no entry. The one entry at T05 is the sha256-pinned vendored default config (below), whose own regex text matches some rules. No content allow-list entries. |
+| `.gitleaks.artefacts.toml` | Shipped-artefact scans in `quality` | **None, ever**, including none inherited. |
 
-- Both use `[extend] useDefault = true` and carry the same custom rules. The artefact config doesn't `[extend]` the repo config, so it can never inherit an allow-list.
-- `check-gitleaks-config` (in `repo-checks`) fails if: the artefact config has any `[allowlist]` or `[[allowlists]]`; the two custom rule sets differ; a path allow-list entry in `.gitleaks.toml` isn't anchored with `^`; or either config drops `useDefault`.
+- `.gitleaks.toml` uses `[extend] useDefault = true` (and nothing else under `[extend]`: no `disabledRules`, `path` or `url`), and adds the custom rules.
+- **`.gitleaks.artefacts.toml` has no `[extend]`** *(clarified 2026-09-25, T05-1)*. gitleaks' built-in default config carries a global allow-list that `useDefault` would inherit. It skips `node_modules`, image and font files, vendor-named bundles (`swagger-ui*.js`, `jquery*.js` …) and any path containing `gitleaks.toml`. Instead, the artefact config holds:
+  - the same custom rules as `.gitleaks.toml`;
+  - a verbatim copy of the high-value default rules (AWS, GCP API key, Azure, Anthropic, OpenAI, GitHub, GitLab, Slack, Stripe, private keys, JWT), without their rule-level allow-lists. `generic-api-key` is left out because it is too noisy without its stopwords.
+
+  The gitleaks default config for the pinned version is vendored at `tooling/repo-scripts/vendor/gitleaks-<version>-default.toml`, with its sha256 recorded. A sync test and `check-gitleaks-config` require each copied rule's `id`, `regex`, `path`, `secretGroup`, `entropy` and `keywords` to match it exactly, so a gitleaks upgrade shows up as drift. The artefact self-test (§6.2.5) plants a key in each shape the default allow-list would skip.
+- `check-gitleaks-config` (in `repo-checks`) validates both files against a **strict, exact-case key schema**, because gitleaks (viper) matches keys case-insensitively and `[Allowlist]` or `UseDefault` would otherwise slip past a case-sensitive check. The allowed keys:
+  - top level: `title`, `description` and `rules`, plus `extend` and `allowlists` in `.gitleaks.toml` only;
+  - rules: `id`, `description`, `regex`, `secretGroup`, `entropy`, `keywords`, `path` and `tags`;
+  - `[extend]`: `useDefault` only;
+  - `[[allowlists]]`: `description` and `paths` only.
+
+  It also fails if:
+  - the two custom rule sets differ;
+  - a repo path entry isn't one exact anchored file;
+  - a copied rule drifts from the vendored default, or the vendored file isn't the pinned one;
+  - a `.gitleaksignore` is tracked anywhere.
 - **Custom rules** (T05; regexes and formats fixed with positive and negative fixtures in TC-F-001-39). Each has keyword context and an entropy floor, so a bare 32-hex string elsewhere doesn't fire:
 
 | Rule id | Target | Sketch |
@@ -1499,6 +1514,7 @@ Outside this file: `docs/architecture/adr/0004-agent-protocol-transport-and-sche
 | 2026-09-25 | solution-designer | First draft for G4. |
 | 2026-09-25 | architect (review) | AR-1 to AR-9; RC-1, RC-2, RC-4 and RC-5 applied in the body; ADR-0004 decision 6 clarified. |
 | 2026-09-25 | solution-designer (revision) | Recorded product-owner decisions D-1 to D-4. Applied RC-3, RC-6 and RC-7. Fixed SEC-F001-05 to -12, -19 to -21, -23, -24, -26 and -27 in the body. Added CODEOWNERS content (-04). Reworked the `.claude/settings.json` design and the guard hook for D-4, with a matcher fixture list. Moved T20 to T25 to §11 "Deferred scope (BC-11)". Added T16 to T18. Resized T04 to M and split T15. Added TC-F-001-37 to 46. Added "Accepted risks" and §6.7 (review disposition). Closed or decided every open question except the external blockers OQ-D5, OQ-D8 and OQ-D13. The brief, security.md and the architecture docs are unchanged. |
+| 2026-09-25 | developer (clarification, phase 5) | §6.2.2 aligned with the T05-1 decision (coordinator, standing authorization) and the T04/T05/T16 code review. `.gitleaks.artefacts.toml` has no `[extend]`: it carries the custom rules plus high-value default rules copied from the vendored, sha256-pinned gitleaks default, with a sync test, because `useDefault` would inherit gitleaks' global allow-list. `check-gitleaks-config` validates both configs against a strict, exact-case key schema (no `disabledRules`, no other spelling of any key), and repo path entries must be exact anchored files. This is a clarification of how "None, ever" is achieved; the G4 decision is unchanged. Rationale and evidence are in implementation-notes.md (T05-1 and the code-review section). |
 
 ## Approval (G4)
 

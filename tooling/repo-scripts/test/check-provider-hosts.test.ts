@@ -116,6 +116,18 @@ describe('check-provider-hosts --artefacts', () => {
     ]);
   });
 
+  it('scans node_modules inside an artefact too (code review finding 4)', () => {
+    const root = repo({
+      'apps/web/dist/index.html': '<!doctype html>',
+      'apps/web/dist/node_modules/vendored-lib/index.js': `fetch("https://${OPENAI}/v1");`,
+      'apps/web/dist/assets/.hidden/x.js': `fetch("https://${OPENAI}/v1");`,
+    });
+    expect(checkProviderHostsInArtefacts(root).map((f) => `${f.rule} ${f.path}`)).toEqual([
+      'provider-hosts/artefact apps/web/dist/assets/.hidden/x.js:1',
+      'provider-hosts/artefact apps/web/dist/node_modules/vendored-lib/index.js:1',
+    ]);
+  });
+
   it('passes a clean bundle and ignores unshipped workspaces', () => {
     const root = repo({
       'apps/web/dist/assets/index-abc123.js': 'var e="/api/v1";',

@@ -7,14 +7,14 @@
 //   shipped artefact; a missing artefact path fails.
 // Defence in depth only: a string split at runtime gets past it, and network egress policy
 // (F-004, deploy/) is the authoritative SR-03 control.
-import { existsSync, readFileSync, statSync } from 'node:fs';
-import { join } from 'node:path';
+import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { join, relative } from 'node:path';
 import {
   PROVIDER_HOSTS_ALLOWED_IN,
   globSource,
   providerHostSource,
 } from '@ralysa/eslint-config/boundaries';
-import { type Finding, listRepoFiles, walkFiles } from './lib/repo.ts';
+import { type Finding, listRepoFiles, toPosix } from './lib/repo.ts';
 import { shippedArtefacts } from './secret-scan.ts';
 
 /** Files larger than this are still scanned, but only their first bytes (bundles are smaller). */
@@ -58,6 +58,22 @@ export function checkProviderHosts(root: string, repoFiles = listRepoFiles(root)
   return findings;
 }
 
+/**
+ * Every file under an artefact folder (posix, relative), skipping only `.git`. Unlike the
+ * repo walker it does NOT skip node_modules: whatever sits in a shipped artefact ships
+ * (code review finding 4).
+ */
+export function artefactFiles(root: string, dir = root): string[] {
+  const files: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name === '.git') continue;
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) files.push(...artefactFiles(root, full));
+    else files.push(toPosix(relative(root, full)));
+  }
+  return files.sort();
+}
+
 /** Artefact mode: every file of every shipped artefact. A missing artefact path fails. */
 export function checkProviderHostsInArtefacts(root: string): Finding[] {
   const findings: Finding[] = [];
@@ -72,7 +88,7 @@ export function checkProviderHostsInArtefacts(root: string): Finding[] {
       continue;
     }
     const files = statSync(dir).isDirectory()
-      ? walkFiles(dir).map((f) => [join(dir, f), `${artefact.path}/${f}`])
+      ? artefactFiles(dir).map((f) => [join(dir, f), `${artefact.path}/${f}`])
       : [[dir, artefact.path]];
     for (const [full, shown] of files) {
       scanFile(full as string, shown as string, 'provider-hosts/artefact', findings);

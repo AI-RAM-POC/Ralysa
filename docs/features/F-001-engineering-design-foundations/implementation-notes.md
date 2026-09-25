@@ -416,6 +416,36 @@ The design's 16 entries are kept unchanged. Checked 2026-09-25:
   - Source mode: the real repo has 0 findings. It fails in `apps/web` source and config, `packages/sdk` tests, `services/control-plane`, a look-alike `services/model-gateway-v2` and `packs/**`. It passes in the gateway, docs, Markdown, `requirements/` and `boundaries.js`.
   - Artefact mode: a host inside `dist/assets/index-abc123.js` fails; a clean bundle and an unshipped ui-lab pass; a missing `dist` fails.
 
+## Code review of T04/T05/T16 ("Request changes", 2026-09-25)
+
+| Finding | Fix | Tests |
+|---|---|---|
+| **1 (Major)** `check-gitleaks-config` looked keys up case-sensitively, but gitleaks (viper) matches them case-insensitively. So `[Allowlist]`, `[[AllowLists]]`, `[Extend]` and `UseDefault` took effect in gitleaks while the check saw nothing. | Both configs are validated against a **strict, exact-case key schema** (`CONFIG_KEYS`). Top level: `title`, `description`, `rules`, plus `extend`/`allowlists` in the repo config only. Rules: `id`, `description`, `regex`, `secretGroup`, `entropy`, `keywords`, `path`, `tags`. `[extend]`: `useDefault` only. `[[allowlists]]`: `description`, `paths` only. Any other key, including another capitalisation of an allowed one, is a finding that names the exact spelling. | `check-gitleaks-config.test.ts`: artefact `[Extend] UseDefault`, `[EXTEND]`, `[Allowlist]`, `[[AllowLists]]`, `[ALLOWLIST]`, rule-level `[[rules.Allowlists]]`/`AllowList`, `[[Rules]]`, a rule `Regex` and an unknown top-level key; repo `[Allowlist]`, `[[AllowLists]]`, `[Extend]` and `UseDefault`. |
+| **2 (Major)** `extend.disabledRules` wasn't rejected in `.gitleaks.toml`, so it could switch default rules off in the PR, tree and history scans. | The `[extend]` schema allows `useDefault` only. `disabledRules` (any spelling), `path` and `url` are rejected, each with its reason. | `disabledRules = ["github-pat"]`, `DisabledRules`, `path`, `url`. |
+| **3 (Minor)** Any entry starting with `^` counted as "anchored", so `^.*` and `^.*\.env$` passed. | A path entry must be **one exact file**: `ANCHORED_LITERAL_PATH` = `^` + a literal repo path (letters, digits, `_ @ / -`, escaped dots) + `$`. No wildcards, classes, groups, directory prefixes, leading `/` or unescaped dots. | Fails: `dist/`, `^.*`, `^.*\.env$`, `^.+/secrets\.txt$`, `^apps/`, `^apps/web/fixtures/`, `^[a-z]+/x\.txt$`, `^apps/web/(a\|b)\.txt$`, `^/etc/passwd$`, `^apps/web/x.txt$`. Passes: `^apps/web/fixtures/sample-1\.txt$`. |
+| **4 (Minor)** `check-provider-hosts --artefacts` used the repo walker, which skips `node_modules`. | New `artefactFiles()` walker that skips only `.git`. The secret-scan side has no such filter: `scanArtefacts` hands each artefact folder straight to gitleaks, and with no `[extend]` gitleaks scans `node_modules` (confirmed by the attack re-run 4b and the artefact self-test shape). | `dist/node_modules/vendored-lib/index.js` and a dot-folder both fail. |
+| **5 (Minor)** The `require` ban needed a bare `require` callee, so `module.require('op'+'enai')` and `process.mainModule.require` got through. | New selectors: a member call to `require` (named or computed) with a non-literal argument, and any `mainModule` member access, named or computed, which also covers aliases (`const m = process.mainModule`). | `boundaries.test.ts`: `module.require` with a concatenation or a variable, `module['require'](n)`, `process.mainModule.require(...)`, an alias of `mainModule` and `process['mainModule']` are errors. `module.require('./local.cjs')` passes. |
+| **6 (Nit)** The exit-1-with-empty-report branch in `secret-scan.ts` was untested. | Test with a fake binary that writes `[]` to `--report-path` and exits 1. | **Mutation check:** with the branch disabled (`if (false && …)`), the test fails ("1 failed"); restored, it passes. |
+
+**Attack re-run.** The reviewer's harnesses (`mut.mjs`, `plant2.mjs`) were read in full, then driven with payloads for findings 1 to 5. All 13 attacks now fail the gate with rc=1:
+- Finding 1:
+  - 1a `[Allowlist]` paths, artefact config
+  - 1b `[[AllowLists]]`, artefact config
+  - 1c `[Extend] UseDefault`, artefact config
+  - 1d `[Allowlist] .*`, repo config
+  - 1e `UseDefault`, repo config
+- Finding 2: `disabledRules = ["github-pat"]`, repo config.
+- Finding 3: 3a `^.*` and 3b `^.*\.env$`, repo config.
+- Finding 4:
+  - 4a `plant2.mjs nmhost`, a provider host under `dist/node_modules`, blocked by `check-provider-hosts --artefacts`
+  - 4b a synthetic GitHub PAT under `dist/node_modules`, found by `secret-scan artefacts`
+- Finding 5, each an `eslint` error from `no-restricted-syntax`:
+  - 5a `module.require('op'+'enai')`
+  - 5b `process.mainModule.require(...)`
+  - 5c an alias of `process.mainModule`
+
+`design.md` §6.2.2 is updated to match the T05-1 decision and this schema (recorded in its revision log).
+
 ## Version confirmations (npm registry, 2026-09-25 ~08:20 UTC)
 
 Policy (§2.2): the latest patch of a line GA for at least 30 days, and `minimumReleaseAge` holds back anything under 3 days old. Cut-off for the 3-day rule: 2026-09-22T08:20Z.

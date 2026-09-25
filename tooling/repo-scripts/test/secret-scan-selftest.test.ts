@@ -176,6 +176,26 @@ describe('TC-F-001-37: git mode, range assertion, exit codes', () => {
     ).toThrow(SecretScanError);
   });
 
+  it('fails when gitleaks exits 1 but its report is an empty array (code review finding 6)', () => {
+    const dir = makeTempDir('ralysa-fakebin-');
+    const binary = writeFile(
+      dir,
+      'gitleaks',
+      '#!/bin/sh\nfor a in "$@"; do [ "$prev" = --report-path ] && printf \'[]\' > "$a"; prev=$a; done\nexit 1\n',
+    );
+    chmodSync(binary, 0o755);
+    expect(() =>
+      runGitleaks({
+        binary,
+        label: 'empty-report',
+        mode: 'dir',
+        target: dir,
+        config: REPO_CONFIG_PATH,
+        reportDir: reportDir(),
+      }),
+    ).toThrow(/gitleaks exited 1 for empty-report but its report is empty/);
+  });
+
   it('refuses a target holding a .gitleaksignore (an allow-list outside the configs)', () => {
     const dir = makeTempDir('ralysa-ignore-');
     writeFile(dir, '.gitleaksignore', 'src/config.ts:github-pat:1\n');

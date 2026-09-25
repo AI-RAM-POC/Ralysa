@@ -212,6 +212,16 @@ describe('dynamic loading ban: no-restricted-syntax (SEC-F001-09 b)', () => {
     ['indirect eval', "export const v = (0, globalThis.eval)('1');\n"],
     ['new Function', "export const f = new Function('return 1');\n"],
     ['Function()', "export const f = Function('return 1');\n"],
+    // Code review finding 5: require without a bare `require` callee.
+    ['module.require with a concatenation', "export const m = module.require('op' + 'enai');\n"],
+    ['module.require with a variable', 'const n = "x";\nexport const m = module.require(n);\n'],
+    ['computed module["require"]', "const n = 'x';\nexport const m = module['require'](n);\n"],
+    ['process.mainModule.require', "export const m = process.mainModule.require('op' + 'enai');\n"],
+    [
+      'an alias of process.mainModule',
+      'const main = process.mainModule;\nexport const r = main;\n',
+    ],
+    ['computed process["mainModule"]', "export const r = process['mainModule'];\n"],
   ])('%s is an error', async (_, code) => {
     expect(await lint(code, 'src/loader.js')).toContain('no-restricted-syntax');
   });
@@ -220,6 +230,7 @@ describe('dynamic loading ban: no-restricted-syntax (SEC-F001-09 b)', () => {
     ['import() with a literal', "export const m = import('./local.js');\n"],
     ['require() with a literal', "export const m = require('./local.cjs');\n"],
     ['import.meta.glob with a literal', "export const m = import.meta.glob('./pages/*.tsx');\n"],
+    ['module.require with a literal', "export const m = module.require('./local.cjs');\n"],
   ])('%s is allowed', async (_, code) => {
     expect(await lint(code, 'src/loader.js')).not.toContain('no-restricted-syntax');
   });
