@@ -5,6 +5,6 @@
     // ui-lab is never shipped, so Node types next to the browser ones are acceptable here.
     "types": ["vite/client", "node"]
   },
-  "include": ["src", "src/samples/*.json", "locales/*/*.json", "test", "*.config.ts"],
+  "include": ["src", "src/samples/*.json", "locales/*/*.json", "test", "e2e", "*.config.ts"],
   "references": [{ "path": "../../packages/ui" }]
 }

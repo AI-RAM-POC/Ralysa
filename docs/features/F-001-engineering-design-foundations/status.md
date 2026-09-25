@@ -1,8 +1,8 @@
 # F-001: Engineering and design-system foundations (tokens, RTL-ready layout, a11y lint): Status
 
-- **Current phase:** 4 – Design (G4 approved 2026-09-25); next: 5 – Development
+- **Current phase:** 5 – Development (T01–T12 merged; T13–T14 in review)
 - **GitHub issue:** https://github.com/AI-RAM-POC/Ralysa/issues/4
-- **Branch / PR:**
+- **Branch / PR:** `feat/F-001-e2e` (T13, T14)
 - **Release:**
 
 ## Gate log
@@ -20,3 +20,6 @@
 |---|---|
 | 2026-09-25 | Feature workspace created from ADLC templates. brief.md drafted by product-manager from the PRD (G2 approved 2026-09-25 with conditions). Brief-level G2 approval pending. |
 | 2026-09-25 | Solution design written; architect review (fits with changes) and security review (security.md) completed; design revised; G4 recorded under standing authorization. |
+| 2026-09-25 | T13 (Playwright harness, `ui-e2e` job) implemented on `feat/F-001-e2e`. Open: D-F001-E2E-1 (Shift+Tab out of RadioGroup in Playwright's Firefox; confirm in a stock Firefox) and the manual keyboard run TC-F-001-25. |
+| 2026-09-25 | T14 (visual and shaping snapshots, `e2e:update`) implemented on `feat/F-001-e2e`. **Open (OQ-D8):** the Arabic shaping and visual baselines and all Arabic strings need a native speaker's review. T14 merges with this open, as agreed; `needs-native-review` stays on every Arabic string. TC-F-001-16 (browser matrix) has not been run. |
+| 2026-09-25 | PR #20 review (changes requested) addressed. **D-F001-E2E-1 stays open and blocks G6** for F-001 until the manual TC-F-001-25 run in a stock Firefox either clears it (a Playwright-Firefox artefact) or confirms it (then `RadioGroup` needs a fix: WCAG 2.1.2). |

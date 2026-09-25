@@ -19,4 +19,6 @@ docs/
 
 # Unchanged by F-001 (hardening deferred with T25, design §11.8)
 .github/workflows/release.yml
+test-results/
+playwright-report/
 services/control-plane/src/db/migration-checksums.generated.ts

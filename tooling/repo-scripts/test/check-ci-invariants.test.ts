@@ -1,5 +1,6 @@
 // TC-F-001-44, check-ci-invariants part (SEC-F001-06, -20, -21).
-import { readFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse } from 'yaml';
 import { describe, expect, it } from 'vitest';
@@ -245,6 +246,35 @@ describe('check-ci-invariants', () => {
   describe('Playwright image digests', () => {
     const e2e = (image: string) =>
       job(`      - run: echo\n    container:\n      image: ${image}\n`);
+
+    it('the real ui-e2e job and apps/ui-lab/scripts/e2e-container.sh share one digest', () => {
+      const images = (text: string): string[] =>
+        [...text.matchAll(/mcr\.microsoft\.com\/playwright:[^\s'"]+/g)].map((m) => m[0]);
+      const ci = images(realCi);
+      const script = images(
+        readFileSync(join(REAL_ROOT, 'apps/ui-lab/scripts/e2e-container.sh'), 'utf8'),
+      );
+      expect(ci).toHaveLength(1);
+      expect(script).toEqual(ci);
+    });
+
+    it('every script in apps/ui-lab/scripts/ is read: a stray digest there fails', () => {
+      const root = mkdtempSync(join(tmpdir(), 'ralysa-ci-digest-'));
+      try {
+        cpSync(join(REAL_ROOT, '.github/workflows'), join(root, '.github/workflows'), {
+          recursive: true,
+        });
+        writeFileSync(join(root, 'package.json'), JSON.stringify(realPkg));
+        mkdirSync(join(root, 'apps/ui-lab/scripts'), { recursive: true });
+        writeFileSync(
+          join(root, 'apps/ui-lab/scripts/e2e-other.sh'),
+          `docker run mcr.microsoft.com/playwright:v1.63.0-noble@sha256:${'c'.repeat(64)}\n`,
+        );
+        expect(checkCiInvariantsFiles(root).map((f) => f.rule)).toContain('ci/playwright-digest');
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
 
     it('one digest in CI and e2e-update.sh passes', () => {
       const image = `mcr.microsoft.com/playwright:v1.63.0-noble${DIGEST}`;
