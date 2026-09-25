@@ -8,6 +8,15 @@
 @import './theme.css';
 
 /*
+ * Preflight's html and code/kbd/samp/pre rules use these two. Pointing them at the Ralysa stacks
+ * makes preflight agree with fonts.css, whichever of the two base-layer rules comes last.
+ */
+@theme inline {
+  --default-font-family: var(--ralysa-font-family-sans);
+  --default-mono-font-family: var(--ralysa-font-family-mono);
+}
+
+/*
  * The focus indicator (F-001 design §7.7; AC-11, AC-12): a 2 px ring in color.focus.ring with a
  * 2 px offset, so the canvas colour shows between the control and the ring. Components use it as
  * `focus-visible:focus-ring`; the ring's contrast pairs are in tokens/contrast-pairs.json.
