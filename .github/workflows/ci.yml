@@ -128,6 +128,65 @@ jobs:
           path: ${{ runner.temp }}/secret-scan-reports
           if-no-files-found: ignore
 
+  # Service-backed tests (test:integration, F-002 design §8.5). Postgres and OpenBao come from the
+  # same compose file developers use, so dev and CI can't drift (D-19, AR-13). The job runs PR
+  # code, so it is least-privilege (SEC-F002-27): read-only token, no persisted credentials, no
+  # repository secrets; its credentials are generated per run. check-ci-invariants enforces all
+  # three (ci/integration-no-secrets) and the artefact rules below (ci/integration-artefact).
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      # The harness fails instead of skipping when the stack is missing (tooling/dev-stack).
+      RALYSA_REQUIRE_DEV_STACK: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      # Before ANY pnpm command (ci/pre-install-gate-first).
+      - name: Pre-install config gate
+        run: node tooling/repo-scripts/src/pre-install-gate.ts
+      - name: Enable pnpm through Corepack
+        run: |
+          corepack enable
+          pnpm --version
+      - name: Locate pnpm store
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: pnpm-store-${{ runner.os }}-
+      - run: pnpm install --frozen-lockfile
+      # Throwaway random credentials for this run only; each value is masked in the log.
+      - name: Generate dev-stack credentials
+        run: node tooling/dev-stack/src/cli.ts env --out deploy/docker/dev/.env --github-mask
+      - name: Start Postgres and OpenBao
+        run: docker compose -f deploy/docker/dev/compose.yaml --env-file deploy/docker/dev/.env up -d --wait postgres openbao
+      # Transit keys, KV entries, per-entry-point policies and AppRoles; DB login roles over stdin.
+      - name: Bootstrap the dev stack
+        run: node tooling/dev-stack/src/cli.ts bootstrap --env-file deploy/docker/dev/.env
+      - name: Integration tests
+        run: pnpm exec turbo run test:integration --continue=dependencies-successful --summarize
+      # The image secret scan (AC-9) joins this job with F-002-T14 (secret-scan-cli.ts image).
+      # Postgres logs only: the OpenBao dev server prints its root token and unseal key.
+      - name: Container logs on failure
+        if: ${{ failure() }}
+        run: docker compose -f deploy/docker/dev/compose.yaml --env-file deploy/docker/dev/.env logs --no-color postgres > "$RUNNER_TEMP/compose.log"
+      - uses: actions/upload-artifact@v4
+        if: ${{ failure() }}
+        with:
+          name: integration-logs
+          path: ${{ runner.temp }}/compose.log
+          if-no-files-found: ignore
+          retention-days: 3
+
   # Secret scanning of the repository (F-001 design §6.2.3, §6.2.5). No install and no build, so
   # nothing from the PR runs before the scan; only plain node and the hash-pinned gitleaks.
   secret-scan:
