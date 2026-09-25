@@ -954,6 +954,35 @@ The `quality` job of PR #17 (run 36137033999) failed twice; neither showed up lo
 - `tooling/repo-scripts/test/node-engine.test.ts` (16): each supported comparator form, out-of-range versions, unsupported forms throw (all comparators are parsed before any is evaluated), and the CLI passes on the real repo.
 - `tooling/repo-scripts/test/check-ci-invariants.test.ts` (+2): the real `ui-e2e` job and `e2e-container.sh` share one digest; a stray digest in any `apps/ui-lab/scripts/*.sh` fails.
 
+## T14: visual regression and shaping snapshots (branch `feat/F-001-e2e`)
+
+### What landed
+
+- `apps/ui-lab/e2e/visual.spec.ts` (**TC-F-001-18**): full-page showcase snapshots in the 4 configurations (en/LTR and ar/RTL × light and dark) at 1280×800 and 360×740, chromium only: 8 baselines.
+- `apps/ui-lab/e2e/shaping.spec.ts` (**TC-F-001-15**): `document.fonts.check('16px "Noto Sans Arabic Variable"')`, then each of the 20 samples on its own, in chromium, firefox and webkit, with per-engine baselines: 60 baselines.
+- `playwright.config.ts`: a `webkit` project (shaping only); `firefox` also runs shaping; `updateSnapshots: 'none'`, so a missing baseline fails in CI; `toHaveScreenshot` with `maxDiffPixelRatio: 0.001`, `threshold: 0.2`, animations off, caret hidden (set in T13).
+- `apps/ui-lab/scripts/e2e-update.sh` (`pnpm --filter @ralysa/ui-lab e2e:update`): runs `e2e-container.sh` on linux/amd64 with `--update-snapshots=changed` and copies `e2e/__screenshots__/` back. Same image digest as CI through `e2e-container.sh`; `check-ci-invariants` passes (`ci/playwright-digest`).
+- 68 baselines (2.7 MB) in `apps/ui-lab/e2e/__screenshots__/{chromium,firefox,webkit}/`, written by `e2e:update` in the pinned image on linux/amd64 (Docker Desktop emulation on Apple silicon).
+
+### Recorded decisions and deviations
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T14-1 | Implementation choice | Baselines were written on linux/amd64 under emulation, with the image digest CI uses. `e2e-container.sh` refuses to write snapshots on any other platform. | CI runs amd64. A second unmodified run gave 71/71 passed, so the output is stable. The first CI run on real amd64 checks that emulation matched. |
+| T14-2 | Implementation choice | `--update-snapshots=changed` (only changed or missing baselines are rewritten). | Unchanged PNGs stay byte-identical, so the PR's image diff shows only real changes. |
+| T14-3 | Design detail | The shaping snapshot is the sample's `<p lang="ar">` element on its own. The visual snapshot is the full page. | Per-sample images localise a shaping change to one sample and one engine. The full page covers layout and mirroring. |
+| T14-4 | **Open (OQ-D8), recorded as agreed** | The shaping and Arabic visual baselines have **not** been reviewed by a native Arabic speaker. They show machine-assisted placeholder strings (95 catalog strings and 20 samples, all `needs-native-review`). T14's definition of done says "baselines reviewed by a native speaker", so this is still open. The coordinator agreed that T14 may merge with it open. | No native reviewer is available (OQ-D8, external). I (Claude, not a native speaker) checked the images for rendering: connected letterforms, lam-alef ligatures, harakat, tatweel, mixed-run order, digit shapes and no tofu in all three engines. That is a rendering check, not a language review. When the strings change after review, `e2e:update` regenerates the baselines. |
+| T14-5 | Not done | **TC-F-001-16** (the manual browser matrix: current and previous Chrome, Edge, Firefox and Safari on macOS and Windows) is not run. `test-report.md` has the checklist, marked not run. | It needs a person and machines this environment doesn't have. |
+
+### TC-F-001-19 canary (run 2026-09-25, local, pinned image, linux/amd64)
+
+1. Changed `space.4` in `packages/ui/tokens/core.tokens.json` from `1rem` to `1.125rem`. `e2e:container e2e/visual.spec.ts`: **8 of 8 failed**. For example, en/light/desktop expected 1280×3385 and received 1280×3445, with 3 % of pixels different (the threshold is 0.1 %).
+2. Reverted the token. Visual and shaping specs: **71 of 71 passed**. The "commit the updated snapshots, then it passes" half is `e2e:update` followed by a run, the same path that produced these baselines.
+
+### Tests added (T14)
+
+- `visual.spec.ts` (8 tests), `shaping.spec.ts` (21 per engine, 63 in total). With T13's specs: 132 tests in 9 files.
+
 ## Version confirmations (npm registry, 2026-09-25 ~08:20 UTC)
 
 Policy (§2.2): the latest patch of a line GA for at least 30 days, and `minimumReleaseAge` holds back anything under 3 days old. Cut-off for the 3-day rule: 2026-09-22T08:20Z.

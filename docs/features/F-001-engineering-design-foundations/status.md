@@ -21,3 +21,4 @@
 | 2026-09-25 | Feature workspace created from ADLC templates. brief.md drafted by product-manager from the PRD (G2 approved 2026-09-25 with conditions). Brief-level G2 approval pending. |
 | 2026-09-25 | Solution design written; architect review (fits with changes) and security review (security.md) completed; design revised; G4 recorded under standing authorization. |
 | 2026-09-25 | T13 (Playwright harness, `ui-e2e` job) implemented on `feat/F-001-e2e`. Open: D-F001-E2E-1 (Shift+Tab out of RadioGroup in Playwright's Firefox; confirm in a stock Firefox) and the manual keyboard run TC-F-001-25. |
+| 2026-09-25 | T14 (visual and shaping snapshots, `e2e:update`) implemented on `feat/F-001-e2e`. **Open (OQ-D8):** the Arabic shaping and visual baselines and all Arabic strings need a native speaker's review. T14 merges with this open, as agreed; `needs-native-review` stays on every Arabic string. TC-F-001-16 (browser matrix) has not been run. |

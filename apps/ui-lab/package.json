@@ -9,6 +9,7 @@
     "dev": "vite",
     "e2e": "playwright test",
     "e2e:container": "sh scripts/e2e-container.sh",
+    "e2e:update": "sh scripts/e2e-update.sh",
     "lint": "eslint . && stylelint \"**/*.css\" --allow-empty-input && i18next-cli extract --ci --dry-run --quiet",
     "preview": "vite preview",
     "test": "vitest run",

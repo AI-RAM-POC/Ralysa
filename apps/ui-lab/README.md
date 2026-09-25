@@ -36,6 +36,7 @@ i18n runs in **test mode** in every build of this app, so a missing key throws i
 | `test` | Vitest (jsdom): every view in en and ar, the router, the example labels, the sample set and **TC-F-001-14** for the samples (0 missing glyphs in the bundled fonts) |
 | `typecheck`, `check:generated` | `tsc` (source, tests, `e2e/`); i18n key types |
 | `e2e` | Playwright (`playwright.config.ts`) against `vite preview` of the **production builds** of ui-lab (port 4173) and `apps/web` (port 4174). Build both first. CI runs it in the `ui-e2e` job, inside the pinned Playwright image |
+| `e2e:update` | `scripts/e2e-update.sh`: rewrites the changed or missing **visual and shaping baselines** (`e2e/__screenshots__/`) by running `e2e:container` on linux/amd64 (CI's platform; emulated on Apple silicon). Default specs `e2e/visual.spec.ts e2e/shaping.spec.ts`; pass others as arguments. Commit the PNGs; the reviewer approves the image diff. CI never writes baselines (§5.4) |
 | `e2e:container` | `scripts/e2e-container.sh`: the same run inside the **same pinned image** as CI (Docker required). Copies the files git knows about into the container, installs with the frozen lockfile, builds and runs Playwright; the HTML report comes back to `playwright-report/`. Extra arguments go to Playwright: `pnpm --filter @ralysa/ui-lab e2e:container -- --project=chromium e2e/locale.spec.ts` |
 
 The app itself has no environment variables or runtime configuration.
@@ -50,6 +51,8 @@ The app itself has no environment variables or runtime configuration.
 | `locale.spec.ts` | TC-F-001-11 (AC-6) | The LocaleSwitcher changes `html[lang]`, `html[dir]` and the strings with no reload (a `window` marker survives, history and navigation entries unchanged) |
 | `mirroring.spec.ts` | TC-F-001-13 (AC-7) | Region order per direction; directional icons `scale: -1 1` in ar only; code, pre and `[data-ltr]` stay `ltr` |
 | `no-demo-in-web.spec.ts` | TC-F-001-28 (AC-13) | The `apps/web` preview at `/ui-lab`, `/demo`, `/__demo`, `?view=showcase`, `?view=components` has no sentinel, sample text or ui-lab hook |
+| `visual.spec.ts` | TC-F-001-18 (AC-9), chromium | Full-page showcase in en/ar × light/dark at 1280×800 and 360×740 (8 baselines), `maxDiffPixelRatio` 0.001, `threshold` 0.2 |
+| `shaping.spec.ts` | TC-F-001-15 (AC-8), chromium, firefox, webkit | `document.fonts.check()` for Noto Sans Arabic, then each of the 20 samples alone, with baselines per engine (60) |
 | `harness-selftest.spec.ts` | (harness) | The walker catches a focus trap, a Tab order against the reading direction and missing or faint rings; the console guard fails a test on an uncaught error |
 
 Every spec uses `e2e/helpers/fixtures.ts`, whose automatic **console guard** fails a test on any console error or uncaught exception. i18n runs in test mode here, so that is also the runtime missing-key check (TC-F-001-12). `e2e/global-setup.ts` stops the run when Node doesn't satisfy `engines.node` (AR-4 b) or a build is missing.
@@ -57,6 +60,8 @@ Every spec uses `e2e/helpers/fixtures.ts`, whose automatic **console guard** fai
 | Variable (e2e:container only) | Default | Effect |
 |---|---|---|
 | `E2E_PLATFORM` | `linux/amd64` | Docker platform. CI runs amd64; on Apple silicon `linux/arm64` runs natively and is quicker, but snapshots can't be written from it |
-| `E2E_WRITE_SNAPSHOTS` | `0` | `1` copies `e2e/__screenshots__/` back to the working tree (used by `e2e:update`, T14) |
+| `E2E_WRITE_SNAPSHOTS` | `0` | `1` copies `e2e/__screenshots__/` back to the working tree (`e2e:update` sets it) |
+
+**Baselines** (`e2e/__screenshots__/<engine>/`): a missing one fails the run (`updateSnapshots: 'none'`). The Arabic baselines render machine-assisted placeholder strings that still need a native speaker's review (OQ-D8); approving a baseline approves the rendering, not the wording.
 
 The image digest in `scripts/e2e-container.sh` must equal the `ui-e2e` job's; `check-ci-invariants` (`ci/playwright-digest`) fails otherwise. Bump both together.

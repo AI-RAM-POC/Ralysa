@@ -9,9 +9,11 @@
 //
 // Projects (§8.2):
 //   chromium  every spec
-//   firefox   keyboard (and shaping, T14)
-//   webkit    none yet (shaping, T14). Keyboard excludes WebKit: its Tab-to-links default
-//             differs from Safari's user setting; Safari keyboard is the manual TC-F-001-25.
+//   firefox   keyboard, shaping
+//   webkit    shaping. Keyboard excludes WebKit: its Tab-to-links default differs from
+//             Safari's user setting; Safari keyboard is the manual TC-F-001-25.
+// Snapshots (T14): visual (chromium) and shaping (each engine). A missing baseline fails in CI
+// (`updateSnapshots: 'none'`); only `e2e:update` writes baselines, in the pinned image (§5.4).
 import { defineConfig, devices } from '@playwright/test';
 import { UI_LAB_URL, WEB_URL } from './e2e/helpers/urls.js';
 
@@ -28,6 +30,7 @@ export default defineConfig({
   fullyParallel: true,
   forbidOnly: CI,
   retries: 0,
+  updateSnapshots: 'none',
   workers: CI ? 2 : undefined,
   reporter: [['list'], ['html', { open: 'never', outputFolder: 'playwright-report' }]],
   expect: {
@@ -52,7 +55,12 @@ export default defineConfig({
     {
       name: 'firefox',
       use: { ...devices['Desktop Firefox'], viewport: { width: 1280, height: 800 } },
-      testMatch: ['keyboard.spec.ts'],
+      testMatch: ['keyboard.spec.ts', 'shaping.spec.ts'],
+    },
+    {
+      name: 'webkit',
+      use: { ...devices['Desktop Safari'], viewport: { width: 1280, height: 800 } },
+      testMatch: ['shaping.spec.ts'],
     },
   ],
   webServer: [
