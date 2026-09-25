@@ -34,6 +34,12 @@ Option **A**:
 - Content is stored by reference, with only its hash in the chain.
 - **Phasing (aligned with security SR-29 / P0-4):** the insert-only writer role and the sealer hash chain run from the **first Phase 0 event**, because a chain added later cannot vouch for earlier events. Signed checkpoints to WORM, `audit verify` and retention purge arrive with F-011 (Phase 1) and anchor the existing chain. The F-002 brief puts all tamper-evidence in F-011; the proposed brief change is BC-05 in `consistency-review.md`.
 - The event envelope the sealer canonicalises is the one in [observability-audit.md §3.1](../observability-audit.md).
+- *Clarified 2026-09-25 (F-002 design review):*
+  - *The chain covers the event as stored, not as submitted. Its canonical form is the RFC 8785 serialisation of the observability-audit §3.1 envelope with null or absent fields omitted, so adding a nullable field in a later schema version leaves older hashes unchanged. Values are limited to I-JSON (RFC 7493), and `ts` is RFC 3339 UTC with millisecond precision.*
+  - *Per `(org_id, shard)`: `event_hash = SHA-256(JCS(event))`, `hash = SHA-256(prev_hash ‖ event_hash)`, and the genesis `prev_hash` is 32 zero bytes.*
+  - *The seal table has the same insert-only protection as the event table.*
+  - *"Vault transit" means any Vault-API-compatible Transit engine, including OpenBao.*
+  - *The decision itself has not changed.*
 
 ## Consequences
 
