@@ -1,4 +1,9 @@
 {
   "extends": "@ralysa/tsconfig/react-lib.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "emitDeclarationOnly": true,
+    "outDir": "${configDir}/.tsc"
+  },
   "include": ["src", "test", "*.config.ts"]
 }

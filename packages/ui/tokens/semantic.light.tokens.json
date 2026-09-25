@@ -1,0 +1,101 @@
+{
+  "$description": "Ralysa semantic tokens, light theme (DTCG Format 2025.10). Aliases into core.tokens.json. Every pair used for text or UI boundaries is in contrast-pairs.json.",
+  "color": {
+    "$type": "color",
+    "bg": {
+      "canvas": {
+        "$value": "{palette.gray.0}"
+      },
+      "surface": {
+        "$value": "{palette.gray.0}"
+      },
+      "subtle": {
+        "$value": "{palette.gray.50}"
+      }
+    },
+    "fg": {
+      "default": {
+        "$value": "{palette.gray.900}"
+      },
+      "muted": {
+        "$value": "{palette.gray.600}"
+      },
+      "onAccent": {
+        "$value": "{palette.gray.0}"
+      },
+      "disabled": {
+        "$value": "{palette.gray.550}",
+        "$description": "Inactive controls only: exempt from WCAG 1.4.3 (see contrast-pairs.json)."
+      }
+    },
+    "accent": {
+      "default": {
+        "$value": "{palette.blue.600}"
+      },
+      "hover": {
+        "$value": "{palette.blue.700}"
+      }
+    },
+    "border": {
+      "decor": {
+        "$value": "{palette.gray.200}",
+        "$description": "Decorative only; never the sole boundary of a control."
+      },
+      "control": {
+        "$value": "{palette.gray.500}",
+        "$description": "Boundary of an input or control (WCAG 1.4.11)."
+      }
+    },
+    "focus": {
+      "ring": {
+        "$value": "{palette.blue.600}"
+      }
+    },
+    "link": {
+      "$value": "{palette.blue.600}"
+    },
+    "status": {
+      "danger": {
+        "$value": "{palette.red.700}"
+      },
+      "success": {
+        "$value": "{palette.green.700}"
+      },
+      "warning": {
+        "$value": "{palette.amber.700}"
+      }
+    }
+  },
+  "elevation": {
+    "shadow": {
+      "$type": "shadow",
+      "sm": {
+        "$value": {
+          "color": "{palette.shadow.light}",
+          "offsetX": { "value": 0, "unit": "px" },
+          "offsetY": { "value": 1, "unit": "px" },
+          "blur": { "value": 2, "unit": "px" },
+          "spread": { "value": 0, "unit": "px" }
+        }
+      },
+      "md": {
+        "$value": {
+          "color": "{palette.shadow.light}",
+          "offsetX": { "value": 0, "unit": "px" },
+          "offsetY": { "value": 4, "unit": "px" },
+          "blur": { "value": 8, "unit": "px" },
+          "spread": { "value": -2, "unit": "px" }
+        }
+      },
+      "lg": {
+        "$value": {
+          "color": "{palette.shadow.light}",
+          "offsetX": { "value": 0, "unit": "px" },
+          "offsetY": { "value": 12, "unit": "px" },
+          "blur": { "value": 24, "unit": "px" },
+          "spread": { "value": -4, "unit": "px" }
+        }
+      }
+    }
+  }
+}

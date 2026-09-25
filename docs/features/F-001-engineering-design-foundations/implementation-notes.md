@@ -1,4 +1,4 @@
-# F-001: Implementation notes (T01–T03)
+# F-001: Implementation notes
 
 > Phase 5 · Owner: developer agent · Branch `feat/F-001-foundations` · Design: [design.md](./design.md) (G4 recorded 2026-09-25) · Date: 2026-09-25
 > These notes carry the PR evidence the design asks each task to record: version confirmations, deviations, spike results and anything left open. The PR description links here.
@@ -383,6 +383,216 @@ Branch `feat/F-001-boundaries-secrets` (T04, T05 and T16 together, one commit pe
 - `secret-scan artefacts` on `apps/web/dist`: **0 findings**.
 - `tree`, `history` and `selftest` (dir, git, artefact, canary): pass.
 
+## T06: design tokens
+
+Branch `feat/F-001-tokens-i18n` (T06 to T08 together).
+
+### What landed
+
+- `packages/ui` converted from a placeholder with `pnpm scaffold packages/ui --kind library` and then filled in:
+  - DTCG 2025.10 source in `tokens/`: `core.tokens.json` holds primitives and the theme-independent categories, and `semantic.{light,dark}.tokens.json` hold semantic colours and shadows as aliases.
+  - The §7.1.3 placeholder values are used unchanged.
+  - `src/contracts/tokens.ts` is the §3.2 zod contract.
+  - `scripts/build-tokens.ts` is the generator. It emits `dist/css/tokens.css`, `dist/css/theme.css` and `src/tokens/generated.ts`. It is about 550 lines after Prettier, against the design's estimate of about 200. The extra length is validation messages, DTCG group and `$type` inheritance, alias cycle and type checks, the shadow and font-family formatters, and collision checks on the generated names.
+  - Theme plumbing: `ThemeProvider`, `useTheme`, `resolveInitialTheme` and `applyTheme`.
+  - Scripts: `build` (tokens, then tsc), `check:generated` and `lint` (ESLint, then Stylelint).
+- `@ralysa/repo-scripts` `src/check-contrast.ts` holds the WCAG 2.1 ratio, `MIN_RATIO` and `checkContrast`. It is exported as `@ralysa/repo-scripts/check-contrast` and run by `packages/ui` `test` against the parsed token model.
+- The new `tooling/stylelint-config` (`@ralysa/stylelint-config`) contains the raw-colour rules and requires a description on every disable comment.
+- `@ralysa/eslint-config` has a local plugin (`rules/`, registered as `ralysa/`) with `ralysa/no-raw-color`, wired into `reactUi()`.
+
+### Placeholder token contrast (`check-contrast`, TC-F-001-23)
+
+There are 25 pairs, checked in both themes (50 checks): **all pass**. Every ratio matches the §7.1.3 table. The lowest ratio per kind:
+
+| Kind | Minimum | Lowest light | Lowest dark |
+|---|---|---|---|
+| text | 4.5 | 5.41 (`status.success` on `bg.surface`/`bg.canvas`) | 6.88 (`fg.muted` on `bg.subtle`) |
+| nonText | 3 | 3.89 (`border.control` on `bg.subtle`) | 4.35 (`border.control` on `bg.subtle`) |
+| focus | 3 | 5.88 (`focus.ring` on `bg.subtle`) | 7.13 (`focus.ring` on `bg.subtle`) |
+
+The full table prints in the `@ralysa/ui:test` log. Exempt: `color.fg.disabled` (WCAG 1.4.3 inactive components) and `color.border.decor` (decorative, never a control's only boundary).
+
+### Recorded decisions and deviations
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T06-1 | Design inconsistency, fixed | `TokenPath` and `Alias` allow `_` in every segment after the first. | The §3.2 regex (`[a-zA-Z0-9]+` segments) rejects `space.0_5` and `space.1_5`, which §7.1.2 requires. DTCG allows `_` in names. |
+| T06-2 | Design deviation (small) | `MIN_RATIO` lives in `check-contrast.ts` (repo-scripts), not in `packages/ui/src/contracts/tokens.ts`. There is no `ralysa-repo check-contrast` CLI command: the gate runs inside `@ralysa/ui` `test` (as §7.1.4 says), which passes in its own resolved tokens. | The threshold belongs to the gate. `packages/ui` src must not import a tooling package (AR-3), and repo-scripts can't depend on `@ralysa/ui`. `check-contrast.ts` imports nothing, so the browser-library workspace can import it from source. |
+| T06-3 | Contract detail | `contrast-pairs.json` is `{ pairs, exempt }`. `exempt` entries need a reason of at least 20 characters. A pair that names an exempt token fails. A test fails if any semantic colour token is in neither a pair nor `exempt`. | §3.2 says exempt tokens are "listed with a reason" but gives no shape. The coverage test stops a new colour token from skipping the gate. |
+| T06-4 | Addition | Pairs beyond the §7.1.3 list: `fg.default` and `fg.muted` on `bg.surface`, `link` on `bg.surface`, `accent.default` on `bg.canvas`, `border.control` and `focus.ring` on `bg.canvas`/`bg.surface`, and the status colours on `bg.canvas`/`bg.subtle`. | These are combinations the components will use. All pass. |
+| T06-5 | **Deferred to T11 by decision** (coordinator, standing authorization, 2026-09-25) | `color.bg.surfaceRaised` (§7.1.2 examples) has no value in §7.1.3, so it isn't defined in T06. | Picking a colour is a design decision. T11 adds it, with light and dark values and its contrast pairs, with the first raised component (the `Select` popover). |
+| T06-6 | Implementation choice | Tailwind names: the `bg` group and a trailing `default` are dropped (`bg-canvas`, `text-fg`, `bg-accent`, `bg-accent-hover`). `font.*` maps to `font`/`text`/`font-weight`/`leading`/`tracking`; `space.*`, `size.control.*` and `size.icon.*` map to `--spacing-*`; `size.container.*` maps to `--container-*`; `elevation.shadow.*` to `--shadow-*`; `motion.easing.*` to `--ease-*`. Layers, durations and the focus-ring size stay CSS-variable only. The reset list is in `TAILWIND_RESETS`. | §7.1.1 gives one example (`--color-canvas`). The rule has to be mechanical so generated names never collide; the generator fails on a collision. |
+| T06-7 | Implementation choice | Palette primitives aren't emitted as CSS variables. Semantic values are emitted resolved. | "Components use semantic tokens only" (§7.1.1). |
+| T06-8 | Scope note | The §7.2 `:lang(ar)` values are in the token source now, as `$extensions["solutions.ralysa.lang"]`: body line height 1.7, letter spacing 0. The font stacks are the §7.2 stacks. | The generator's `:lang()` support is part of §7.1.1, and the values are known. T09 still owns the font packages and `fonts.css`. |
+| T06-9 | Implementation choice | `packages/ui/tsconfig.json` (no emit: src, tests, scripts) adds `types: ["node"]` and `allowImportingTsExtensions`. `tsconfig.build.json` switches both off. | The generator and the token tests run on Node type stripping. Turning both off for the emit build means `build` fails if shipped `src/` code ever uses a Node type or a `.ts` import. |
+| T06-10 | Implementation choice | `ralysa/no-raw-color` doesn't apply to test files (`TEST_FILES`). | AC-3 targets "component or app code". Tests assert on colour values. |
+| T06-11 | Sequencing | The "default-palette classes → error" part of TC-F-001-07 is proven here at the theme level: Tailwind's own compiler builds nothing for `bg-red-500`, `text-slate-900`, `bg-white`, `shadow-2xl` and `font-serif` against the generated theme (`test/tokens.test.ts`). The **lint** error (`better-tailwindcss/no-unknown-classes`) lands with T07, which wires the plugin to the Tailwind entry point. | `better-tailwindcss` belongs to T07's file list (`react-ui.js`, logical, restricted and unknown rules). |
+| T06-12 | Note | `letterSpacing` values are in `rem`. | DTCG 2025.10 `dimension` allows only `px` and `rem`. |
+
+### Versions (npm registry, 2026-09-25 ~10:10 UTC; 3-day cut-off 2026-09-22T10:10Z)
+
+| Package | Design | Pinned | Notes |
+|---|---|---|---|
+| `stylelint` | 17.x | **17.15.0** (catalog) | Published 2026-09-04. MIT, no install scripts. |
+| `tailwindcss` | 4.3.x | **4.3.3** (catalog) | Published 2026-07-16. It is a devDependency of `@ralysa/ui` for the theme compile test; T07 uses it for `better-tailwindcss`. |
+| `jsdom` | (not pinned) | **30.1.0** (catalog) | **30.1.1 (2026-09-22T02:07Z) is inside the 3-day window.** 30.1.0 was published 2026-09-17, and the 30 line has been GA since 2026-07-27. Engines `^24.15.0` is satisfied by 24.21.0. |
+| `zod` | 4.6.x | 4.6.5 (existing catalog) | `.finite()` is deprecated in zod 4 (it's the default), so it isn't used. |
+
+None of these runs an install script. `allowBuilds` is unchanged in T06.
+
+### Tests added (T06)
+
+- `packages/ui/test/tokens.test.ts` (**TC-F-001-06**):
+  - the real source validates, with all 7 categories in both themes, identical light/dark keys, and the §7.1.3 values;
+  - failure fixtures: key-set mismatch, unresolved alias, alias of the wrong type, alias cycle, hex/components mismatch, missing `$type`, unknown key, `.` in a name, primitive in a semantic file, missing category;
+  - generator outputs, and `generated.ts` equal to the source;
+  - Tailwind compile: token classes resolve to `var(--ralysa-*)`, and default-palette classes produce nothing.
+- `packages/ui/test/contrast.test.ts` (**TC-F-001-23**): every real pair passes in both themes; every semantic colour token is covered; a `#777777` fixture (4.48:1) and a translucent fixture fail.
+- `tooling/repo-scripts/test/contrast.test.ts` (**TC-F-001-22**): reference ratios (21, 1, 4.478, 4.542, 7.0 and the design values); symmetry; the linearisation knee; `MIN_RATIO` per kind; no rounding up (4.478 fails text); translucent, unresolved and exempt-in-pair findings.
+- `packages/ui/test/theme.test.tsx` (jsdom): `resolveInitialTheme` order and throwing storage; `ThemeProvider` sets and removes `data-theme`; `useTheme` outside a provider; `tokenVar`.
+- **TC-F-001-07**:
+  - `tooling/eslint-config/test/raw-color.test.ts`: `RuleTester`, 11 valid and 21 invalid cases (hex forms, every colour function, template literals, style objects, `bg-[#fff]`, `text-[rgb(…)]`, `border-[oklch(…)]`); the composed preset reports component code and not test files.
+  - `tooling/stylelint-config/test/raw-color.test.ts`: hex, named colours and every colour function report an error; tokens, `color-mix()` over `var()`, `currentcolor`/`transparent` and Tailwind `@theme` with `var()` pass; token and `dist` files are ignored; disable comments must carry a description, and a needless disable is reported.
+
+## T07: logical-layout lint
+
+### What landed
+
+- **Stylelint** (`@ralysa/stylelint-config`):
+  - `stylelint-plugin-logical-css`: `require-logical-properties`, with `ignore` set to the block-axis and sizing properties the plugin maps (`BLOCK_AXIS_PROPERTIES`, taken from the plugin's own property map), and `require-logical-keywords`, with the non-left/right properties ignored.
+  - `declaration-property-value-disallowed-list` catches the forms the plugin can't see: 4-value shorthands (`margin`, `padding`, `inset`, `scroll-margin`, `scroll-padding`, `border-{width,style,color}`) whose right and left values differ, found by a back-reference regex that treats `calc(var(--a) + 1px)` as one value; `border-radius` whose left and right corners differ; `background-position(-x)` and `transform-origin` with `left`/`right`; horizontal `translate`/`translateX`/`translate3d` unless the offset uses `var(--ralysa-dir-sign)`; and `outline: none|0` (§7.7).
+- **ESLint** (`react-ui`):
+  - `eslint-plugin-better-tailwindcss` `enforce-logical-properties`, with block-axis and sizing classes ignored.
+  - `no-restricted-classes` (the list is in `tooling/eslint-config/tailwind.js`) and `no-unknown-classes`. They use the plugin's default selectors, which cover `className`, `class`, `cn`, `clsx`, `cva` and `tv`.
+  - `ralysa/no-physical-inline-style`.
+  - All of these apply to UI source, not tests. `reactUi({ tailwindEntryPoint })` points the plugin at the workspace's Tailwind entry point.
+- **`packages/ui`**:
+  - `src/styles/tailwind.css` is the entry point (`tailwindcss` plus the token theme), exported as `@ralysa/ui/tailwind.css`. `eslint.config.js` passes it to `reactUi`.
+  - `tokens.css` now defines `--ralysa-dir-sign`.
+
+### Recorded decisions and deviations
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T07-1 | **Design deviation** | The Tailwind theme is generated into `packages/ui/src/styles/theme.css` (committed, drift-checked by `check:generated`, and compared with the source by `test/tokens.test.ts`) instead of `dist/css/theme.css`. `@ralysa/ui/theme.css` points there. `tokens.css` stays in `dist/`. | The lint loads the theme through the entry point. With the theme in `dist/`, `packages/ui` `lint` would depend on its own `build`, and every UI workspace's lint and the scaffold test (TC-F-001-46) would depend on build order. The theme holds only `var()` references (no colour values), so keeping it in `src/` doesn't weaken the raw-colour rules. |
+| T07-2 | Implementation choice | Without `tailwindEntryPoint`, `reactUi()` uses `tailwind/no-theme.css`, whose theme is empty (`--*: initial`), so every token-backed class is reported as unknown. | If the entry point were missing, the plugin would fall back to Tailwind's default theme, and `bg-red-500` would pass. With the empty-theme fallback, a forgotten option fails loudly instead. The scaffold templates keep `reactUi()`: their slot components use no classes. |
+| T07-3 | Implementation choice | The mirroring pattern is an `ltr:`/`rtl:` pair: any class with an `ltr:` or `rtl:` variant is exempt from the `translate-x-*`, `bg-left/right*`, `origin-*left/right` and `bg-linear-to-l/r*` restrictions. | §7.3.3 asks the messages to give "the `rtl:` variant pattern". A pair is the only way to write a mirrored directional utility, so it has to pass. |
+| T07-4 | Refinement | `border-radius` values like `4px 4px 0 0` (top corners equal, bottom corners equal) pass. | §7.3.2 says "multi-value `border-radius` unless all values are equal". A value whose top corners match and whose bottom corners match mirrors onto itself, so flagging it would be a false positive on a common pattern (a top-rounded panel). Every value whose left and right corners differ still fails. |
+| T07-5 | Additions | `transform-origin` with `left`/`right`, `scroll-margin`/`scroll-padding` 4-value shorthands, and physical Tailwind arbitrary properties (`[margin-left:…]`, `[text-align:right]`) are errors too. | These are the same physical forms as the listed ones, and the parallel Tailwind or property rule already covers them in another notation. |
+| T07-6 | Scope note | `outline: none` is an error everywhere, not only in `:focus` contexts (§7.7). | `declaration-property-value-disallowed-list` can't scope by selector. The escape hatch is a described disable. |
+| T07-7 | Implementation note | Tailwind 4.3.3 was checked to know every logical replacement class the plugin suggests (`inset-s-*`, `pbs-*`, `rounded-ss-*`, `scroll-ms-*`, and so on). This matters because `enforce-logical-properties` stays silent when its replacement class is unknown. The token theme's spacing reset was checked too: `p-7` doesn't exist, while `p-4` and `p-0.5` do. | Probed with Tailwind's own compiler before wiring. |
+| T07-8 | Note | `--ralysa-dir-sign` is emitted by the token generator into `tokens.css` (`:root, [dir='ltr']` → 1, `[dir='rtl']` → -1). | The translate rule allows only that pattern, so the variable has to exist. |
+
+### Versions (npm registry, 2026-09-25 ~10:10 UTC)
+
+| Package | Design | Pinned | Notes |
+|---|---|---|---|
+| `stylelint-plugin-logical-css` | 2.1.x | **2.1.0** | Published 2026-03-29. MIT, no dependencies, no install scripts; peer `stylelint ^14…^17`. |
+| `eslint-plugin-better-tailwindcss` | 4.7.x | **4.7.0** | Published 2026-07-19. MIT; peer `eslint ^7…^10` (optional), `tailwindcss ^3.3 \|\| ^4.1.17`. No install scripts in its tree (`synckit`, `jiti`, `valibot`, `enhanced-resolve`, `tailwind-csstree`, `tsconfig-paths-webpack-plugin`, `@eslint/css-tree`). |
+| `tailwindcss` | 4.3.x | **4.3.3** (catalog) | Also a dependency of `@ralysa/eslint-config`, so the plugin and the fallback entry point resolve it. |
+| `@types/estree` | (not pinned) | **1.0.9** | Already in the lockfile through ESLint. It is a devDependency of `@ralysa/eslint-config` for the rule JSDoc types. |
+
+### Tests added (T07)
+
+- **TC-F-001-08**, CSS: `tooling/stylelint-config/test/logical.test.ts` (74 cases).
+  - 19 inline-axis properties, each an error, with its logical equivalent passing.
+  - 14 block-axis and sizing properties allowed.
+  - 7 keyword pairs; non-directional keywords allowed.
+  - 22 shorthand and value pairs (4-value shorthands including `calc()` operands, radii, positions, origins, `transform` and `translate`, the `--ralysa-dir-sign` pattern).
+  - Outline removal, with a described disable as the escape hatch.
+  - Tailwind v4 at-rules parse cleanly.
+- **TC-F-001-08**, ESLint: `tooling/eslint-config/test/logical.test.ts` (113 cases).
+  - `RuleTester` for `ralysa/no-physical-inline-style`: every listed key, `textAlign`/`float`/`clear` values, string keys, conditional, `&&`, spread, and `as`/`satisfies` wrappers.
+  - Through the composed preset with a fixture theme: 24 physical Tailwind classes → `enforce-logical-properties`, each logical fix passing; 13 block-axis and sizing classes allowed; 14 restricted forms, each with a passing alternative, including the `ltr:`/`rtl:` pairs; class strings in the `cn`/`clsx`/`cva`/`tv` callees; test files exempt; the empty-theme fallback fails loudly.
+- **TC-F-001-07**, Tailwind part: arbitrary colours (`bg-[#fff]`, `text-[rgb(…)]`, `border-[oklch(…)]`, `bg-[color:#…]`) → `no-restricted-classes`; `bg-red-500`, `text-slate-900`, `bg-white`, `p-7` and `rounded-3xl` → `no-unknown-classes`.
+- A manual check, not a test: `eslint --stdin` in `packages/ui` with the real entry point reported `bg-red-500` (unknown), `ml-4` (logical) and `marginLeft` (inline style). `bg-canvas`, `p-4`, `text-fg-muted` and `h-control-md` passed.
+
+## T08: i18n
+
+### What landed
+
+- **`packages/ui`**:
+  - `src/contracts/i18n.ts` (§3.3).
+  - `createI18n`: one i18next instance per app, `en` bundled, other locales loaded by dynamic import through an in-memory backend (no HTTP, no Locize). In test mode a missing key throws `MissingKeyError`, and there is no `en` fallback.
+  - `LocaleProvider`: `useSyncExternalStore` on `languageChanged`, then `<html lang dir>` and the Radix `DirectionProvider`; `useLocale()` returns `{ locale, dir, options, setLocale }`.
+  - `resolveInitialLocale` (`?lang=`, `localStorage` `ralysa.locale`, `navigator.languages`, `en`) and `browserStorage()`.
+  - The `ui` catalog (locale endonyms) with its `review.json`, `i18next.config.ts` and the generated key types.
+  - Dependencies: `i18next`, `react-i18next`, `@radix-ui/react-direction` (all through the catalog, so ui and the apps share one instance of each).
+- **`apps/web`**:
+  - The `web` catalog (`web:app.name`) and `review.json`.
+  - `App` renders `<main><h1>{t('app.name')}</h1></main>`.
+  - `main.tsx` wires `tokens.css`, `createI18n`, `LocaleProvider` and `ThemeProvider`.
+  - `i18next.config.ts`, typed keys (including the `ui` namespace) and a tsconfig reference to `packages/ui`. ESLint lints Tailwind classes against `@ralysa/ui/tailwind.css`.
+  - The production bundle puts each `ar` catalog in its own chunk (`ui-*.js`, `web-*.js`).
+- **`@ralysa/eslint-config`**: `i18next/no-literal-string` and the new `ralysa/no-literal-attribute-text` in `reactUi()`; neither applies to test files.
+- **`@ralysa/repo-scripts`**: `check-i18n` (in `pnpm repo:check`, so it runs in the CI `repo-checks` job) and the `./check-i18n` export.
+- **`pnpm-workspace.yaml`**: `allowBuilds: { '@swc/core': false }` with its reason inline. Install passes under `strictDepBuilds`, and i18next-cli works without SWC's postinstall: the native binding comes from the platform `optionalDependency`.
+- **`.prettierignore`**: `**/src/i18n/generated/`.
+
+### Offline check of i18next-cli (SEC-F001-19, T08 definition of done)
+
+Run on 2026-09-25 in `packages/ui` and `apps/web`. Each command ran under two independent network blocks at once:
+- macOS `sandbox-exec -p '(version 1)(allow default)(deny network*)'`;
+- a Node preload (`NODE_OPTIONS=--import=net-guard.mjs`) that logs and throws on `net.Socket#connect` to a host, `tls.connect`, `dns.lookup`/`resolve`, `http(s).request`/`get` and `fetch`.
+
+Positive controls, run first:
+- `fetch('https://registry.npmjs.org/')` under the guard was logged as `BLOCKED fetch` and threw.
+- `dns.lookup('registry.npmjs.org')` under the sandbox failed with `ENOTFOUND`, and `curl` under the sandbox failed with `Could not resolve host`.
+
+```
+ui  | i18next-cli extract --ci --dry-run | exit=0 | guard loaded in 1 process(es) | blocked network attempts=0
+ui  | i18next-cli types                  | exit=0 | guard loaded in 1 process(es) | blocked network attempts=0
+ui  | i18next-cli status                 | exit=0 | guard loaded in 1 process(es) | blocked network attempts=0
+web | i18next-cli extract --ci --dry-run | exit=0 | guard loaded in 1 process(es) | blocked network attempts=0
+web | i18next-cli types                  | exit=0 | guard loaded in 1 process(es) | blocked network attempts=0
+web | i18next-cli status                 | exit=0 | guard loaded in 1 process(es) | blocked network attempts=0
+```
+
+- `extract` reported "No files were updated".
+- `status` reported `ar` at 100 % (ui: 2/2 keys; web: 1/1).
+- No command started a child process (the guard loaded once per run). All three commands **make no network calls**.
+- The Locize commands (`locize-*`, `localize`) are never used.
+
+### Recorded decisions and deviations
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T08-1 | **Design deviation** | The `ui` catalogs are at `packages/ui/src/locales/{en,ar}/ui.json`, not `packages/ui/locales/…` (§7.4.3). `apps/web/locales/…` is as designed. | The library build compiles `src/` only (`rootDir: src`). A JSON module under `src/` is emitted next to the code (`dist/locales/…`), which the dynamic `ar` import needs; a file outside `rootDir` can't be imported by emitted code. |
+| T08-2 | **Design deviation** | `i18next/no-literal-string` covers JSX text and string children. Attribute text is covered by a new local rule, `ralysa/no-literal-attribute-text`, over `USER_VISIBLE_ATTRIBUTES`. | eslint-plugin-i18next 6.1.5 hard-codes that native DOM elements may carry literal text in every attribute except `placeholder`, `alt`, `aria-label`, `value` and `title` (`isAllowedDOMAttr`). So `<div aria-description="…">` or `<option label="…">` passed whatever the options said. The local rule checks the listed attributes on every element, including literals inside `{…}`, template literals and condition branches. |
+| T08-3 | Addition | `USER_VISIBLE_ATTRIBUTES` adds `aria-roledescription`, `aria-placeholder` and `aria-valuetext` to the §7.4.4 list. | They are read out by screen readers just like `aria-label`. |
+| T08-4 | Option choice | The i18next rule uses `words.exclude: [/^[^\p{L}]*$/u]`, so only strings without a letter are exempt, and `should-validate-template: true`. | The plugin's default word list also exempts ALL-CAPS text (`<p>OK</p>`) and exempts only ASCII punctuation. Template-literal children were otherwise unchecked. |
+| T08-5 | Option choice | i18next-cli `removeUnusedKeys: false`. `extract --ci --dry-run` therefore fails when code uses a key missing from any catalog, including a key present in `en` but missing from `ar`, and ignores keys the code doesn't reference statically. | That is the §7.4.5 contract ("fails if code uses a key that's missing"). Unused-key cleanup (`status --unused`) isn't part of F-001. |
+| T08-6 | Implementation choice | The native-review marking (OQ-D8) is a register, `<locales>/review.json`, mapping each `ar` key to `"needs-native-review"` or `{ reviewer, date }`. `check-i18n` fails on a missing or stale entry and prints the open count. | JSON catalogs can't carry comments. A register makes the marking machine-checked, and an Arabic string can't be added without being marked. Every current `ar` string is `needs-native-review`: ui 2, web 1. |
+| T08-7 | **Closed** (code review 1) | eslint-plugin-i18next skips the whole initialiser of a variable whose name is ALL CAPS. `reactUi()` now adds a `no-restricted-syntax` selector, merged with the base preset's entries through `boundaryRules()`, that reports letter-bearing JSX text and string or template children under such a variable. The test that pinned the limitation now asserts it is reported. | The earlier "runtime backstop" was wrong: the missing-key handler only sees `t()` calls, never literal JSX. esquery 1.7.0 accepts the `u` flag, so `\p{L}` covers Arabic too. |
+| T08-8 | **Gap in T02/T03, decided and fixed at the source** (coordinator, standing authorization, 2026-09-25; commit "F-001-T03/T08: referenceable library typecheck configs") | The `library` and `library-isomorphic` templates and `packages/ui` now use a **referenceable typecheck config**: `tsconfig.json` has `noEmit: false`, `emitDeclarationOnly: true` and `outDir: ${configDir}/.tsc`, and `tsconfig.build.json` sets `emitDeclarationOnly: false` again. `.tsc/` is added to the ignore file and is already in the ESLint base ignores. `check-tsrefs` resolves each referenced project's effective options (with `extends`) and fails on `noEmit` (`tsrefs/reference-no-emit`, TS6310), on a missing `composite` (`tsrefs/reference-not-composite`, TS6306), or on an unreadable config. Documented in `docs/engineering/repo-conventions.md` (Referenceable libraries). | `check-tsrefs` requires an app to reference a library it depends on, but every workspace tsconfig was a no-emit composite (T02-5), and `tsc -p` rejects a reference to a no-emit project (`TS6310 Referenced project … may not disable emit`). `apps/web` → `packages/ui` was the first library dependency. I used `.tsc/` rather than the suggested `.tsbuild/` because `base.js` already ignores `**/.tsc/**`, so the other developer's file needed no edit. **Observed:** TypeScript 6.0.3's `tsc -b` tolerates a no-emit reference, and only `tsc -p` (every `typecheck` script) raises TS6310, so the scaffold test's negative control uses the app's `typecheck`. |
+| T08-9 | Implementation choice | i18next, react-i18next and `@radix-ui/react-direction` are catalog-pinned `dependencies` of `@ralysa/ui` and `@ralysa/web`, not peer dependencies. | pnpm resolves identical versions with identical peers to one store path, so the React contexts are shared. The catalog guarantees the versions match. |
+| T08-10 | Scope note | `check-i18n` runs in `pnpm repo:check` (the CI `repo-checks` job), not in `quality` (§8.4 TC-F-001-12 "Location: quality"). `extract --ci` does run in each UI workspace's `lint` (`quality`). | `check-i18n` is a repo-level scan of every UI workspace, like the other `check-*` scripts. It sits outside Turbo, so a cache replay can never skip it. |
+| T08-11 | Implementation note | The generated `i18next.d.ts` (written once by i18next-cli, then only `resources.d.ts` is regenerated) and `resources.d.ts` are committed. `src/i18n/generated/` is in `.prettierignore` because i18next-cli's output isn't Prettier-formatted, and formatting it would make `check:generated` report drift. | §3.5 drift check. |
+| T08-12 | Wording | The ui catalog's `locale.name.en` is "English" in both locales (endonyms: a language picker names each language in its own script). `check-i18n` reports it as an `i18n/untranslated` **warning**, not a failure. | This is intended; the review register notes it. |
+
+### Versions (npm registry, 2026-09-25 ~10:10 UTC)
+
+| Package | Design | Pinned | Notes |
+|---|---|---|---|
+| `i18next` | 26.x | **26.4.2** (catalog) | Published 2026-09-03; the 26.4 line started 2026-08-20. MIT, no dependencies. |
+| `react-i18next` | 17.x | **17.0.15** (catalog) | Published 2026-09-21T18:19Z, which is outside the 3-day window (cut-off 2026-09-22T10:10Z). Peer `i18next >= 26.2.0`, `react >= 16.8`. MIT. |
+| `i18next-cli` | 1.74.x | **1.74.1** (catalog) | Published 2026-09-17. MIT, engines `node >= 22`. **Policy note:** the 1.74 line is 9 days old, under the §2.2 30-day rule, but the design names 1.74.x (as T01 did for Turbo 2.11). Brings `@swc/core` 1.16.x (postinstall blocked: `allowBuilds: false`) and its platform binaries as optional dependencies. |
+| `eslint-plugin-i18next` | 6.1.x | **6.1.5** | Published 2026-06-28. ISC; one dependency (`requireindex`); no peer range declared. It works under ESLint 10 without `@eslint/compat`: it uses `context.sourceCode` with fallbacks. The 31 cases in `test/i18n.test.ts` run through ESLint 10.11.0 with no fatal message. |
+| `@radix-ui/react-direction` | (`radix-ui` 1.6.x) | **1.1.4** (catalog) | Published 2026-07-24. It's the exact version `radix-ui` 1.6.7 depends on, so the T11 primitives will share its direction context. |
+
+### Tests added (T08)
+
+- **TC-F-001-10** (`tooling/eslint-config/test/i18n.test.ts`, 31 cases, typed `.tsx` fixtures in a temp project):
+  - Reported: JSX text, fragments, string and template children, ALL-CAPS and Arabic text; each of the 9 user-visible attributes on native elements and components, including a literal inside `{…}` and a condition branch.
+  - Allowed: `t()` keys, `className`, `data-*`, `id`, `href`, `type`, `role`, non-text ARIA, non-visible component props, strings without letters, strings outside JSX.
+  - The messages name the fix; test files are exempt; both rules are `error`; the ALL-CAPS limitation is pinned.
+- **TC-F-001-12**:
+  - `tooling/repo-scripts/test/check-i18n.test.ts` (15): a complete pair passes; missing and extra keys, all six Arabic plural forms, key grammar, empty and non-string values, interpolation parity, missing locale or namespace, the review register (missing, stale, reviewed, bad status), the untranslated warning, the workspace wiring, and the real repository (0 findings).
+  - `packages/ui/test/i18n-extract.test.ts` (4): the extractor's dry run on a fixture project reports no change when the keys are complete, and a change (which is what `--ci` fails on) for a key used in code but missing from the catalogs, or missing from `ar` only. It also passes on the real package.
+- **AC-6**, unit level (`packages/ui/test/i18n.test.tsx`, jsdom, 8): the `resolveInitialLocale` order and throwing storage; `en` bundled with `ar` loaded once on first use; the production fallback; test mode throws on a missing key, including one only `en` has; `LocaleProvider` sets `<html lang dir>`, the Radix direction and the strings in both directions **without a reload** (a window marker survives and the rendered node is the same object). The E2E version (TC-F-001-11) is T13's.
+- **Typed keys** (`packages/ui/test/i18n-contract.test.ts`): `@ts-expect-error` on `t('locale.name.fr')` and `i18n.t('ui:nonexistent.key')`, so `typecheck` fails if keys stop being typed. The contract matches `check-i18n` (locales, source locale, `KEY_RE`) and Intl's plural categories.
+- `apps/web/test/App.test.tsx`: the heading renders from the `web` catalog in `en` and `ar` (test mode, so a missing key fails).
+
 ## T16: provider-hostname check
 
 ### What landed
@@ -453,6 +663,50 @@ The design's 16 entries are kept unchanged. Checked 2026-09-25:
 | The `require` ban only caught direct calls, so the handle could escape: `module.require.bind(module)`, `Reflect.apply(module.require, …)`, `const { require: rq } = module`. | Any `require` member access (named or computed) is banned **unless** it is the callee of a call whose first argument is a literal: `MemberExpression[property.name='require']:not(CallExpression[arguments.0.type='Literal'] > MemberExpression.callee)`. Destructuring `require` out of an object (`ObjectPattern > Property[key.name/value='require']`) is banned too. These replace the two call-only selectors. | `boundaries.test.ts` fails on `.bind`, `{ require: rq }`, `{ 'require': rq }`, `Reflect.apply(module.require, …)`, a stored `module.require`, and `module.require()` with no argument. `module.require('./local.cjs')` still passes, which exercises the `:not(...)` side. |
 | An exact-file allow-list entry couldn't start with an escaped dot (a dot-folder). | `ANCHORED_LITERAL_PATH` = `/^\^(?:[A-Za-z0-9_@-]\|\\\.)(?:[A-Za-z0-9_@/-]\|\\\.)*\$$/`. | Passes `^\.github/fixtures/sample\.txt$`. Fails `^\.github/.*$`, `^.github/fixtures/sample\.txt$` (unescaped dot) and `^/x\.txt$`. |
 
+## Code review of feat/F-001-tokens-i18n (Request changes, 2026-09-25)
+
+| # | Finding | Fix | Tests |
+|---|---|---|---|
+| 1 | **Major.** JSX text under an ALL-CAPS variable escaped AC-5 (T08-7), and the "backstop" doesn't apply to literal JSX. | `UI_RESTRICTED_SYNTAX` in `react-ui.js`, merged with `RESTRICTED_SYNTAX` via `boundaryRules({ syntax })`. Selector: `VariableDeclarator[id.name=/^[A-Z][A-Z0-9_]*$/] :matches(JSXText[value=/\p{L}/u], JSXExpressionContainer > Literal[value=/\p{L}/u], JSXExpressionContainer > TemplateLiteral > TemplateElement[value.raw=/\p{L}/u])`. | `test/i18n.test.ts`: `FAQ`, the reviewer's `ROUTES` and `LABELS`, string, template and Arabic children are reported; `t()` and letter-free text pass; the base entries are still present in the merged rule. |
+| 2 | **Major.** `value` on button-like inputs. | `ralysa/no-literal-attribute-text` also reports `value` on `<input>` whose `type` is `submit`, `reset` or `button`, as a string, a literal expression or a static template. | Reset, submit, `type={"button"}`, ``type={`submit`}`` are reported; a text input's `value`, `<option value>` and a dynamic `type` pass. |
+| 3 | **Major.** `apps/web` and the UI templates didn't run Stylelint. | `apps/web`, and the `app` and `library` templates (the `ralysa.ui: true` ones), now have `stylelint.config.js` and `eslint . && stylelint "**/*.css" --allow-empty-input` in `lint`. New repo check **`check-ui-lint`** (in `repo:check`): every non-placeholder UI workspace's lint runs `eslint` and `stylelint`, it has a `stylelint.config.*` using `@ralysa/stylelint-config`, and its ESLint config calls `reactUi()`. | `test/check-ui-lint.test.ts` (7): wired passes; missing Stylelint, missing ESLint, missing or foreign Stylelint config, and a missing react-ui preset each fail; non-UI and placeholder workspaces are skipped; the real repo passes. The scaffold test (TC-F-001-46) runs the new templates' Stylelint. |
+| 4 | **Major.** Named colours bypassed AC-3 in Tailwind arbitrary values and inline styles. | Shared `CSS_NAMED_COLORS` (all 148, in `tooling/eslint-config/css-values.js`). The restricted-classes list reports a named colour (any case, via a `(?i:…)` group) as a whole token inside `[...]`; `transparent`, `currentcolor` and `inherit` pass. `ralysa/no-raw-color` reports a named colour in colour-typed style keys (`*color`, `background`, `border*`, `outline`, `boxShadow`, `textShadow`, `fill`, `stroke`, …; camel or kebab). | `test/logical.test.ts`: each of the reviewer's classes plus `bg-[Crimson]` and a variant; allowed values include `url(/img/red.png)`. `test/raw-color.test.ts`: `color:'red'`, `borderColor:'Crimson'`, `background`, `border`, `boxShadow`, kebab key, template; non-colour keys and keywords pass. |
+| 5 | **Minor.** The `ltr:`/`rtl:` exemption was per class. | New `ralysa/no-unpaired-direction-variant` over each class string (a `className`/`class` value, or all arguments of `cn`/`clsx`/`cva`/`tv`/`twMerge`/`twJoin`/`cx`): every directional `ltr:X` (translate-x, bg-left/right, origin-*left/right, bg-linear/gradient-to-l/r) needs `rtl:mirror(X)` with the same other variants, and vice versa. The icon mirror `rtl:-scale-x-100` isn't a directional family. | The reviewer's three cases plus same-side and variant-mismatch pairs are reported; correct pairs (any order, with shared variants), gradient corners and `rtl:-scale-x-100` pass; pairing across callee arguments. |
+| 6 | **Minor.** Stylelint ignored any `tokens/` folder. | `ignoreFiles` anchored to the config base (the workspace): `tokens/**`, `dist/**` (which holds the generated `dist/css/tokens.css`), `coverage/**`, `**/node_modules/**`. | `src/components/tokens/probe.css`, `src/tokens/theme.css` fail; `tokens/brand.css` and `dist/css/tokens.css` are ignored. |
+| 7 | **Minor.** Missed physical forms. | Tailwind: `translate-[x_y]` / `-translate-[…]` with a non-zero first value, `[translate:…]` and `[transform:…translateX(…)]`. CSS: `background` joins `LEFT_OR_RIGHT` (now also ignoring `left`/`right` inside a path or file name). Inline styles: 4-value `margin`, `padding`, `inset`, `scrollMargin`, `scrollPadding`, `border{Width,Style,Color}` via the same `ASYMMETRIC_FOUR_VALUES` Stylelint uses (moved to `css-values.js`). | Tailwind, CSS (`background: url(a.png) left top` and a `url(img/left.png)` pass) and `RuleTester` fixtures for each. |
+| 8 | **Minor.** String concatenation in attributes. | `BinaryExpression` (`+`) in `literalStrings`, reported once per concatenation. | `aria-label={'Close ' + 'dialog'}`, `'Hello ' + t(…)` reported; letter-free `'#' + '1'` passes. |
+
+**Probe re-run** (the reviewer's exact probes through the real `apps/web` ESLint and Stylelint configs; every one now fails lint):
+
+```
+[1] exit=1 rules=no-restricted-syntax :: export const ROUTES = [{ element: <main><h1>Home page</h1></main> }];
+[1] exit=1 rules=no-restricted-syntax :: const LABELS = { save: <span>Save</span> }; export default LABELS;
+[2] exit=1 rules=ralysa/no-literal-attribute-text :: <input type="reset" value="Clear form"/>
+[4] exit=1 rules=better-tailwindcss/no-restricted-classes :: bg-[red] | text-[red] | outline-[red] | bg-[color:red] | [color:red] | shadow-[0_0_0_1px_red] (six probes)
+[4] exit=1 rules=ralysa/no-raw-color :: style={{color:'red'}} | style={{borderColor:'Crimson'}}
+[5] exit=1 rules=ralysa/no-unpaired-direction-variant :: ltr:translate-x-2 | rtl:origin-left | ltr:translate-x-2 rtl:translate-x-2
+[7] exit=1 rules=better-tailwindcss/no-restricted-classes :: translate-[10px_0] | [translate:10px_0]
+[7] exit=1 rules=ralysa/no-physical-inline-style :: inset:'0 auto 0 0' | margin:'0 1px 0 2px' | padding:'4px 8px 4px 0'
+[8] exit=1 rules=ralysa/no-literal-attribute-text :: aria-label={'Close ' + 'dialog'}
+[6] exit=2 rules=color-no-hex :: src/components/tokens/probe.css
+[7] exit=2 rules=declaration-property-value-disallowed-list :: background: url(a.png) left top
+[3] exit=2 pnpm --filter @ralysa/web lint with `.a { margin-left: 1rem; }` in src/ (Stylelint now runs)
+```
+
+Notes:
+- `css-values.js` is exported as `@ralysa/eslint-config/css-values`. `@ralysa/stylelint-config` imports it through its existing devDependency on `@ralysa/eslint-config`. The reverse direction would create a workspace cycle.
+- `check-ui-lint` is a new file rather than an extension of `check-workspaces` (T02; the parallel T04 branch edits nearby) or `check-i18n` (whose name wouldn't fit). It is one entry in `cli.ts`.
+
+### Merge with `origin/main` (T04/T05/T16 `bd2326d`, review nits `c8d7a6c`)
+
+- **Merged, not rebased.**
+  - `cli.ts` and the repo-scripts README keep every check from both sides.
+  - The implementation notes keep every section, in task order.
+  - The lockfile was regenerated from the merged manifests, and the frozen install passes.
+- **Boundary rules (main owns them).** `reactUi()`'s `no-restricted-syntax` is still built with `boundaryRules({ syntax: UI_RESTRICTED_SYNTAX })`, so it is exactly main's full `RESTRICTED_SYNTAX` (including the `require`-handle and `mainModule` selectors) followed by the ALL-CAPS selector. `test/i18n.test.ts` asserts that exact order and content, and that `module.require.bind(module)`, `process.mainModule` and a non-literal `import()` are still reported in a UI file.
+- **Ordering fix.** `base()` drops the loading ban for `LOADING_EXCEPTIONS` files (empty today). Because `reactUi()` comes after `base()`, its combined entry would have re-enabled the ban there. `reactUi()` now adds a matching block for those files that keeps only the UI selector. It takes `workspace` like `base()` does (default `workspaceOf(process.cwd())`); the one edit to main's `base.js` is exporting `workspaceOf`. A test adds a fixture exception and checks both an excepted and a normal file.
+- **Main's loading ban caught two `createRequire` calls in my test code:** the i18n lint test and `packages/ui/test/tailwind.ts`. Both now use static paths (`import.meta.resolve`, or a path relative to the package).
+
 ## Version confirmations (npm registry, 2026-09-25 ~08:20 UTC)
 
 Policy (§2.2): the latest patch of a line GA for at least 30 days, and `minimumReleaseAge` holds back anything under 3 days old. Cut-off for the 3-day rule: 2026-09-22T08:20Z.
@@ -488,3 +742,8 @@ No dependency added by T01 to T03 runs a build script: `allowBuilds` is still `{
 - **Guard fixtures in `repo-checks`** (`node --test .claude/hooks/test/`) arrive with T15 (human merge).
 - **T15 and required-checks.json:** T15 must keep T03's `required-checks.json` content (T03-2).
 - Bump Turbo, Prettier, Vite and `@eslint-react` to their newest patches once those are outside the 3-day window.
+- **T06 to T08 follow-ups:**
+  - Native-speaker review of every `ar` string (3 open, in the two `review.json` files; OQ-D8, still open externally).
+  - `color.bg.surfaceRaised`: deferred to T11 by decision (T06-5).
+  - Bump `jsdom` to 30.1.1 once it is outside the 3-day window.
+  - TC-F-001-11 (E2E locale switch) and the Playwright console listener for runtime missing keys arrive with T13.

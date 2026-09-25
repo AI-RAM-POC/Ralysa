@@ -6,7 +6,7 @@
   "scripts": {
     "build": "vite build",
     "dev": "vite",
-    "lint": "eslint .",
+    "lint": "eslint . && stylelint \"**/*.css\" --allow-empty-input",
     "preview": "vite preview",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json"
@@ -17,12 +17,14 @@
   },
   "devDependencies": {
     "@ralysa/eslint-config": "workspace:*",
+    "@ralysa/stylelint-config": "workspace:*",
     "@ralysa/tsconfig": "workspace:*",
     "@ralysa/vitest-config": "workspace:*",
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
     "@vitejs/plugin-react": "catalog:",
     "eslint": "catalog:",
+    "stylelint": "catalog:",
     "typescript": "catalog:",
     "vite": "catalog:",
     "vitest": "catalog:"

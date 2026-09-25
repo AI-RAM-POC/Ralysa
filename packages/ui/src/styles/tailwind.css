@@ -1,0 +1,8 @@
+/*
+ * Tailwind v4 entry point for Ralysa UI code (F-001 design §7.1.1, §7.3.3). The generated theme
+ * resets Tailwind's default namespaces, so only token-backed utilities exist. The lint rules
+ * (better-tailwindcss) load this file; an app's own entry point imports it and adds its @source
+ * globs. Colour and spacing values come from tokens.css at runtime.
+ */
+@import 'tailwindcss';
+@import './theme.css';

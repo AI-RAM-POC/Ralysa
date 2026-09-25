@@ -1,0 +1,155 @@
+{
+  "$description": "Token pairs the contrast gate checks in both themes (F-001 design §3.2, §7.1.4; AC-11). Minimums: text 4.5, largeText 3, nonText 3, focus 3 (WCAG 2.1 SC 1.4.3, 1.4.11). Add a pair whenever a component puts a new foreground on a new background.",
+  "pairs": [
+    {
+      "fg": "color.fg.default",
+      "bg": "color.bg.canvas",
+      "kind": "text",
+      "usage": "Body text on the page"
+    },
+    {
+      "fg": "color.fg.default",
+      "bg": "color.bg.surface",
+      "kind": "text",
+      "usage": "Body text in panels and cards"
+    },
+    {
+      "fg": "color.fg.default",
+      "bg": "color.bg.subtle",
+      "kind": "text",
+      "usage": "Body text in subtle regions (nav, code blocks)"
+    },
+    {
+      "fg": "color.fg.muted",
+      "bg": "color.bg.canvas",
+      "kind": "text",
+      "usage": "Secondary text, descriptions"
+    },
+    {
+      "fg": "color.fg.muted",
+      "bg": "color.bg.surface",
+      "kind": "text",
+      "usage": "Secondary text in panels"
+    },
+    {
+      "fg": "color.fg.muted",
+      "bg": "color.bg.subtle",
+      "kind": "text",
+      "usage": "Secondary text in subtle regions"
+    },
+    {
+      "fg": "color.fg.onAccent",
+      "bg": "color.accent.default",
+      "kind": "text",
+      "usage": "Primary button label"
+    },
+    {
+      "fg": "color.fg.onAccent",
+      "bg": "color.accent.hover",
+      "kind": "text",
+      "usage": "Primary button label, hovered"
+    },
+    { "fg": "color.link", "bg": "color.bg.canvas", "kind": "text", "usage": "Inline links" },
+    { "fg": "color.link", "bg": "color.bg.surface", "kind": "text", "usage": "Links in panels" },
+    {
+      "fg": "color.accent.default",
+      "bg": "color.bg.surface",
+      "kind": "nonText",
+      "usage": "Primary button fill, checked checkbox and radio against the surface"
+    },
+    {
+      "fg": "color.accent.default",
+      "bg": "color.bg.canvas",
+      "kind": "nonText",
+      "usage": "Primary button fill against the page"
+    },
+    {
+      "fg": "color.border.control",
+      "bg": "color.bg.canvas",
+      "kind": "nonText",
+      "usage": "Input and control boundaries on the page (WCAG 1.4.11)"
+    },
+    {
+      "fg": "color.border.control",
+      "bg": "color.bg.surface",
+      "kind": "nonText",
+      "usage": "Input and control boundaries in panels"
+    },
+    {
+      "fg": "color.border.control",
+      "bg": "color.bg.subtle",
+      "kind": "nonText",
+      "usage": "Input and control boundaries in subtle regions"
+    },
+    {
+      "fg": "color.focus.ring",
+      "bg": "color.bg.canvas",
+      "kind": "focus",
+      "usage": "Focus ring (2 px, offset in the canvas colour)"
+    },
+    {
+      "fg": "color.focus.ring",
+      "bg": "color.bg.surface",
+      "kind": "focus",
+      "usage": "Focus ring inside panels"
+    },
+    {
+      "fg": "color.focus.ring",
+      "bg": "color.bg.subtle",
+      "kind": "focus",
+      "usage": "Focus ring inside subtle regions"
+    },
+    {
+      "fg": "color.status.danger",
+      "bg": "color.bg.canvas",
+      "kind": "text",
+      "usage": "Error text on the page"
+    },
+    {
+      "fg": "color.status.danger",
+      "bg": "color.bg.surface",
+      "kind": "text",
+      "usage": "Field error text, ErrorState"
+    },
+    {
+      "fg": "color.status.danger",
+      "bg": "color.bg.subtle",
+      "kind": "text",
+      "usage": "Error text in subtle regions"
+    },
+    {
+      "fg": "color.status.success",
+      "bg": "color.bg.canvas",
+      "kind": "text",
+      "usage": "Success text on the page"
+    },
+    {
+      "fg": "color.status.success",
+      "bg": "color.bg.surface",
+      "kind": "text",
+      "usage": "Success text in panels"
+    },
+    {
+      "fg": "color.status.warning",
+      "bg": "color.bg.canvas",
+      "kind": "text",
+      "usage": "Warning text on the page"
+    },
+    {
+      "fg": "color.status.warning",
+      "bg": "color.bg.surface",
+      "kind": "text",
+      "usage": "Warning text in panels"
+    }
+  ],
+  "exempt": [
+    {
+      "token": "color.fg.disabled",
+      "reason": "Text of inactive user-interface components is exempt from WCAG 2.1 SC 1.4.3 (and 1.4.11). Use only on disabled controls."
+    },
+    {
+      "token": "color.border.decor",
+      "reason": "Decorative separators only. Never the sole boundary of a control; controls use color.border.control."
+    }
+  ]
+}

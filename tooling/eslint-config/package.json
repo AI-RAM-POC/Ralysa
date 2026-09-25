@@ -12,6 +12,10 @@
     "./boundaries": {
       "types": "./dist/boundaries.d.ts",
       "default": "./boundaries.js"
+    },
+    "./css-values": {
+      "types": "./dist/css-values.d.ts",
+      "default": "./css-values.js"
     }
   },
   "scripts": {
@@ -25,9 +29,12 @@
     "@eslint-react/eslint-plugin": "5.20.5",
     "@eslint/compat": "2.1.1",
     "@eslint/js": "10.0.1",
+    "eslint-plugin-better-tailwindcss": "4.7.0",
+    "eslint-plugin-i18next": "6.1.5",
     "eslint-plugin-jsx-a11y": "6.10.2",
     "eslint-plugin-react-hooks": "7.1.1",
     "globals": "17.12.0",
+    "tailwindcss": "catalog:",
     "typescript-eslint": "8.70.1"
   },
   "peerDependencies": {
@@ -36,6 +43,7 @@
   },
   "devDependencies": {
     "@ralysa/tsconfig": "workspace:*",
+    "@types/estree": "1.0.9",
     "@types/node": "catalog:",
     "@types/react": "catalog:",
     "eslint": "catalog:",

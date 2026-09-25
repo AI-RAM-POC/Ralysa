@@ -11,7 +11,10 @@ packages:
 strictDepBuilds: true
 # Every entry defaults to false. A `true` entry needs a matching reviewed entry in
 # tooling/repo-scripts/allow-builds.json (reason, reviewer, date); check-workspaces enforces it.
-allowBuilds: {}
+allowBuilds:
+  # i18next-cli's SWC parser. Its postinstall only checks for a native binding, which arrives as a
+  # platform optionalDependency, so the script stays blocked (F-001-T08, SEC-F001-19).
+  '@swc/core': false
 # 3 days (pnpm 11 default is 1 day).
 minimumReleaseAge: 4320
 # Transitive dependencies may only come from the registry.
@@ -28,13 +31,20 @@ trustPolicyExclude:
 
 # One version per shared toolchain package, referenced as "catalog:" (architect review AR-7).
 catalog:
+  '@radix-ui/react-direction': 1.1.4
   '@types/node': 24.13.6
   '@types/react': 19.3.0
   '@types/react-dom': 19.3.0
   '@vitejs/plugin-react': 6.1.1
   eslint: 10.11.0
+  i18next: 26.4.2
+  i18next-cli: 1.74.1
+  jsdom: 30.1.0
   react: 19.3.0
   react-dom: 19.3.0
+  react-i18next: 17.0.15
+  stylelint: 17.15.0
+  tailwindcss: 4.3.3
   typescript: 6.0.3
   vite: 8.3.0
   vitest: 4.1.11

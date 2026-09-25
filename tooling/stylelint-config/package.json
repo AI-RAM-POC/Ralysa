@@ -1,0 +1,40 @@
+{
+  "name": "@ralysa/stylelint-config",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared Stylelint config for the UI workspaces: raw-colour and logical-layout rules.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "stylelint-plugin-logical-css": "2.1.0"
+  },
+  "peerDependencies": {
+    "stylelint": "^17.15.0"
+  },
+  "devDependencies": {
+    "@ralysa/eslint-config": "workspace:*",
+    "@ralysa/tsconfig": "workspace:*",
+    "@types/node": "catalog:",
+    "eslint": "catalog:",
+    "stylelint": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "ralysa": {
+    "kind": "tooling",
+    "shipped": false,
+    "ui": false,
+    "artefacts": []
+  }
+}

@@ -1,0 +1,7 @@
+{
+  "$description": "Native-speaker review status of every secondary-locale string (F-001 design §7.4.3, OQ-D8). check-i18n fails if a key is missing here. Use \"needs-native-review\" for placeholder or machine-assisted text, and { \"reviewer\": \"<name>\", \"date\": \"YYYY-MM-DD\" } once a native speaker has approved it. Language names are endonyms: each language is named in its own script in every locale.",
+  "ar": {
+    "ui:locale.name.ar": "needs-native-review",
+    "ui:locale.name.en": "needs-native-review"
+  }
+}

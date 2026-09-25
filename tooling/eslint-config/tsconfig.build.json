@@ -8,9 +8,12 @@
   "include": [
     "base.js",
     "boundaries.js",
+    "css-values.js",
     "index.js",
     "isomorphic.js",
     "react-ui.js",
+    "rules",
+    "tailwind.js",
     "tests.js",
     "types"
   ]

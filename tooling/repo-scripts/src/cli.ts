@@ -7,7 +7,9 @@
 //   ralysa-repo check-workspaces         workspace contract, scripts, lifecycle/specifier/Python rules
 //   ralysa-repo check-tsrefs             tsconfig project references
 //   ralysa-repo check-turbo-config       remote cache off, globalDependencies, uncached checks
-//   ralysa-repo check-banned-deps        banned packages in the lockfile graph (SR-03, ADR-0012)
+//   ralysa-repo check-i18n               i18n catalogs: parity, plurals, grammar, native review
+//   ralysa-repo check-ui-lint            UI workspaces run eslint (react-ui) and stylelint
+//   ralysa-repo check-banned-deps       banned packages in the lockfile graph (SR-03, ADR-0012)
 //   ralysa-repo check-imports            dependency-cruiser import boundaries (.dependency-cruiser.cjs)
 //   ralysa-repo check-gitleaks-config    the two gitleaks configs (no artefact allow-list, same rules)
 //   ralysa-repo check-ci-invariants      packageManager hash, fetch-depth, gitleaks --config, cancel-in-progress
@@ -20,8 +22,10 @@ import { appendFileSync } from 'node:fs';
 import { checkBannedDeps } from './check-banned-deps.ts';
 import { checkCiInvariantsFiles } from './check-ci-invariants.ts';
 import { checkGitleaksConfigFiles } from './check-gitleaks-config.ts';
-import { checkProviderHosts, checkProviderHostsInArtefacts } from './check-provider-hosts.ts';
+import { checkI18n } from './check-i18n.ts';
 import { checkImports } from './check-imports.ts';
+import { checkProviderHosts, checkProviderHostsInArtefacts } from './check-provider-hosts.ts';
+import { checkUiLint } from './check-ui-lint.ts';
 import { checkTsrefs } from './check-tsrefs.ts';
 import { checkConfigGate } from './config-gate.ts';
 import { checkTurboConfigFile } from './check-turbo-config.ts';
@@ -45,6 +49,16 @@ const REPO_CHECKS: Record<string, Check> = {
   'check-gitleaks-config': (root) => checkGitleaksConfigFiles(root),
   'check-ci-invariants': (root) => checkCiInvariantsFiles(root),
   'check-provider-hosts': (root) => checkProviderHosts(root),
+  'check-ui-lint': (root) => checkUiLint({ root }),
+  'check-i18n': (root) => {
+    const { findings, warnings, needsReview } = checkI18n({ root });
+    for (const warning of warnings)
+      console.warn(`  ! [${warning.rule}] ${warning.path}: ${warning.message}`);
+    for (const [dir, count] of Object.entries(needsReview)) {
+      console.log(`  i ${dir}: ${String(count)} string(s) marked needs-native-review (OQ-D8)`);
+    }
+    return findings;
+  },
 };
 
 function report(name: string, findings: Finding[]): boolean {

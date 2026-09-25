@@ -57,7 +57,7 @@ export function boundaryRules(extra = {}) {
  * @param {string} dir
  * @returns {string | undefined}
  */
-function workspaceOf(dir) {
+export function workspaceOf(dir) {
   for (let current = dir; ; current = dirname(current)) {
     if (existsSync(join(current, 'pnpm-workspace.yaml'))) {
       return relative(current, dir).split(sep).join('/');
