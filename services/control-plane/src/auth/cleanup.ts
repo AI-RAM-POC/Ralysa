@@ -7,7 +7,8 @@
 //    and `auth.sign_in failure code_not_redeemed` is written for it (D-38).
 // 2. Expired rows are deleted: client-assertion and IdP-token replay keys at expiry,
 //    idp_auth_request and authorization-code tombstones one hour after expiry [SEC-F002-20].
-// 3. Ended sessions (revoked, or past their absolute expiry) are purged 30 days after they end,
+// 3. Ended sessions are purged 30 days after they end (revoked_at; else the earlier of the last
+//    refresh token's idle expiry and the absolute expiry),
 //    together with their refresh tokens. Tokens go with their session, not one by one, because
 //    refresh_token.parent_id chains a family and a token can't outlive its parent row.
 //
@@ -19,7 +20,7 @@ import type { AuditWriter } from '../audit/writer.js';
 import { withOrg } from '../db/kysely.js';
 import type { Database } from '../db/types.js';
 import { authEvent } from './audit-events.js';
-import { bumpEpoch } from './sessions.js';
+import { bumpEpoch, limitRevocationTransaction } from './sessions.js';
 
 export const CLEANUP_INTERVAL_MS = 60_000;
 export const CLEANUP_BATCH = 500;
@@ -54,6 +55,7 @@ export async function runCleanup(
 
   // 1. Pending sessions whose code expired unused.
   const abandoned = await withOrg(db, orgId, async (trx) => {
+    await limitRevocationTransaction(trx);
     const rows = await trx
       .updateTable('cp.auth_session as s')
       .set({
@@ -64,12 +66,18 @@ export async function runCleanup(
       .from('cp.app_user as u')
       .whereRef('u.id', '=', 's.user_id')
       .where('s.status', '=', 'pending')
+      // Only codes whose session is still pending, oldest first: a code already handled keeps
+      // used_at null for another hour, and picking it again would starve newer ones (review of
+      // #26, B3).
       .where('s.id', 'in', (eb) =>
         eb
-          .selectFrom('cp.authorization_code')
-          .select('session_id')
-          .where('used_at', 'is', null)
-          .where(sql<boolean>`expires_at <= clock_timestamp()`)
+          .selectFrom('cp.authorization_code as c')
+          .innerJoin('cp.auth_session as p', 'p.id', 'c.session_id')
+          .select('c.session_id')
+          .where('c.used_at', 'is', null)
+          .where('p.status', '=', 'pending')
+          .where(sql<boolean>`c.expires_at <= clock_timestamp()`)
+          .orderBy('c.expires_at')
           .limit(batch),
       )
       .returning(['s.id as sid', 's.flow', 'u.id as userId', 'u.idp_subject as idpSubject'])
@@ -148,16 +156,16 @@ export async function runCleanup(
   // 3. Sessions that ended more than 30 days ago, with their refresh tokens and codes.
   const purged = await withOrg(db, orgId, async (trx) => {
     const ended = await trx
-      .selectFrom('cp.auth_session')
-      .select('id')
-      .where((eb) =>
-        eb.or([
-          eb.and([
-            eb('status', '=', 'revoked'),
-            sql<boolean>`revoked_at + make_interval(days => ${SESSION_RETENTION_DAYS}) <= clock_timestamp()`,
-          ]),
-          sql<boolean>`absolute_expires_at + make_interval(days => ${SESSION_RETENTION_DAYS}) <= clock_timestamp()`,
-        ]),
+      .selectFrom('cp.auth_session as s')
+      .select('s.id')
+      // A session ends when it is revoked, or when its last refresh token (idle) or its absolute
+      // lifetime runs out, whichever is first (review of #26, item 4).
+      .where(
+        sql<boolean>`case when s.status = 'revoked' then s.revoked_at
+          else least(s.absolute_expires_at,
+            coalesce((select max(t.expires_at) from cp.refresh_token t where t.session_id = s.id),
+                     s.absolute_expires_at))
+          end + make_interval(days => ${SESSION_RETENTION_DAYS}) <= clock_timestamp()`,
       )
       .limit(batch)
       .forUpdate()

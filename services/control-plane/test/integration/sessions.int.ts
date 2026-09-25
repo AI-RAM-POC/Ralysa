@@ -61,7 +61,6 @@ const config = serveConfig({
 });
 const ORG = config.org.id;
 const TOKEN_ENDPOINT = `${config.public_base_url}/oauth2/token`;
-const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const utf8 = (text: string) => new TextEncoder().encode(text);
 const b64u = (bytes: Uint8Array | string) =>
   Buffer.from(typeof bytes === 'string' ? utf8(bytes) : bytes).toString('base64url');
@@ -73,7 +72,56 @@ describe.skipIf(stack === undefined)('sessions and grants (F-002-T08)', () => {
   let app: FastifyInstance;
   const rejected: EmittedRejection[] = [];
   let directoryAnswer: DirectoryCheck;
-  const directory: IdpDirectory = { check: () => Promise.resolve(directoryAnswer) };
+  // The fake directory can hold callers at a gate, so tests can line up concurrent requests.
+  let directoryGate: { arrive: () => Promise<void> } | undefined;
+  const directory: IdpDirectory = {
+    check: async () => {
+      await directoryGate?.arrive();
+      return directoryAnswer;
+    },
+  };
+  /** Opens once `parties` callers have arrived. */
+  const barrier = (parties: number) => {
+    let arrived = 0;
+    let open = (): void => undefined;
+    const opened = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    return {
+      arrive: () => {
+        arrived++;
+        if (arrived >= parties) open();
+        return opened;
+      },
+    };
+  };
+  /** Holds every caller until `open()`; `arrived` resolves when the first one is waiting. */
+  const latch = () => {
+    let open = (): void => undefined;
+    let signal = (): void => undefined;
+    const opened = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const arrived = new Promise<void>((resolve) => {
+      signal = resolve;
+    });
+    return {
+      arrive: () => {
+        signal();
+        return opened;
+      },
+      arrived,
+      open: () => {
+        open();
+      },
+    };
+  };
+  // The app's cache clock: tests step it past the feed's 1 s cache instead of sleeping.
+  let clockOffset = 0;
+  const advance = (ms: number) => {
+    clockOffset += ms;
+  };
+  let signing: Awaited<ReturnType<typeof fakeKeys>>;
   const writerDb = async () => createDb<Database>(await t().pool('audit_writer', 2));
   const t = (): TestDatabase => {
     if (db === undefined) throw new Error('beforeAll did not create the database');
@@ -170,6 +218,8 @@ describe.skipIf(stack === undefined)('sessions and grants (F-002-T08)', () => {
       version?: number;
       aud?: string;
       jti?: string;
+      header?: Record<string, unknown>;
+      claims?: Record<string, unknown>;
     } = {},
   ) => {
     const name = options.as ?? svcA;
@@ -187,7 +237,9 @@ describe.skipIf(stack === undefined)('sessions and grants (F-002-T08)', () => {
       exp: now + 50,
       jti: options.jti ?? uuidv7(),
     };
-    const input = `${b64u(JSON.stringify(header))}.${b64u(JSON.stringify(payload))}`;
+    const input = `${b64u(JSON.stringify({ ...header, ...options.header }))}.${b64u(
+      JSON.stringify({ ...payload, ...options.claims }),
+    )}`;
     const signature = await custody.sign(
       `ralysa-svc-${options.signWith ?? name}`,
       options.version ?? 1,
@@ -195,11 +247,12 @@ describe.skipIf(stack === undefined)('sessions and grants (F-002-T08)', () => {
     );
     return `${input}.${b64u(signature)}`;
   };
-  const clientCredentials = async (clientAssertion: string) =>
+  const clientCredentials = async (clientAssertion: string, extra: Record<string, string> = {}) =>
     form('/oauth2/token', {
       grant_type: 'client_credentials',
       client_assertion_type: JWT_BEARER_ASSERTION_TYPE,
       client_assertion: clientAssertion,
+      ...extra,
     });
   const serviceToken = async () => {
     const reply = await clientCredentials(await assertion());
@@ -231,14 +284,16 @@ describe.skipIf(stack === undefined)('sessions and grants (F-002-T08)', () => {
     cpDb = createDb<Database>(await db.pool('cp_app', 6));
     await ensureOrganization(cpDb, config);
     const writer = createAuditWriter({ db: await writerDb() });
+    signing = await fakeKeys();
     app = await buildApp({
       config,
-      keys: (await fakeKeys()).keys,
+      keys: signing.keys,
       rts: {
         db: cpDb,
         custody,
         directory,
         writer,
+        now: () => Date.now() + clockOffset,
         rejections: createRejectionAggregator({ emit: (r) => rejected.push(r), perKeyLimit: 1000 }),
       },
       rateLimiter: createRateLimiter({ perIpPerMinute: 10_000, globalPerMinute: 10_000 }),
@@ -247,6 +302,7 @@ describe.skipIf(stack === undefined)('sessions and grants (F-002-T08)', () => {
   }, 60_000);
 
   beforeEach(() => {
+    directoryGate = undefined;
     directoryAnswer = {
       kind: 'ok',
       inAccessGroup: true,
@@ -379,7 +435,7 @@ describe.skipIf(stack === undefined)('sessions and grants (F-002-T08)', () => {
 
   it('the feed cursor lags issued_at, so a revocation that commits after a poll is still delivered (SEC-F002-18)', async () => {
     const svc = await serviceToken();
-    await sleep(1_100);
+    advance(1_100);
     const first = await feed(svc);
     expect(Date.parse(first.issued_at) - Date.parse(first.cursor)).toBe(60_000);
     // A revocation stamped (revoked_at) just before that poll read, committed just after it.
@@ -424,6 +480,8 @@ describe.skipIf(stack === undefined)('sessions and grants (F-002-T08)', () => {
   it('TC-F-002-25: two concurrent refreshes of one token → exactly one succeeds; the loser gets invalid_grant (SEC-F002-17)', async () => {
     const user = await seedUser();
     const { sid, token } = await seedSession(user.id);
+    // Both requests pass the lookup before either rotates: the loser loses the guard itself.
+    directoryGate = barrier(2);
     const replies = await Promise.all([refresh(token), refresh(token)]);
     const codes = replies.map((r) => r.statusCode).sort();
     expect(codes).toEqual([200, 400]);
@@ -515,7 +573,7 @@ describe.skipIf(stack === undefined)('sessions and grants (F-002-T08)', () => {
     );
     expect(rows[0]?.status).toBe('disabled');
     expect(rows[0]?.skew).toBeGreaterThan(20); // DB clock + 30 s [SEC-F002-18 c]
-    await sleep(1_100); // the feed caches a response for at most 1 s
+    advance(1_100); // past the feed's 1 s response cache
     const state = await feed(svc);
     expect(state.users_revoked_before.map((u) => u.user_id)).toContain(user.id);
     expect(await events({ user: user.id, action: 'auth.session.revoked' })).toEqual([
@@ -535,7 +593,7 @@ describe.skipIf(stack === undefined)('sessions and grants (F-002-T08)', () => {
     expect((await refresh(t2)).json()).toMatchObject({
       ralysa_error: { code: 'not_in_access_group' },
     });
-    await sleep(1_100); // the feed caches a response for at most 1 s
+    advance(1_100); // past the feed's 1 s response cache
     expect((await feed(svc)).revoked_sessions.map((s) => s.sid)).toContain(sid);
 
     const third = await seedUser();
@@ -716,6 +774,148 @@ describe.skipIf(stack === undefined)('sessions and grants (F-002-T08)', () => {
       headers: bearer(svc),
     });
     expect(bad.statusCode).toBe(400);
+  });
+
+  // --- review of #26 -------------------------------------------------------------------------
+  it('B1: a signing failure answers 503 and consumes nothing; the same token then refreshes', async () => {
+    const user = await seedUser();
+    const { sid, token } = await seedSession(user.id);
+    signing.state.violation = 'test: signing unavailable';
+    try {
+      const failed = await refresh(token);
+      expect(failed.statusCode).toBe(503);
+      expect(failed.json()).toEqual({ error: 'temporarily_unavailable' });
+    } finally {
+      signing.state.violation = undefined;
+    }
+    const retried = await refresh(token);
+    expect(retried.statusCode).toBe(200);
+    expect(await events({ sid, action: 'auth.token.reuse_detected' })).toEqual([]);
+  });
+
+  it('a token revoked while its refresh is in flight is answered revoked, not reuse (review item 1)', async () => {
+    const user = await seedUser();
+    const { sid, token } = await seedSession(user.id);
+    const gate = latch();
+    directoryGate = gate;
+    const inFlight = refresh(token);
+    await gate.arrived;
+    expect((await revoke(token)).statusCode).toBe(200);
+    gate.open();
+    const reply = await inFlight;
+    expect(reply.json()).toMatchObject({
+      error: 'invalid_grant',
+      ralysa_error: { code: 'revoked' },
+    });
+    expect(await events({ sid, action: 'auth.token.reuse_detected' })).toEqual([]);
+  });
+
+  it('presenting a rotated token after sign-out is still reuse, with no second session.revoked', async () => {
+    const user = await seedUser();
+    const { sid, token: a } = await seedSession(user.id);
+    const b = (await refresh(a)).json<{ refresh_token: string }>().refresh_token;
+    expect((await revoke(b)).statusCode).toBe(200);
+    expect((await refresh(a)).json()).toMatchObject({ ralysa_error: { code: 'reuse_detected' } });
+    expect(await events({ sid, action: 'auth.token.reuse_detected' })).toHaveLength(1);
+    expect(await events({ sid, action: 'auth.session.revoked' })).toEqual([]);
+  });
+
+  it("/v1/me refuses an access token issued before the user's revoked_before", async () => {
+    const user = await seedUser();
+    const { token } = await seedSession(user.id);
+    const access = (await refresh(token)).json<{ access_token: string }>().access_token;
+    expect((await app.inject({ url: '/v1/me', headers: bearer(access) })).statusCode).toBe(200);
+    await t().superuser.query(
+      `UPDATE cp.app_user SET revoked_before = now() + interval '30 seconds' WHERE id = $1`,
+      [user.id],
+    );
+    rejected.length = 0;
+    expect((await app.inject({ url: '/v1/me', headers: bearer(access) })).statusCode).toBe(401);
+    expect(rejected.map((r) => r.reason)).toEqual(['user_revoked']);
+  });
+
+  it('client assertions: wrong alg, forbidden headers, unknown client, client_id mismatch, future iat and long lifetimes are refused', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const cases: [string, Promise<string>, string, Record<string, string>?][] = [
+      ['wrong alg', assertion({ header: { alg: 'ES384' } }), 'wrong_alg'],
+      [
+        'jku header',
+        assertion({ header: { jku: 'https://evil.example/jwks' } }),
+        'forbidden_header',
+      ],
+      [
+        'unknown client',
+        assertion({ claims: { iss: 'svc:nobody', sub: 'svc:nobody' } }),
+        'unknown_issuer',
+      ],
+      ['client_id mismatch', assertion(), 'malformed', { client_id: `svc:${svcB}` }],
+      ['future iat', assertion({ claims: { iat: now + 120, exp: now + 150 } }), 'issued_in_future'],
+      ['long lifetime', assertion({ claims: { iat: now - 30, exp: now + 50 } }), 'malformed'],
+      ['exp too far ahead', assertion({ claims: { iat: now + 20, exp: now + 75 } }), 'malformed'],
+    ];
+    for (const [name, pending, reason, extra] of cases) {
+      rejected.length = 0;
+      const reply = await clientCredentials(await pending, extra);
+      expect({ name, status: reply.statusCode, reasons: rejected.map((r) => r.reason) }).toEqual({
+        name,
+        status: 401,
+        reasons: [reason],
+      });
+    }
+  });
+
+  it('B2: the replay row lives until exp + skew + 60 s, from the assertion, not the DB clock', async () => {
+    const now = Math.floor(Date.now() / 1000);
+    const jti = uuidv7();
+    const reply = await clientCredentials(
+      await assertion({ jti, claims: { iat: now, exp: now + 40 } }),
+    );
+    expect(reply.statusCode).toBe(200);
+    const { rows } = await t().superuser.query<{ expires: number }>(
+      `SELECT extract(epoch FROM expires_at)::int AS expires FROM cp.client_assertion_replay WHERE jti_hash = $1`,
+      [createHash('sha256').update(`svc:${svcA}\u0000${jti}`).digest()],
+    );
+    expect(rows[0]?.expires).toBe(now + 40 + 30 + 60);
+  });
+
+  it('B3: cleanup never starves a newer abandoned code behind handled ones (batch of 1)', async () => {
+    const user = await seedUser();
+    const sids: string[] = [];
+    for (const ageS of [120, 60]) {
+      const { sid } = await seedSession(user.id, { status: 'pending' });
+      sids.push(sid);
+      await withOrg(cpDb, ORG, (trx) =>
+        trx
+          .insertInto('cp.authorization_code')
+          .values({
+            code_hash: tokenHash(newAuthorizationCode()),
+            org_id: ORG,
+            client_id: CLI_CLIENT_ID,
+            redirect_uri: 'http://127.0.0.1:49152/callback',
+            code_challenge: 'E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM',
+            session_id: sid,
+            callback_ip: '127.0.0.1',
+            expires_at: new Date(Date.now() - ageS * 1000),
+            used_at: null,
+          })
+          .execute(),
+      );
+    }
+    const deps = {
+      db: cpDb,
+      orgId: ORG,
+      writer: createAuditWriter({ db: await writerDb() }),
+      policyVersion: policyVersion(config.access),
+    };
+    // Other tests may have left abandoned codes too; run until these two are handled.
+    for (let i = 0; i < 10; i++) {
+      if ((await runCleanup(deps, { batch: 1 })).codesNotRedeemed === 0) break;
+    }
+    for (const sid of sids) {
+      expect(await events({ sid, action: 'auth.sign_in' })).toEqual([
+        expect.objectContaining({ reason_code: 'code_not_redeemed' }),
+      ]);
+    }
   });
 
   // --- cleanup -------------------------------------------------------------------------------

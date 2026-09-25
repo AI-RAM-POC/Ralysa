@@ -76,6 +76,7 @@ export async function readGovernanceState(
 
 export function registerGovernanceFeed(app: FastifyInstance, deps: RtsDeps): void {
   const cache = new Map<string, { at: number; state: GovernanceState }>();
+  const now = deps.now ?? (() => Date.now());
   app.get(
     ROUTES.governance.url,
     { schema: { response: { 200: ROUTES.governance.responses[200].schema } } },
@@ -91,10 +92,10 @@ export function registerGovernanceFeed(app: FastifyInstance, deps: RtsDeps): voi
       }
       const key = since?.toISOString() ?? '';
       const hit = cache.get(key);
-      if (hit !== undefined && Date.now() - hit.at <= 1_000) return hit.state;
+      if (hit !== undefined && now() - hit.at <= 1_000) return hit.state;
       const state = await readGovernanceState(deps.db, deps.config.org.id, since);
       if (cache.size > 1_000) cache.clear();
-      cache.set(key, { at: Date.now(), state });
+      cache.set(key, { at: now(), state });
       return state;
     },
   );

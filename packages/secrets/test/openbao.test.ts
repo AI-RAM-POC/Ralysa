@@ -280,6 +280,7 @@ describe('Transit', () => {
     allow_plaintext_backup: false,
     latest_version: 2,
     min_available_version: 0,
+    min_decryption_version: 1,
     keys: {
       '1': {
         public_key: await pemOfNewKey(),
@@ -315,6 +316,17 @@ describe('Transit', () => {
     const { fetch } = fakeFetch(() => ({ status: 200, body: { data } }));
     const { keys } = createOpenBao({ addr: ADDR, env: 'test', auth: TOKEN, fetch });
     expect((await keys.describe('k')).versions.map((v) => v.version)).toEqual([2]);
+  });
+
+  it('describe reports min_decryption_version and refuses a reply without it', async () => {
+    const data = await keyReply({ min_decryption_version: 2 });
+    const { fetch } = fakeFetch(() => ({ status: 200, body: { data } }));
+    const { keys } = createOpenBao({ addr: ADDR, env: 'test', auth: TOKEN, fetch });
+    expect((await keys.describe('k')).minDecryptionVersion).toBe(2);
+    const missing = await keyReply({ min_decryption_version: undefined });
+    const other = fakeFetch(() => ({ status: 200, body: { data: missing } }));
+    const bao = createOpenBao({ addr: ADDR, env: 'test', auth: TOKEN, fetch: other.fetch });
+    await expect(bao.keys.describe('k')).rejects.toThrow(/missing versions/);
   });
 
   it.each([

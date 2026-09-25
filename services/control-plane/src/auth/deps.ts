@@ -20,6 +20,8 @@ export interface RtsServices {
   directory: IdpDirectory;
   writer: AuditWriter;
   rejections: RejectionAggregator;
+  /** Process clock for in-memory caches (tests advance it); timestamps in data use the DB clock. */
+  now?: () => number;
 }
 
 export interface RtsDeps {
@@ -35,6 +37,7 @@ export interface RtsDeps {
   verifier: LocalVerifier;
   rejections: RejectionAggregator;
   policyVersion: string;
+  now?: () => number;
 }
 
 export function assembleRtsDeps(

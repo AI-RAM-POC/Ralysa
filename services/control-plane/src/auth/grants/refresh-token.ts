@@ -8,11 +8,13 @@
 //    temporarily_unavailable and the token is NOT consumed. Disabled or deleted, Entra sessions
 //    revoked after this session began, or in no configured group → the session (and for a
 //    disabled user, the user) is revoked and the refresh denied.
-// 3. Rotate with the one-statement guard. Losing the guard means another refresher presented
-//    the same token first: under the one-refresher-per-device contract that is reuse too, so the
-//    family is revoked and the loser gets invalid_grant [SEC-F002-17].
-// 4. Issue the new refresh token and an access token for the requested audience. Audiences
-//    other than control-plane require the session role `user` (§6.1).
+// 3. Mint the access token for the requested audience (audiences other than control-plane need
+//    the session role `user`, §6.1). Signing goes through OpenBao; if it fails, nothing has been
+//    consumed and the client retries with the same token.
+// 4. Rotate with the one-statement guard and issue the next refresh token. Losing the guard
+//    means the token changed since step 1: rotated by another refresher (reuse under the
+//    one-refresher-per-device contract, so the family is revoked and the loser gets
+//    invalid_grant [SEC-F002-17]), or revoked or expired meanwhile (answered as such).
 import {
   CLI_CLIENT_ID,
   type RefreshReason,
@@ -112,33 +114,40 @@ export async function refreshGrant(
   };
 
   const reuse = async (view: RefreshTokenView): Promise<never> => {
-    const revokedCount = await withOrg(deps.db, orgId, async (trx) => {
+    const revoked = await withOrg(deps.db, orgId, async (trx) => {
       const count = await trx
         .selectFrom('cp.refresh_token')
         .select(sql<number>`count(*)::int`.as('n'))
         .where('session_id', '=', view.sessionId)
         .where('status', '=', 'active')
         .executeTakeFirst();
-      await revokeSession(trx, view.sessionId, 'reuse_detected');
-      return count?.n ?? 0;
+      const changed = await revokeSession(trx, view.sessionId, 'reuse_detected');
+      return { count: count?.n ?? 0, changed };
     });
+    const user = { id: view.userId, idpSubject: view.idpSubject };
     await deps.writer.writeOrSpool(orgId, [
       authEvent({
         action: 'auth.token.reuse_detected',
         outcome: 'denied',
         traceId: ctx.traceId,
-        user: { id: view.userId, idpSubject: view.idpSubject },
+        user,
         sessionId: view.sessionId,
-        details: { sid: view.sessionId, revoked_count: revokedCount, token_kind: 'refresh' },
+        details: { sid: view.sessionId, revoked_count: revoked.count, token_kind: 'refresh' },
       }),
-      authEvent({
-        action: 'auth.session.revoked',
-        outcome: 'success',
-        traceId: ctx.traceId,
-        user: { id: view.userId, idpSubject: view.idpSubject },
-        sessionId: view.sessionId,
-        details: { sid: view.sessionId, revoked_by: 'system', cause: 'reuse_detected' },
-      }),
+      // Only when this call revoked the session (a replay against an already-revoked family
+      // changes nothing; review of #26).
+      ...(revoked.changed
+        ? [
+            authEvent({
+              action: 'auth.session.revoked',
+              outcome: 'success',
+              traceId: ctx.traceId,
+              user,
+              sessionId: view.sessionId,
+              details: { sid: view.sessionId, revoked_by: 'system', cause: 'reuse_detected' },
+            }),
+          ]
+        : []),
     ]);
     await record(view, 'reuse_detected');
     throw denied('reuse_detected');
@@ -175,8 +184,13 @@ export async function refreshGrant(
   // A user already disabled here is refused without asking the IdP (an outage can't turn a
   // known-disabled user into temporarily_unavailable).
   if (view.userStatus === 'disabled') {
-    await withOrg(deps.db, orgId, (trx) => revokeUser(trx, view.userId, 'user_disabled'));
-    await record(view, 'user_disabled', { directory: 'local' }, 'user_disabled');
+    const n = await withOrg(deps.db, orgId, (trx) => revokeUser(trx, view.userId, 'user_disabled'));
+    await record(
+      view,
+      'user_disabled',
+      { directory: 'local' },
+      n > 0 ? 'user_disabled' : undefined,
+    );
     throw denied('user_disabled');
   }
 
@@ -190,15 +204,22 @@ export async function refreshGrant(
     throw denied('idp_unavailable');
   }
   if (check.kind === 'disabled' || check.kind === 'deleted') {
-    await withOrg(deps.db, orgId, (trx) =>
+    const n = await withOrg(deps.db, orgId, (trx) =>
       revokeUser(trx, view.userId, 'user_disabled', { disable: true }),
     );
-    await record(view, 'user_disabled', { directory: check.kind }, 'user_disabled');
+    await record(
+      view,
+      'user_disabled',
+      { directory: check.kind },
+      n > 0 ? 'user_disabled' : undefined,
+    );
     throw denied('user_disabled');
   }
   if (check.sessionsValidFrom !== null && check.sessionsValidFrom > view.sessionCreatedAt) {
-    await withOrg(deps.db, orgId, (trx) => revokeUser(trx, view.userId, 'idp_sessions_revoked'));
-    await record(view, 'idp_session_revoked', {}, 'idp_sessions_revoked');
+    const n = await withOrg(deps.db, orgId, (trx) =>
+      revokeUser(trx, view.userId, 'idp_sessions_revoked'),
+    );
+    await record(view, 'idp_session_revoked', {}, n > 0 ? 'idp_sessions_revoked' : undefined);
     throw denied('idp_session_revoked');
   }
   const roles: SessionRole[] = view.roles.filter(
@@ -206,10 +227,10 @@ export async function refreshGrant(
       (role === 'user' && check.inAccessGroup) || (role === 'platform_admin' && check.inAdminGroup),
   );
   if (roles.length === 0) {
-    await withOrg(deps.db, orgId, (trx) =>
+    const changed = await withOrg(deps.db, orgId, (trx) =>
       revokeSession(trx, view.sessionId, 'not_in_access_group'),
     );
-    await record(view, 'not_in_access_group', {}, 'not_in_access_group');
+    await record(view, 'not_in_access_group', {}, changed ? 'not_in_access_group' : undefined);
     throw denied('not_in_access_group');
   }
   if (audience !== 'control-plane' && !roles.includes('user')) {
@@ -219,24 +240,9 @@ export async function refreshGrant(
     });
   }
 
-  // 3. Rotate (one-statement guard) and 4. issue.
-  const issued = await withOrg(deps.db, orgId, async (trx) => {
-    if (!(await markRotated(trx, view.tokenId))) return undefined;
-    const next = await issueRefreshToken(trx, {
-      orgId,
-      sessionId: view.sessionId,
-      parentId: view.tokenId,
-      idleSeconds: deps.config.tokens.refresh_idle_s,
-    });
-    await trx
-      .updateTable('cp.auth_session')
-      .set({ last_refresh_at: sql<Date>`clock_timestamp()`, roles })
-      .where('id', '=', view.sessionId)
-      .execute();
-    return next;
-  });
-  if (issued === undefined) return reuse(view);
-
+  // 3. Mint first: signing goes through OpenBao and can fail, and a failure must leave the
+  //    presented token unconsumed so the client can retry (review of #26, B1). A token minted
+  //    for a request that then loses the rotation guard is never returned.
   const now = Math.floor(Date.now() / 1000);
   const jti = uuidv7();
   const accessToken = await mintAccessToken(deps.keys, {
@@ -256,6 +262,41 @@ export async function refreshGrant(
     exp: now + deps.config.tokens.access_ttl_s,
     jti,
   });
+
+  // 4. Rotate (one-statement guard) and issue the next refresh token. Losing the guard means
+  //    something changed since step 1: re-read the token in the same transaction and answer by
+  //    what it is now (review of #26, item 1).
+  type Rotation =
+    { next: { id: string; token: string } } | { lost: 'rotated' | 'revoked' | 'expired' };
+  const outcome = await withOrg(deps.db, orgId, async (trx): Promise<Rotation> => {
+    if (!(await markRotated(trx, view.tokenId))) {
+      const current = await findRefreshToken(trx, request.refresh_token);
+      if (current === undefined || current.tokenStatus === 'rotated') return { lost: 'rotated' };
+      if (current.tokenStatus === 'revoked' || current.sessionStatus !== 'active') {
+        return { lost: 'revoked' };
+      }
+      return { lost: 'expired' };
+    }
+    const next = await issueRefreshToken(trx, {
+      orgId,
+      sessionId: view.sessionId,
+      parentId: view.tokenId,
+      idleSeconds: deps.config.tokens.refresh_idle_s,
+    });
+    await trx
+      .updateTable('cp.auth_session')
+      .set({ last_refresh_at: sql<Date>`clock_timestamp()`, roles })
+      .where('id', '=', view.sessionId)
+      .execute();
+    return { next };
+  });
+  if ('lost' in outcome) {
+    if (outcome.lost === 'rotated') return reuse(view);
+    await record(view, outcome.lost);
+    throw denied(outcome.lost);
+  }
+  const issued = outcome.next;
+
   // Non-blocking: a failed write is spooled, the token still goes out (§3.5).
   void deps.writer
     .writeOrSpool(orgId, [

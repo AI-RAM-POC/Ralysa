@@ -39,6 +39,11 @@ export interface PublicKeyVersion {
 export interface KeyDescription {
   latestVersion: number;
   minAvailableVersion: number;
+  /**
+   * Transit `min_decryption_version`: versions below it no longer verify at Transit. Verifiers
+   * outside Transit treat them as retired too (F-002 review of #26).
+   */
+  minDecryptionVersion: number;
   exportable: false;
   allowPlaintextBackup: false;
   /** Versions from `minAvailableVersion` (or 1) to `latestVersion`, ascending. */

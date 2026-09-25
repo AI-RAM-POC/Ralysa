@@ -17,6 +17,22 @@ import { uuidv7 } from '@ralysa/protocol/common';
 type Trx = Transaction<Database>;
 export type SessionRole = 'user' | 'platform_admin';
 
+/**
+ * The governance feed's cursor lags its read time by CURSOR_OVERLAP_S (60 s) so a revocation
+ * stamped before a poll but committed after it is still delivered. That holds only while no
+ * revocation transaction stays open longer than the overlap, so every revocation statement first
+ * caps its transaction at REVOCATION_TX_TIMEOUT_S (Postgres 17 `transaction_timeout`; the timer
+ * starts when it is set, so it bounds stamp-to-commit). It is set once per transaction: later
+ * revocations in the same transaction don't restart it. A transaction that runs out is terminated
+ * and nothing is revoked; the caller answers an error and the client retries (review of #26).
+ */
+export const REVOCATION_TX_TIMEOUT_S = 15;
+
+export async function limitRevocationTransaction(trx: Trx): Promise<void> {
+  await sql`select set_config('transaction_timeout', ${`${String(REVOCATION_TX_TIMEOUT_S)}s`}, true)
+             where current_setting('transaction_timeout') in ('0', '0ms')`.execute(trx);
+}
+
 export async function bumpEpoch(trx: Trx): Promise<void> {
   await sql`select nextval('cp.governance_epoch_seq')`.execute(trx);
 }
@@ -142,6 +158,7 @@ export async function markRotated(trx: Trx, tokenId: string): Promise<boolean> {
 
 /** Revokes a session and all its refresh tokens. Returns whether it was active before. */
 export async function revokeSession(trx: Trx, sessionId: string, reason: string): Promise<boolean> {
+  await limitRevocationTransaction(trx);
   const changed = await trx
     .updateTable('cp.auth_session')
     .set({ status: 'revoked', revoked_at: sql<Date>`clock_timestamp()`, revoked_reason: reason })
@@ -169,6 +186,7 @@ export async function revokeUser(
   reason: string,
   options: { disable?: boolean } = {},
 ): Promise<number> {
+  await limitRevocationTransaction(trx);
   await trx
     .updateTable('cp.app_user')
     .set({

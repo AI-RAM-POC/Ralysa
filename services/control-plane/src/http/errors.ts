@@ -9,6 +9,7 @@ import {
 } from '@ralysa/protocol/common';
 import type { OAuthError } from '@ralysa/protocol/auth';
 import type { FastifyReply, FastifyRequest } from 'fastify';
+import { errorSummary } from './logging.js';
 
 const STATUS: Record<ErrorCode, number> = {
   invalid_request: 400,
@@ -130,7 +131,7 @@ export function handleError(
     }
     return sendProblem(reply, request, code);
   }
-  request.log.error({ err: error }, 'unhandled_error');
+  request.log.error({ error: errorSummary(error) }, 'unhandled_error');
   if (isOAuthRoute(request)) {
     return reply
       .status(503)

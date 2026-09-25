@@ -1,10 +1,17 @@
 // The client_credentials grant with RFC 7523 client assertions (F-002 design §3.2.7; AC-11;
 // SEC-F002-22). The service signs an assertion through its own Transit key; RTS verifies it
-// against the public key of that key version, but only versions OpenBao still lists as available
-// (non-retired, min_available_version), cached per version for at most 60 s. Checks: registered client,
-// iss = sub = client, aud = the token endpoint URL, exp at most 60 s ahead, a jti never seen
-// before (replay cache for 120 s). Then a 5-minute service token (sub = svc:<name>).
+// against the public key of that key version, but only versions OpenBao still treats as live
+// (at or above both min_available_version and min_decryption_version), cached per key for at most
+// 60 s. Checks: registered client, iss = sub = client, aud = the token endpoint URL, a lifetime
+// (exp - iat) of at most 60 s, exp at most 60 s ahead of our clock, iat not in the future, and a
+// jti never seen before. The replay row lives until the assertion can no longer be accepted on any
+// clock: exp + skew + a 60 s margin for clock drift between replicas and the database (review of
+// #26, B2). Then a 5-minute service token (sub = svc:<name>).
+//
+// A service key that violates custody (exportable or plaintext backup) verifies nothing, and
+// secret.custody_violation is recorded for it (review of #26).
 import { createHash } from 'node:crypto';
+import { CustodyViolationError } from '@ralysa/secrets';
 import {
   ClientCredentialsRequest,
   FORBIDDEN_JOSE_HEADERS,
@@ -21,6 +28,7 @@ import {
   jwtVerify,
 } from 'jose';
 import { sql } from 'kysely';
+import { systemEvent } from '../../audit/events.js';
 import { withOrg } from '../../db/kysely.js';
 import { OAuthProblem } from '../../http/errors.js';
 import { authEvent } from '../audit-events.js';
@@ -29,8 +37,10 @@ import type { RtsDeps } from '../deps.js';
 import { mintAccessToken } from '../tokens/mint.js';
 import type { GrantContext, TokenResult } from './refresh-token.js';
 
-const MAX_AHEAD_S = TOKEN_LIFETIMES.clientAssertionMaxSeconds;
+const MAX_LIFETIME_S = TOKEN_LIFETIMES.clientAssertionMaxSeconds;
 const skew = TOKEN_LIFETIMES.verifierClockSkewSeconds;
+/** How long past exp + skew a replay row is kept (clock drift between replicas and the DB). */
+export const REPLAY_MARGIN_S = 60;
 
 type Key = Awaited<ReturnType<typeof importJWK>>;
 
@@ -42,11 +52,14 @@ export const SERVICE_KEY_MISS_COOLDOWN_MS = 5_000;
 /**
  * Public keys per (transit key, version) [SEC-F002-22]. The whole list for a key is re-read from
  * OpenBao when it is older than SERVICE_KEY_CACHE_TTL_MS, or on an unknown version after the
- * cooldown. `describe` lists only versions from min_available_version, so a retired version is
- * refused at most one TTL after it is retired.
+ * cooldown. Versions below min_available_version (trimmed) or min_decryption_version (no longer
+ * verifying at Transit) are retired, so a retired version is refused at most one TTL after it is
+ * retired. A key that violates custody caches as "no versions" and is reported once per flag set.
  */
 export function createServiceKeyCache(
-  deps: Pick<RtsDeps, 'custody'>,
+  deps: Pick<RtsDeps, 'custody'> & {
+    onCustodyViolation?: (error: CustodyViolationError) => Promise<void>;
+  },
   options: { now?: () => number } = {},
 ) {
   const now = options.now ?? (() => Date.now());
@@ -58,16 +71,71 @@ export function createServiceKeyCache(
       age > SERVICE_KEY_CACHE_TTL_MS ||
       (entry?.versions.has(version) !== true && age > SERVICE_KEY_MISS_COOLDOWN_MS);
     if (stale) {
-      const described = await deps.custody.describe(transitKey);
       const versions = new Map<number, Key>();
-      for (const v of described.versions) {
-        versions.set(v.version, await importJWK({ ...v.jwk }, 'ES256'));
+      try {
+        const described = await deps.custody.describe(transitKey);
+        const from = Math.max(1, described.minAvailableVersion, described.minDecryptionVersion);
+        for (const v of described.versions) {
+          if (v.version >= from) versions.set(v.version, await importJWK({ ...v.jwk }, 'ES256'));
+        }
+      } catch (error) {
+        if (!(error instanceof CustodyViolationError)) throw error;
+        await deps.onCustodyViolation?.(error);
       }
       entry = { at: now(), versions };
       cache.set(transitKey, entry);
     }
     return entry?.versions.get(version);
   };
+}
+
+/** secret.custody_violation for a service assertion key, once per key and flag set until it lands. */
+export function serviceKeyViolationRecorder(deps: Pick<RtsDeps, 'writer' | 'config'>) {
+  const recorded = new Set<string>();
+  return async (error: CustodyViolationError): Promise<void> => {
+    const flag =
+      error.exportable && error.allowPlaintextBackup
+        ? 'exportable_and_plaintext_backup'
+        : error.exportable
+          ? 'exportable'
+          : 'allow_plaintext_backup';
+    const once = `${error.key}|${flag}`;
+    if (recorded.has(once)) return;
+    await deps.writer.writeOrSpool(deps.config.org.id, [
+      systemEvent({
+        action: 'secret.custody_violation',
+        outcome: 'error',
+        service: 'rts',
+        reasonCode: flag,
+        details: {
+          key: error.key,
+          flag,
+          exportable: error.exportable,
+          allow_plaintext_backup: error.allowPlaintextBackup,
+          key_replaced: false,
+          purpose: 'service_assertion',
+        },
+      }),
+    ]);
+    recorded.add(once);
+  };
+}
+
+/**
+ * The assertion's time rules, on the verifier's clock (seconds). jwtVerify has already checked
+ * exp and nbf with the skew; these bound how far ahead exp may be and how long the assertion
+ * lives, so a replay row outliving exp + skew covers every assertion accepted.
+ */
+export function assertionTimeProblem(
+  claims: { iat?: number | undefined; exp?: number | undefined },
+  nowS: number,
+): string | undefined {
+  const { iat, exp } = claims;
+  if (typeof iat !== 'number' || typeof exp !== 'number') return 'iat and exp required';
+  if (iat > nowS + skew) return 'iat in the future';
+  if (exp - iat > MAX_LIFETIME_S) return 'lifetime over 60 s';
+  if (exp > nowS + MAX_LIFETIME_S) return 'exp too far ahead';
+  return undefined;
 }
 
 class AssertionRejected extends Error {
@@ -132,20 +200,25 @@ export async function clientCredentialsGrant(
       }
       throw new AssertionRejected('malformed', 'claims');
     }
-    const now = Date.now() / 1000;
-    if ((payload.exp ?? 0) > now + MAX_AHEAD_S + skew)
-      throw new AssertionRejected('malformed', 'exp too far ahead');
-    if ((payload.iat ?? 0) > now + skew) throw new AssertionRejected('issued_in_future', 'iat');
+    const problem = assertionTimeProblem(payload, Date.now() / 1000);
+    if (problem !== undefined) {
+      throw new AssertionRejected(
+        problem === 'iat in the future' ? 'issued_in_future' : 'malformed',
+        problem,
+      );
+    }
     const jtiHash = createHash('sha256')
       .update(`${client.clientId}\u0000${String(payload.jti)}`)
       .digest();
+    const expS = payload.exp ?? 0;
     const fresh = await withOrg(deps.db, deps.config.org.id, (trx) =>
       trx
         .insertInto('cp.client_assertion_replay')
         .values({
           jti_hash: jtiHash,
           org_id: deps.config.org.id,
-          expires_at: sql<Date>`clock_timestamp() + interval '120 seconds'`,
+          // Until the assertion can't be accepted anywhere: exp + skew, plus the drift margin.
+          expires_at: sql<Date>`to_timestamp(${expS}) + make_interval(secs => ${skew + REPLAY_MARGIN_S})`,
         })
         .onConflict((oc) => oc.column('jti_hash').doNothing())
         .returning('jti_hash')

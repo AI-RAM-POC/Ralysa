@@ -14,7 +14,11 @@ import { ROUTES } from '../../http/contracts.js';
 import { registerFormParser } from '../../http/form.js';
 import { authEvent } from '../audit-events.js';
 import type { RtsDeps } from '../deps.js';
-import { clientCredentialsGrant, createServiceKeyCache } from '../grants/client-credentials.js';
+import {
+  clientCredentialsGrant,
+  createServiceKeyCache,
+  serviceKeyViolationRecorder,
+} from '../grants/client-credentials.js';
 import { type GrantContext, refreshGrant } from '../grants/refresh-token.js';
 import { findRefreshToken, revokeSession } from '../sessions.js';
 
@@ -41,7 +45,10 @@ function formBody(request: FastifyRequest): Record<string, string> {
 
 export function registerTokenRoutes(app: FastifyInstance, deps: RtsDeps): void {
   registerFormParser(app);
-  const keyFor = createServiceKeyCache(deps);
+  const keyFor = createServiceKeyCache({
+    custody: deps.custody,
+    onCustodyViolation: serviceKeyViolationRecorder(deps),
+  });
 
   app.post(ROUTES.token.url, async (request, reply) => {
     reply.header('cache-control', 'no-store').header('pragma', 'no-cache');

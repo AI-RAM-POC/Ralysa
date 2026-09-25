@@ -99,7 +99,11 @@ job exits non-zero, saying the migrations were applied but not recorded.
     the Desktop main process) refreshes. It hands access tokens to the local Agent Host through
     the `TokenProvider` over IPC. When two processes refresh the same token, exactly one gets new
     tokens and the other gets `invalid_grant` with `ralysa_error.code = reuse_detected`, and the
-    family is revoked, so the user signs in again.
+    family is revoked, so the user signs in again. The same happens when a refresh **response is
+    lost** (a network drop after RTS rotated the token) and the client retries with the old token:
+    that retry is reuse too. The refresher must treat a lost response as a sign-out, not retry it.
+    A refresh that fails **before** rotation (signing unavailable, IdP unreachable) answers `503
+    temporarily_unavailable` and consumes nothing, so that one is safe to retry.
   - Every refresh re-checks the user at the IdP directory. If the directory is unreachable, the
     answer is `503 temporarily_unavailable` and the token is **not** consumed. A disabled or
     deleted user, Entra sessions revoked after sign-in, or a user in no configured group is
@@ -110,9 +114,12 @@ job exits non-zero, saying the migrations were applied but not recorded.
     `invalid_scope`.
   - **Services** use `client_credentials` with an RFC 7523 assertion signed through their own
     Transit key (`kid` = `ralysa-svc-<name>.v<n>`, `aud` = `<public_base_url>/oauth2/token`,
-    `exp` at most 60 s ahead, a fresh `jti`). RTS verifies it only against versions OpenBao
-    still lists. It caches each key's list for 60 s, so a version retired with `trim` stops
-    verifying within a minute. An unknown version re-reads the list at most every 5 s. The
+    `exp - iat` at most 60 s, `exp` at most 60 s ahead of RTS's clock, a fresh `jti`, kept in the
+    replay table until `exp` + 30 s skew + 60 s drift margin). RTS verifies it only against
+    versions at or above both `min_available_version` and `min_decryption_version`. It caches
+    each key's list for 60 s, so a retired version stops verifying within a minute. An unknown
+    version re-reads the list at most every 5 s. A service key that is exportable or allows
+    plaintext backup verifies nothing, and `secret.custody_violation` is written for it. The
     answer is a 5-minute service token. A refused assertion is `401 invalid_client` and an
     aggregated `auth.token_rejected`.
   - No client secret exists: a `client_secret` parameter or `Authorization: Basic` is
@@ -121,14 +128,19 @@ job exits non-zero, saying the migrations were applied but not recorded.
     `cp.governance_epoch_seq`: it never decreases and advances with every revocation. A response
     is cached for at most 1 s. Without `since`, the feed covers the last 65 minutes (the maximum
     access-token TTL + 5 min). `cursor` lags `issued_at` by 60 s, so a revocation that commits
-    just after a poll is still delivered. PEPs de-duplicate the overlap.
+    just after a poll is still delivered. PEPs de-duplicate the overlap. **Invariant:** no
+    revocation transaction may stay open longer than that overlap, so each one caps itself with
+    Postgres `transaction_timeout` = 15 s from its first revocation statement (a transaction that
+    runs out revokes nothing and the request fails).
   - `/v1/me` checks the user token against revocation in the database, not through the feed.
   - **Cleanup** (every minute, every replica, one statement per batch):
     - a pending session whose authorization code expired unused is revoked, and
       `auth.sign_in failure code_not_redeemed` is written once;
     - replay keys are deleted at expiry;
     - `idp_auth_request` rows and code tombstones are deleted one hour after expiry;
-    - sessions that ended more than 30 days ago are purged with their refresh tokens.
+    - sessions that ended more than 30 days ago are purged with their refresh tokens. A session
+      ends when it is revoked, or at the earlier of its last refresh token's idle expiry and its
+      absolute expiry.
 - **Org source** (SEC-F002-31): unauthenticated routes act in `config.org.id`. A header, host,
   path or body never selects the org.
 
