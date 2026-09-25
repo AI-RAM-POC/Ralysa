@@ -16,7 +16,7 @@
 //
 // The result carries what sign-in needs: `oid`, `tid`, `uti`, times, `amr`/`acrs`, `ipaddr`, the
 // display claims and the group claim classified as GUIDs, overage, or absent [SEC-F002-08].
-import { type JWTVerifyGetKey, compactVerify } from 'jose';
+import { type JWTVerifyGetKey, compactVerify, errors } from 'jose';
 import { z } from 'zod';
 import type { ServeConfig } from '../../config/schema.js';
 
@@ -26,7 +26,14 @@ export const IDP_TOKEN_MAX_AGE_S = 600;
 const ALLOWED_HEADER = new Set(['alg', 'typ', 'kid', 'x5t']);
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-export type IdpTokenFailureReason = 'invalid_idp_token' | 'untrusted_issuer' | 'expired';
+/**
+ * `idp_unavailable`: the tenant's keys couldn't be read (discovery or JWKS unreachable, timed out
+ * or malformed). That is a dependency fault, not a bad token: the caller answers 503, and since
+ * the token isn't burned yet (the replay key comes after this), the client can retry (review of
+ * #29, R29-1).
+ */
+export type IdpTokenFailureReason =
+  'invalid_idp_token' | 'untrusted_issuer' | 'expired' | 'idp_unavailable';
 
 export type GroupClaim =
   /** GUID values (lower-cased); `ignored` counts non-GUID values (on-prem names). */
@@ -154,11 +161,23 @@ export function createEntraTokenValidator(deps: {
         return fail('invalid_idp_token', 'header_member');
       }
 
-      // 2. Signature, RS256 only, with the pinned tenant's keys.
+      // 2. Signature, RS256 only, with the pinned tenant's keys. A key-set fault (anything but "no
+      //    key has this kid") is the IdP being unavailable, not the token being bad.
+      const keyState = { unavailable: false };
+      const keys: JWTVerifyGetKey = async (protectedHeader, flattened) => {
+        try {
+          return await deps.keys(protectedHeader, flattened);
+        } catch (error) {
+          if (!(error instanceof errors.JWKSNoMatchingKey)) keyState.unavailable = true;
+          throw error;
+        }
+      };
       try {
-        await compactVerify(token, deps.keys, { algorithms: ['RS256'] });
+        await compactVerify(token, keys, { algorithms: ['RS256'] });
       } catch {
-        return fail('invalid_idp_token', 'signature');
+        return keyState.unavailable
+          ? fail('idp_unavailable', 'keys')
+          : fail('invalid_idp_token', 'signature');
       }
 
       // 3. Claims.

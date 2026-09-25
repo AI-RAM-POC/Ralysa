@@ -711,7 +711,8 @@ describe.skipIf(stack === undefined)('IdP sign-in, flow A (F-002-T10)', () => {
     expect(reply.json()).toMatchObject({
       ralysa_error: { code: 'idp_unavailable', i18n_key: 'auth.error.idp_unavailable' },
     });
-    expect(Date.now() - started).toBeLessThan(6_000);
+    // One 3 s deadline for the whole Graph check (R29-3), plus the rest of the request.
+    expect(Date.now() - started).toBeLessThan(3_750);
     idp.setGraphFault({ mode: 'none' });
     graphClock.offset += 60_000; // leave no half-open failure count for the next test
     await signInAs('alice');
@@ -802,6 +803,20 @@ describe.skipIf(stack === undefined)('IdP sign-in, flow A (F-002-T10)', () => {
     idp.patchUser('alice', { groups: [idp.accessGroupId, extra] });
     try {
       await signInAs('alice');
+      // A later token with overage markers (or no groups claim) says nothing about the claimed
+      // groups: the earlier token_claim rows are kept; only Graph-checked rows change (R29-4).
+      const overage = await exchange(
+        idp.mintAccessToken('alice', {
+          claims: { groups: undefined, _claim_names: { groups: 'src1' } },
+        }),
+      );
+      expect(overage.statusCode).toBe(200);
+      const kept = (await me(overage.json<{ access_token: string }>().access_token)).json<{
+        groups: { idp_group_id: string }[];
+      }>();
+      expect(kept.groups.map((g) => g.idp_group_id).sort()).toEqual(
+        [idp.accessGroupId, extra].sort(),
+      );
       const changed = (
         await events({
           action: 'directory.group_membership.changed',

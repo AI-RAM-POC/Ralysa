@@ -17,7 +17,7 @@ const ADMIN = config.access.admin_group_id;
 const OID = '6a0e5a4e-1111-4222-8333-444455556666';
 const TOKEN_URL = 'https://login.example/token';
 
-type Handler = (url: string, init: RequestInit) => Response | Promise<Response> | 'hang';
+type Handler = (url: string, init: RequestInit) => Response | Promise<Response | 'hang'> | 'hang';
 
 const bodyOf = (init: RequestInit | undefined): string =>
   typeof init?.body === 'string' ? init.body : '';
@@ -174,6 +174,48 @@ describe('Graph directory', () => {
     const result = await directory(handler).dir.check(user);
     expect(result.kind).toBe('unavailable');
     if (result.kind === 'unavailable') expect(result.reason).toContain(reason);
+  });
+
+  it('one deadline covers the whole check, the token request included (R29-3)', async () => {
+    // graph_timeout_ms is 200 here: a slow token endpoint (150 ms) plus slow Graph calls (150 ms)
+    // must still end at about 200 ms, not 300 or more.
+    const { dir } = directory(async (url) => {
+      if (url !== TOKEN_URL) return 'hang'; // aborted by the check's deadline
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      return tokenOk();
+    });
+    const started = performance.now();
+    expect(await dir.check(user)).toEqual({ kind: 'unavailable', reason: 'timeout' });
+    expect(performance.now() - started).toBeLessThan(290);
+  });
+
+  it('a slow secret read counts against the same deadline', async () => {
+    const secrets = createInMemorySecretStore();
+    const slow = {
+      get: () => new Promise<never>(() => undefined),
+      watch: secrets.watch.bind(secrets),
+    };
+    const fake = fakeGraph(graphHandler({ groups: [ACCESS] }));
+    const dir = createGraphDirectory({
+      config,
+      secrets: slow,
+      tokenEndpoint: () => Promise.resolve(TOKEN_URL),
+      fetch: fake.doFetch,
+    });
+    const started = performance.now();
+    expect(await dir.check(user)).toEqual({ kind: 'unavailable', reason: 'timeout' });
+    expect(performance.now() - started).toBeLessThan(290);
+  });
+
+  it('a 404 that is not Request_ResourceNotFound is a fault, not a deletion (review of #29)', async () => {
+    const { dir } = directory((url) =>
+      url === TOKEN_URL ? tokenOk() : json(404, { error: { code: 'BadRequest' } }),
+    );
+    expect(await dir.check(user)).toEqual({ kind: 'unavailable', reason: 'not_found_unexpected' });
+    const html = directory((url) =>
+      url === TOKEN_URL ? tokenOk() : new Response('<html>Not Found</html>', { status: 404 }),
+    );
+    expect((await html.dir.check(user)).kind).toBe('unavailable');
   });
 
   it('times out at graph_timeout_ms', async () => {

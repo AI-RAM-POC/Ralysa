@@ -33,6 +33,7 @@ import {
   mintForSession,
   recordSuccess,
   replayKey,
+  sessionRevokedEvent,
 } from '../sign-in.js';
 import type { GrantContext } from './refresh-token.js';
 
@@ -131,8 +132,27 @@ async function exchange(
     details,
   });
   const sid = authorized.provisioned.sessionId;
+  // After provisioning committed, a refusal also records what provisioning did (directory.*) and
+  // the revocation of the session it created (review of #29, R29-2).
+  const refuseAfterProvisioning = async (reason: 'internal_error') => {
+    const revoked = await env.store.revokeSession(sid, reason).catch(() => false);
+    return attempt.refuse(reason, {
+      actor: authorized.actor,
+      sessionId: sid,
+      details,
+      before: [
+        ...authorized.directoryEvents,
+        ...(revoked
+          ? [sessionRevokedEvent(attempt.ctx.traceId, authorized.actor, sid, reason)]
+          : []),
+      ],
+    });
+  };
   const refreshToken = authorized.provisioned.refreshToken;
-  if (refreshToken === undefined) throw new Error('flow A session without a refresh token');
+  if (refreshToken === undefined) {
+    env.logger.error('sign_in_internal_error', { flow: 'idp_device', error: 'no refresh token' });
+    throw await refuseAfterProvisioning('internal_error');
+  }
 
   let minted;
   try {
@@ -147,12 +167,7 @@ async function exchange(
   } catch (error) {
     // Signing failed (OpenBao, custody): the committed session must not stay usable.
     env.logger.error('sign_in_signing_failed', { error: String(error) });
-    await env.store.revokeSession(sid, 'internal_error').catch(() => undefined);
-    throw await attempt.refuse('internal_error', {
-      actor: authorized.actor,
-      sessionId: sid,
-      details,
-    });
+    throw await refuseAfterProvisioning('internal_error');
   }
 
   const failed = await recordSuccess(attempt, authorized, details);

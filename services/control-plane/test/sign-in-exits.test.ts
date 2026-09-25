@@ -72,7 +72,9 @@ function identity(over: Partial<IdpIdentity> = {}): IdpIdentity {
   };
 }
 
-const failure = (reason: 'invalid_idp_token' | 'untrusted_issuer' | 'expired'): IdpTokenResult => ({
+const failure = (
+  reason: 'invalid_idp_token' | 'untrusted_issuer' | 'expired' | 'idp_unavailable',
+): IdpTokenResult => ({
   ok: false,
   reason,
   check: 'test',
@@ -103,6 +105,12 @@ const SCENARIOS: Scenario[] = [
     token: failure('expired'),
     expect: { outcome: 'failure', reason: 'expired' },
     error: { status: 400, error: 'invalid_grant' },
+  },
+  {
+    name: "the tenant's keys unreachable (R29-1: 503, the token not burned)",
+    token: failure('idp_unavailable'),
+    expect: { outcome: 'error', reason: 'idp_unavailable' },
+    error: { status: 503, error: 'temporarily_unavailable' },
   },
   {
     name: 'replay',
@@ -217,6 +225,7 @@ function setUp(s: Scenario) {
   const written: StoredEventInput[] = [];
   const spooled: StoredEventInput[] = [];
   const revokedSessions: string[] = [];
+  const counters = { consumed: 0 };
   const writer: AuditWriter = {
     write: (_org, events) => {
       if (s.auditFails === true) return Promise.reject(new AuditUnavailableError('test'));
@@ -238,7 +247,7 @@ function setUp(s: Scenario) {
   };
   const store: SignInStore = {
     consumeIdpToken: () =>
-      s.consumeFails === true
+      ++counters.consumed > 0 && s.consumeFails === true
         ? Promise.reject(new Error('db down'))
         : Promise.resolve(s.replayed !== true),
     findUser: () =>
@@ -282,7 +291,7 @@ function setUp(s: Scenario) {
         Promise.resolve(s.token ?? { ok: true, identity: identity(s.identity) }),
     },
   };
-  return { env, written, spooled, revokedSessions };
+  return { env, written, spooled, revokedSessions, counters };
 }
 
 describe('token exchange: every exit writes exactly one auth.sign_in (AC-4)', () => {
@@ -306,7 +315,7 @@ describe('token exchange: every exit writes exactly one auth.sign_in (AC-4)', ()
 
   for (const scenario of SCENARIOS) {
     it(scenario.name, async () => {
-      const { env, written, spooled, revokedSessions } = setUp(scenario);
+      const { env, written, spooled, revokedSessions, counters } = setUp(scenario);
       let thrown: unknown;
       let result;
       try {
@@ -362,6 +371,20 @@ describe('token exchange: every exit writes exactly one auth.sign_in (AC-4)', ()
       }
       if (scenario.mintFails === true || scenario.auditFails === true) {
         expect(revokedSessions).toEqual(['0192f0a0-7b3c-7d4e-8f00-0000000000b1']);
+      }
+      if (scenario.mintFails === true) {
+        // What provisioning did, and the revocation, are recorded with the refusal (R29-2).
+        expect(all.map((e) => e.action)).toEqual([
+          'directory.user.provisioned',
+          'directory.group_membership.changed',
+          'auth.session.revoked',
+          'auth.sign_in',
+        ]);
+        expect(all[2]?.details).toMatchObject({ cause: 'internal_error' });
+      }
+      if (scenario.token?.ok === false) {
+        // Refused before the replay key: the IdP token isn't burned, so a retry can succeed.
+        expect(counters.consumed).toBe(0);
       }
       if (scenario.auditFails === true) {
         expect(spooled.map((e) => e.action)).toEqual([
