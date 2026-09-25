@@ -11,7 +11,8 @@ const severity = async (file: string) =>
   ((await eslint.calculateConfigForFile(join(root, file))) as { rules?: Record<string, unknown> })
     .rules?.['ralysa/no-session-db-settings'];
 
-describe('control-plane lint config (SEC-F002-31)', () => {
+// The first typed ESLint config load takes ~10 s on CI runners.
+describe('control-plane lint config (SEC-F002-31)', { timeout: 60_000 }, () => {
   it.each(['src/db/kysely.ts', 'src/audit/writer.ts', 'src/main.ts', 'src/config/load.ts'])(
     'bans session-level settings in %s',
     async (file) => {
