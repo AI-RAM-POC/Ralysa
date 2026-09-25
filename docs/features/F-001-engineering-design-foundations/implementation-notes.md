@@ -110,6 +110,12 @@ The design asks for a throw-away PR whose run is linked in the PR. **Not done**:
 | Nit: temp dirs left behind | Every test temp folder goes through `test/temp.ts`; `test/setup.ts` (Vitest `setupFiles`) removes them in `afterAll`. A full suite run now leaves the count of `ralysa-*` folders in the OS temp dir unchanged (343 before and after). The 343 existing folders from earlier runs (296 `fixture`, 45 `tsbase`, 1 `copy`, 1 `scaffold`; all matched `^ralysa-(fixture\|tsbase\|copy\|scaffold)-[A-Za-z0-9]{6}$`) were removed with `fs.rmSync`, which doesn't follow the scaffold copy's symlinks into the real `node_modules` (checked intact afterwards). | – |
 | Nit: issue-template reformatting | Left as is, as asked. | – |
 
+### Re-review fix (2026-09-25)
+
+| Finding | Fix | Tests |
+|---|---|---|
+| **N1** `check-workspaces` ignored `configDependencies` in `pnpm-workspace.yaml`. pnpm 11.27.1 auto-loads `pnpmfile.mjs`/`pnpmfile.cjs` from any config dependency whose name matches `pnpm-plugin-*`, `@pnpm/plugin-*` or `@<scope>/pnpm-plugin-*` (`calcPnpmfilePathsOfPluginDeps`, `isPluginName`) and runs its `updateConfig` hooks before install, so `configDependencies: { "pnpm-plugin-evil": "1.0.0+sha512-…" }` ran code with no findings. | New `checkConfigDependencies` fails on **every** `configDependencies` entry, plugin name or not, unless the new register `tooling/repo-scripts/config-dependencies.json` (empty) lists that package with the **exact** `<version>+<integrity>` value (schema: `package`, `specifier` matching `<version>+sha512-…`, `owner`, `reason`, optional `date`). A version bump or a different integrity needs a new review. The finding says so explicitly when the name is a plugin name (`isPnpmPluginName` mirrors pnpm's rule). The object form `{ version, integrity }` is checked the same way, and a non-mapping value fails. | `check-workspaces.test.ts`, "pnpm configDependencies (code review N1)": bare `pnpm-plugin-evil`, `@pnpm/plugin-evil` and scoped `@acme/pnpm-plugin-evil` fail with the plugin warning; non-plugin `@acme/shared-config` fails without it; a registered entry passes, and fails again after a version bump or with another integrity; object form and list value fail; a malformed register entry fails. Integrity strings are synthetic. |
+
 ## Version confirmations (npm registry, 2026-09-25 ~08:20 UTC)
 
 Policy (§2.2): the latest patch of a line GA for at least 30 days, and `minimumReleaseAge` holds back anything under 3 days old. Cut-off for the 3-day rule: 2026-09-22T08:20Z.

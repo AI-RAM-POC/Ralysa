@@ -52,6 +52,7 @@ export function makeFixtureRepo(
     lifecycleEntries?: unknown[];
     allowBuildsEntries?: unknown[];
     pnpmfileEntries?: unknown[];
+    configDependencyEntries?: unknown[];
   } = {},
 ): FixtureRepo {
   const root = makeTempDir('ralysa-fixture-');
@@ -77,6 +78,9 @@ export function makeFixtureRepo(
   });
   writeJson('tooling/repo-scripts/pnpmfile-allowlist.json', {
     entries: options.pnpmfileEntries ?? [],
+  });
+  writeJson('tooling/repo-scripts/config-dependencies.json', {
+    entries: options.configDependencyEntries ?? [],
   });
   writeJson('tooling/repo-scripts/package.json', {
     ...validWorkspacePackage('@ralysa/repo-scripts'),

@@ -119,3 +119,19 @@ export const PnpmfileRegister = z.strictObject({
     }),
   ),
 });
+
+export const ConfigDependenciesRegister = z.strictObject({
+  $comment: z.string().optional(),
+  entries: z.array(
+    z.strictObject({
+      package: z.string().min(1),
+      // The exact value from pnpm-workspace.yaml configDependencies: "<version>+<integrity>".
+      specifier: z
+        .string()
+        .regex(/^[^+\s]+\+sha512-[A-Za-z0-9+/=]+$/, 'must be "<version>+sha512-<integrity>"'),
+      owner: z.string().min(1),
+      reason: z.string().min(1),
+      date: z.iso.date().optional(),
+    }),
+  ),
+});

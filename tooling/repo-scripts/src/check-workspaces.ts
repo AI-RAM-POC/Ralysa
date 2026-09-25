@@ -13,6 +13,7 @@ import {
   LIFECYCLE_SCRIPTS,
   LifecycleAllowlist,
   PnpmfileRegister,
+  ConfigDependenciesRegister,
   REQUIRED_SCRIPTS,
   WorkspacePackageJson,
 } from './contracts/workspace.ts';
@@ -318,6 +319,58 @@ function checkLifecycleScripts(
 
 type LifecycleRegister = z.infer<typeof LifecycleAllowlist>;
 type PnpmfileRegisterType = z.infer<typeof PnpmfileRegister>;
+type ConfigDependenciesRegisterType = z.infer<typeof ConfigDependenciesRegister>;
+
+/** pnpm 11's `isPluginName`: config dependencies whose pnpmfile pnpm loads automatically. */
+export function isPnpmPluginName(name: string): boolean {
+  return (
+    /^pnpm-plugin-/.test(name) || /^@pnpm\/plugin-/.test(name) || /^@[^/]+\/pnpm-plugin-/.test(name)
+  );
+}
+
+function configDependencySpecifier(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (isRecord(value) && typeof value.version === 'string' && typeof value.integrity === 'string') {
+    return `${value.version}+${value.integrity}`;
+  }
+  return JSON.stringify(value);
+}
+
+/**
+ * configDependencies are installed before the workspace and can change pnpm's own behaviour:
+ * pnpm 11 auto-loads the pnpmfile of any `pnpm-plugin-*`, `@pnpm/plugin-*` or
+ * `@<scope>/pnpm-plugin-*` config dependency and runs its hooks before install. Every entry
+ * therefore needs a reviewed register entry for its exact version and integrity (code review N1).
+ */
+function checkConfigDependencies(
+  settings: Record<string, unknown>,
+  register: ConfigDependenciesRegisterType,
+  findings: Finding[],
+): void {
+  const deps = settings.configDependencies;
+  if (deps === undefined || deps === null) return;
+  if (!isRecord(deps)) {
+    findings.push({
+      rule: 'pnpm/config-dependencies',
+      path: 'pnpm-workspace.yaml',
+      message: 'configDependencies must be a mapping',
+    });
+    return;
+  }
+  for (const [name, value] of Object.entries(deps)) {
+    const specifier = configDependencySpecifier(value);
+    const reviewed = register.entries.some((e) => e.package === name && e.specifier === specifier);
+    if (reviewed) continue;
+    const plugin = isPnpmPluginName(name)
+      ? ' It is a pnpm plugin name, so pnpm also loads its pnpmfile and runs its hooks before install.'
+      : '';
+    findings.push({
+      rule: 'pnpm/config-dependencies',
+      path: 'pnpm-workspace.yaml',
+      message: `configDependencies.${name} = "${specifier}" is not in tooling/repo-scripts/config-dependencies.json with this exact version and integrity; config dependencies install before everything else and can change how pnpm behaves.${plugin}`,
+    });
+  }
+}
 
 function loadRegister<T>(
   file: string,
@@ -492,6 +545,12 @@ export function checkWorkspaces(options: CheckWorkspacesOptions): Finding[] {
     findings,
   ) ?? { entries: [] };
 
+  const configDeps = loadRegister(
+    join(registersDir, 'config-dependencies.json'),
+    ConfigDependenciesRegister,
+    findings,
+  ) ?? { entries: [] };
+
   const settings = readWorkspaceSettings(root, findings);
   const dirs = listWorkspaceDirs(root);
   const pnpmWorkspaces = new Set(options.pnpmWorkspaces ?? listPnpmWorkspaces(root));
@@ -597,6 +656,7 @@ export function checkWorkspaces(options: CheckWorkspacesOptions): Finding[] {
   checkWorkspaceSpecifiers(settings, allowlist, findings);
   const repoFiles = (options.repoFiles ?? listRepoFiles(root)).map(toPosix);
   checkPnpmfiles(root, settings, repoFiles, pnpmfiles, findings);
+  checkConfigDependencies(settings, configDeps, findings);
   checkPython(repoFiles, findings);
 
   return findings;

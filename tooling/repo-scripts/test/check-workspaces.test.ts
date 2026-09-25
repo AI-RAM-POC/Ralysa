@@ -535,3 +535,53 @@ describe('check-workspaces: workspaces outside the four roots (code review m1)',
     expect(rules(findings)).not.toContain('workspace/outside-roots');
   });
 });
+
+describe('check-workspaces: pnpm configDependencies (code review N1)', () => {
+  // Synthetic integrity values: format-valid, never issued for any real package.
+  const integrity = `sha512-${'A'.repeat(86)}==`;
+  const other = `sha512-${'B'.repeat(86)}==`;
+  const yaml = (deps: string) => `packages:\n  - "tooling/*"\nconfigDependencies:\n${deps}`;
+
+  it.each([
+    ['a bare plugin name', 'pnpm-plugin-evil', true],
+    ['an @pnpm/plugin-* name', '@pnpm/plugin-evil', true],
+    ['a scoped plugin name', '@acme/pnpm-plugin-evil', true],
+    ['a non-plugin config dependency', '@acme/shared-config', false],
+  ])('fails on %s', (_label, name, plugin) => {
+    const findings = run({ workspaceYaml: yaml(`  "${name}": "1.0.0+${integrity}"\n`) });
+    const finding = findings.find((f) => f.rule === 'pnpm/config-dependencies');
+    expect(finding?.message).toContain(`configDependencies.${name}`);
+    expect(finding?.message.includes('pnpm plugin name')).toBe(plugin);
+  });
+
+  it('passes a registered entry only for the exact version and integrity', () => {
+    const entry = {
+      package: '@acme/pnpm-plugin-catalogs',
+      specifier: `1.0.0+${integrity}`,
+      owner: 'tech lead',
+      reason: 'shared catalogs',
+    };
+    const registered = yaml(`  "@acme/pnpm-plugin-catalogs": "1.0.0+${integrity}"\n`);
+    expect(run({ workspaceYaml: registered, configDependencyEntries: [entry] })).toEqual([]);
+    const bumped = yaml(`  "@acme/pnpm-plugin-catalogs": "1.0.1+${integrity}"\n`);
+    expect(rules(run({ workspaceYaml: bumped, configDependencyEntries: [entry] }))).toContain(
+      'pnpm/config-dependencies',
+    );
+    const swapped = yaml(`  "@acme/pnpm-plugin-catalogs": "1.0.0+${other}"\n`);
+    expect(rules(run({ workspaceYaml: swapped, configDependencyEntries: [entry] }))).toContain(
+      'pnpm/config-dependencies',
+    );
+  });
+
+  it('checks the object form and rejects a non-mapping value', () => {
+    const objectForm = yaml(`  pnpm-plugin-x:\n    version: 1.0.0\n    integrity: ${integrity}\n`);
+    expect(rules(run({ workspaceYaml: objectForm }))).toContain('pnpm/config-dependencies');
+    const list = 'packages:\n  - "tooling/*"\nconfigDependencies:\n  - pnpm-plugin-x\n';
+    expect(rules(run({ workspaceYaml: list }))).toContain('pnpm/config-dependencies');
+  });
+
+  it('rejects a malformed register entry', () => {
+    const bad = { package: 'x', specifier: '1.0.0', owner: 'o', reason: 'r' };
+    expect(rules(run({ configDependencyEntries: [bad] }))).toContain('registers/schema');
+  });
+});
