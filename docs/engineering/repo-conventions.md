@@ -95,12 +95,22 @@ Each package's `tsconfig.json` is a no-emit project over `src/`, `test/` and `*.
 - `globalDependencies` lists the root configs and `tooling/**`. Changing any lint, type or boundary config therefore invalidates every cached result, so a cache replay can't stand in for a gate. `check-turbo-config` enforces this.
 - Generated files: a workspace that commits generated files defines `check:generated`, which regenerates them in place. CI then fails on any `git status --porcelain` output.
 
+## Before running pnpm on a branch you didn't write
+
+Every pnpm command, even `pnpm --version`, installs the `configDependencies` in `pnpm-workspace.yaml` and loads pnpmfiles, and `pnpm install` runs lifecycle scripts. After pulling someone else's branch, run the static gate with plain Node first:
+
+```sh
+node tooling/repo-scripts/src/pre-install-gate.ts
+```
+
+It needs no installed packages and starts no subprocess. CI runs it before any pnpm command in every job that installs.
+
 ## CI (`.github/workflows/ci.yml`)
 
 | Job | What it runs |
 |---|---|
-| `repo-checks` | `pnpm install --frozen-lockfile`, then `pnpm repo:check` |
-| `quality` | `turbo run lint typecheck test build check:generated --continue=dependencies-successful --summarize`, a generated-drift check, then a workspace × task table in the job summary |
+| `repo-checks` | The pre-install config gate, then `pnpm install --frozen-lockfile`, then `pnpm repo:check` |
+| `quality` | The pre-install config gate, `pnpm install --frozen-lockfile`, then `turbo run lint typecheck test build check:generated --continue=dependencies-successful --summarize`, a generated-drift check, then a workspace × task table in the job summary |
 | `pr-traceability` | The PR title or body references `F-nnn`, or the PR carries a chore/docs/adlc label |
 
 `.github/required-checks.json` names the checks that must be green before an agent squash-merges (design §6.3.3). Each task that adds a job adds its name in the same PR.

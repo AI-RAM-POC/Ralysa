@@ -116,6 +116,45 @@ The design asks for a throw-away PR whose run is linked in the PR. **Not done**:
 |---|---|---|
 | **N1** `check-workspaces` ignored `configDependencies` in `pnpm-workspace.yaml`. pnpm 11.27.1 auto-loads `pnpmfile.mjs`/`pnpmfile.cjs` from any config dependency whose name matches `pnpm-plugin-*`, `@pnpm/plugin-*` or `@<scope>/pnpm-plugin-*` (`calcPnpmfilePathsOfPluginDeps`, `isPluginName`) and runs its `updateConfig` hooks before install, so `configDependencies: { "pnpm-plugin-evil": "1.0.0+sha512-…" }` ran code with no findings. | New `checkConfigDependencies` fails on **every** `configDependencies` entry, plugin name or not, unless the new register `tooling/repo-scripts/config-dependencies.json` (empty) lists that package with the **exact** `<version>+<integrity>` value (schema: `package`, `specifier` matching `<version>+sha512-…`, `owner`, `reason`, optional `date`). A version bump or a different integrity needs a new review. The finding says so explicitly when the name is a plugin name (`isPnpmPluginName` mirrors pnpm's rule). The object form `{ version, integrity }` is checked the same way, and a non-mapping value fails. | `check-workspaces.test.ts`, "pnpm configDependencies (code review N1)": bare `pnpm-plugin-evil`, `@pnpm/plugin-evil` and scoped `@acme/pnpm-plugin-evil` fail with the plugin warning; non-plugin `@acme/shared-config` fails without it; a registered entry passes, and fails again after a version bump or with another integrity; object form and list value fail; a malformed register entry fails. Integrity strings are synthetic. |
 
+### Static config gate before any pnpm invocation (orchestrator attack test on f2e1de9)
+
+**The problem.** With `configDependencies: { pnpm-plugin-evil: "1.0.0+sha512-AAAA" }` appended to the real `pnpm-workspace.yaml`, `node tooling/repo-scripts/src/cli.ts check-workspaces` crashed inside `listPnpmWorkspaces` (`pnpm ls -r --depth -1 --json` → `GET https://registry.npmjs.org/pnpm-plugin-evil 404`). The checker started pnpm, and pnpm resolved the config dependency **before** the static gate ran. A real published plugin would have been downloaded and its hooks run by the checker itself. CI had the same ordering problem: `pnpm --version`, `pnpm store path` and `pnpm install` all ran before `repo-checks`.
+
+**What pnpm 11.27.1 actually does** (read in `dist/pnpm.mjs` and tested live in a scratch repo, 2026-09-25):
+- `installConfigDepsAndLoadHooks` runs in pnpm's main entry for **every command**. It installs `configDependencies` first, then (unless `ignorePnpmfile`) loads the default `.pnpmfile.mjs`/`.pnpmfile.cjs`, any `pnpmfile` setting, and the `pnpmfile.mjs`/`pnpmfile.cjs` of every config dependency that `isPluginName` matches, and runs their `updateConfig` hooks.
+- Live test, with that `configDependencies` entry: `pnpm --version`, `pnpm store path --silent`, `pnpm ls -r --depth -1 --json` and `pnpm run --if-present nothing` **all** failed with `GET https://registry.npmjs.org/pnpm-plugin-evil: Not Found - 404`. Even printing the version installs config dependencies.
+- **No option skips `configDependencies`.** `ignorePnpmfile` only skips hook *loading*: the config dependencies are still downloaded and extracted. `pnpm ls --ignore-pnpmfile` is rejected (`Unknown option: 'ignore-pnpmfile'`). No `--config.*` setting or environment variable disables the install.
+- `npm_config_registry=http://127.0.0.1:9/` did **not** redirect the request (it still went to registry.npmjs.org), so a registry variable is not a reliable sentinel. The tests use PATH shims instead.
+
+**Decision (step 2): pnpm is dropped from the checker entirely.** Because no pnpm option prevents the config-dependency install, "invoke pnpm, but safely" isn't possible. `listPnpmWorkspaces` is deleted. Workspace discovery for the m1 check (`workspace/outside-roots`) and the coverage check (renamed `workspace/not-in-pnpm` → `workspace/not-in-globs`) comes only from resolving the `pnpm-workspace.yaml` `packages` globs with Node's `fs.globSync` (negations honoured, `node_modules` skipped). No repo check starts pnpm. They still use `git ls-files`, which runs no repository-controlled code.
+
+**The gate.**
+- `src/config-gate.ts` holds every check for code pnpm would run: `configDependencies` (in `pnpm-workspace.yaml`, and any `pnpm.configDependencies` in `package.json`); pnpmfiles (files anywhere in the tree, the `pnpmfile`/`globalPnpmfile` settings in YAML, `.npmrc` and `package.json#pnpm`); lifecycle scripts in the root and in every folder pnpm could treat as a workspace (the four roots plus whatever the globs resolve to); `package.yaml`/`package.json5` manifests; `allowBuilds`, `onlyBuiltDependencies`, `dangerouslyAllowAllBuilds` and `enablePrePostScripts`; and the four registers.
+  - These checks moved out of `check-workspaces.ts`, and the zod register schemas became hand validation.
+  - The rule ids are unchanged, so the earlier fixtures still apply.
+  - Settings are judged fail-safe: anything other than "absent" or `false` counts as enabled.
+- It imports only `node:*`, `lib/core.ts` (new; dependency-free helpers split out of `lib/repo.ts`) and `lib/mini-yaml.ts` (new). It starts no subprocess.
+- `lib/mini-yaml.ts` is a strict YAML-subset reader, because the gate runs before `yaml` is installed. It **fails closed**: anchors, aliases, merge keys, tags, explicit `?` keys, flow collections other than `{}`/`[]`, block scalars, escapes, multi-line plain scalars, document markers, tabs, duplicate keys and type-ambiguous plain scalars (`True`, `yes`, `1.5`, `0x1F`, `010`, `.inf`) are all rejected with `gate/unsupported-yaml`. After install, `check-workspaces` also compares its result with the `yaml` package's and fails with `pnpm/yaml-differential` on any difference. On the real file the two are identical. Vendoring `yaml` was the alternative; a small fail-closed reader was preferred because the gate should understand less than pnpm does, never more.
+- **Entry points.**
+  - `node tooling/repo-scripts/src/pre-install-gate.ts` is the standalone gate.
+  - `cli.ts config-gate` runs it through the CLI.
+  - `check-workspaces` runs the gate first and **returns its findings without doing anything else**.
+  - `repo-check` runs `config-gate` first and stops with exit 1 if it has findings.
+
+**CI ordering (step 4).** `ci.yml` now runs `node tooling/repo-scripts/src/pre-install-gate.ts` as the first step after `setup-node`, **before the Corepack step** (whose `pnpm --version` would already install config dependencies), in both jobs that run pnpm (`repo-checks` and `quality`). `pr-traceability` runs no pnpm. **This closes the order-of-operations gap:** a PR that adds an unreviewed config dependency, pnpmfile, lifecycle script or dependency build now fails before any pnpm command runs in CI, instead of being detected after it has run.
+
+**Residual risk.** A developer who runs `pnpm install` (or any pnpm command) locally on an untrusted branch is still exposed: nothing runs before their pnpm. The conventions doc tells developers to run the pre-install gate first after pulling someone else's branch, but that is discipline, not a control. This falls under the accepted risks of D-3 (SEC-F001-01: controls cover only what runs in CI or through Claude Code). T17's local hooks are the planned partial mitigation: they could run this gate from the pre-commit hook and the Claude Code guard (for example on `git checkout`/`git pull` or before an agent's `pnpm` commands). Agents are covered once T15/T17 route their pnpm commands through the guard.
+
+**Tests.**
+- `test/cli-gate.test.ts` (9) runs the **real entry points** as subprocesses. Fake `pnpm`, `npm`, `npx`, `pnpx` and `corepack` executables come first on `PATH` and write a marker file if called, and the registry variables point at `127.0.0.1:9`. The cases:
+  - a positive control that the shim does record a pnpm call;
+  - the orchestrator's exact attack on a copy of the real repo, which exits 1 cleanly with the finding, no stack trace and no marker;
+  - `check-workspaces` on a fixture with `pnpm-plugin-evil`, which exits 1 with the plugin warning;
+  - `repo-check`, which stops after `config-gate`;
+  - a clean fixture, which passes with no pnpm call;
+  - `pre-install-gate.ts` run from a **copy of `src/` with no `node_modules` anywhere above it**, proving it needs no packages: it fails on the plugin, passes a clean fixture and the real repository, and fails closed on YAML aliases.
+- `test/mini-yaml.test.ts` (39): 10 accepted documents, including the real `pnpm-workspace.yaml`, deep-equal the `yaml` package's parse, and 29 unsupported constructs are rejected.
+
 ## Version confirmations (npm registry, 2026-09-25 ~08:20 UTC)
 
 Policy (§2.2): the latest patch of a line GA for at least 30 days, and `minimumReleaseAge` holds back anything under 3 days old. Cut-off for the 3-day rule: 2026-09-22T08:20Z.

@@ -1,7 +1,9 @@
 #!/usr/bin/env node
 // ralysa-repo: entry point for the repository checks. It runs directly on Node 24's type
 // stripping, so there is no build step and no TS runner dependency.
-//   ralysa-repo repo-check               every repo-level check (the CI repo-checks job)
+//   ralysa-repo repo-check               every repo-level check (the CI repo-checks job); stops
+//                                        after config-gate if that has findings
+//   ralysa-repo config-gate              static install-time config gate (also pre-install-gate.ts)
 //   ralysa-repo check-workspaces         workspace contract, scripts, lifecycle/specifier/Python rules
 //   ralysa-repo check-tsrefs             tsconfig project references
 //   ralysa-repo check-turbo-config       remote cache off, globalDependencies, uncached checks
@@ -10,6 +12,7 @@
 //   ralysa-repo summary [--file <run.json>] [--out <file>]
 import { appendFileSync } from 'node:fs';
 import { checkTsrefs } from './check-tsrefs.ts';
+import { checkConfigGate } from './config-gate.ts';
 import { checkTurboConfigFile } from './check-turbo-config.ts';
 import { checkWorkspaces } from './check-workspaces.ts';
 import { REQUIRED_SCRIPTS } from './contracts/workspace.ts';
@@ -20,7 +23,9 @@ import { latestSummaryFile, summaryFromFile } from './summary.ts';
 
 type Check = (root: string) => Finding[];
 
+// None of these start pnpm. config-gate runs first; check-workspaces also runs it itself.
 const REPO_CHECKS: Record<string, Check> = {
+  'config-gate': (root) => checkConfigGate({ root }).findings,
   'check-workspaces': (root) => checkWorkspaces({ root }),
   'check-tsrefs': (root) => checkTsrefs({ root }),
   'check-turbo-config': (root) => checkTurboConfigFile(root),
@@ -55,8 +60,16 @@ function main(argv: string[]): number {
   const root = findRepoRoot(cwd);
 
   if (command === 'repo-check') {
-    const results = Object.entries(REPO_CHECKS).map(([name, check]) => report(name, check(root)));
-    return results.every(Boolean) ? 0 : 1;
+    let ok = true;
+    for (const [name, check] of Object.entries(REPO_CHECKS)) {
+      const passed = report(name, check(root));
+      ok &&= passed;
+      if (name === 'config-gate' && !passed) {
+        console.error('Stopping: fix the config gate findings before running anything else.');
+        return 1;
+      }
+    }
+    return ok ? 0 : 1;
   }
   const check = REPO_CHECKS[command];
   if (check !== undefined) return report(command, check(root)) ? 0 : 1;

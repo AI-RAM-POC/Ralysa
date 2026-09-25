@@ -28,6 +28,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
+      # Before ANY pnpm command: every pnpm command (even `pnpm --version`) installs
+      # configDependencies and loads pnpmfiles, and `pnpm install` runs lifecycle scripts.
+      # Plain node, no packages, no subprocess (tooling/repo-scripts/src/config-gate.ts).
+      - name: Pre-install config gate
+        run: node tooling/repo-scripts/src/pre-install-gate.ts
       # pnpm comes from Corepack, which verifies the sha512 in package.json#packageManager.
       - name: Enable pnpm through Corepack
         run: |
@@ -56,6 +61,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
+      # Before ANY pnpm command: every pnpm command (even `pnpm --version`) installs
+      # configDependencies and loads pnpmfiles, and `pnpm install` runs lifecycle scripts.
+      # Plain node, no packages, no subprocess (tooling/repo-scripts/src/config-gate.ts).
+      - name: Pre-install config gate
+        run: node tooling/repo-scripts/src/pre-install-gate.ts
       - name: Enable pnpm through Corepack
         run: |
           corepack enable

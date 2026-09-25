@@ -4,21 +4,8 @@ import { z } from 'zod';
 
 export const REQUIRED_SCRIPTS = ['lint', 'typecheck', 'test', 'build'] as const;
 
-// Scripts a package manager runs by itself during install or publish. `pnpm:devPreinstall` is
-// pnpm's root-only hook, run before every install of the workspace (code review M2).
-export const LIFECYCLE_SCRIPTS = [
-  'pnpm:devPreinstall',
-  'preinstall',
-  'install',
-  'postinstall',
-  'prepare',
-  'prepack',
-  'postpack',
-  'prepublish',
-  'prepublishOnly',
-  'publish',
-  'postpublish',
-] as const;
+// Lifecycle scripts are defined with the dependency-free config gate.
+export { LIFECYCLE_SCRIPTS } from '../config-gate.ts';
 
 export const WORKSPACE_KINDS = [
   'app',
@@ -79,59 +66,3 @@ export const WorkspacePackageJson = z.looseObject({
 });
 
 export type WorkspacePackage = z.infer<typeof WorkspacePackageJson>;
-
-export const LifecycleAllowlist = z.strictObject({
-  $comment: z.string().optional(),
-  entries: z.array(
-    z.strictObject({
-      package: z.string().min(1),
-      script: z.enum(LIFECYCLE_SCRIPTS),
-      command: z.string().min(1),
-      owner: z.string().min(1),
-      reason: z.string().min(1),
-    }),
-  ),
-});
-
-export const AllowBuildsRegister = z.strictObject({
-  $comment: z.string().optional(),
-  entries: z.array(
-    z.strictObject({
-      package: z.string().min(1),
-      reason: z.string().min(1),
-      reviewer: z.string().min(1),
-      date: z.iso.date(),
-    }),
-  ),
-});
-
-export const PnpmfileRegister = z.strictObject({
-  $comment: z.string().optional(),
-  entries: z.array(
-    z.strictObject({
-      // Repo-relative path of the reviewed pnpmfile.
-      path: z.string().min(1),
-      // SHA-256 of the reviewed content: any edit needs a new review.
-      sha256: z.string().regex(/^[0-9a-f]{64}$/),
-      owner: z.string().min(1),
-      reason: z.string().min(1),
-      date: z.iso.date(),
-    }),
-  ),
-});
-
-export const ConfigDependenciesRegister = z.strictObject({
-  $comment: z.string().optional(),
-  entries: z.array(
-    z.strictObject({
-      package: z.string().min(1),
-      // The exact value from pnpm-workspace.yaml configDependencies: "<version>+<integrity>".
-      specifier: z
-        .string()
-        .regex(/^[^+\s]+\+sha512-[A-Za-z0-9+/=]+$/, 'must be "<version>+sha512-<integrity>"'),
-      owner: z.string().min(1),
-      reason: z.string().min(1),
-      date: z.iso.date().optional(),
-    }),
-  ),
-});

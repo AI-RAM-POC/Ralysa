@@ -1,32 +1,28 @@
 // check-workspaces (F-001 design §2.1, §3.1; SEC-F001-09 a, -11, -19, -26; RC-7; AR-3).
-// Fails when a workspace folder isn't a real pnpm workspace with the four required scripts, when
-// a package.json breaks the workspace contract, when a lifecycle script or an unreviewed
-// dependency build appears, when a dependency specifier could pull code from outside the
-// registry (or from packs/), or when Python files appear before the F-004 toolchain exists.
-import { createHash } from 'node:crypto';
-import { existsSync, globSync, readFileSync } from 'node:fs';
+// It starts with the static config gate (config-gate.ts: configDependencies, pnpmfiles, lifecycle
+// scripts, dependency build settings) and stops there if the gate has findings. It never starts
+// pnpm: every pnpm command installs configDependencies and loads pnpmfiles, so asking pnpm for
+// the workspace list would run the very code this check exists to stop (code review N1
+// follow-up). Workspaces come from resolving the pnpm-workspace.yaml globs directly.
+// After the gate it fails when a workspace folder isn't a real workspace with the four required
+// scripts, when a package.json breaks the workspace contract, when a dependency specifier (in a
+// package.json or a pnpm-workspace.yaml catalog or override) could pull code from outside the
+// registry or from packs/, or when Python files appear before the F-004 toolchain exists.
 import { basename, join, posix } from 'node:path';
-import type { z } from 'zod';
 import { SPECIFIER_ALLOWLIST } from '@ralysa/eslint-config/boundaries';
-import {
-  AllowBuildsRegister,
-  LIFECYCLE_SCRIPTS,
-  LifecycleAllowlist,
-  PnpmfileRegister,
-  ConfigDependenciesRegister,
-  REQUIRED_SCRIPTS,
-  WorkspacePackageJson,
-} from './contracts/workspace.ts';
+import { checkConfigGate, resolveWorkspaceGlobs } from './config-gate.ts';
+import { REQUIRED_SCRIPTS, WorkspacePackageJson } from './contracts/workspace.ts';
+import { parseMiniYaml } from './lib/mini-yaml.ts';
 import {
   type Finding,
   isRecord,
-  listPnpmWorkspaces,
   listRepoFiles,
   listWorkspaceDirs,
   readJson,
   readYaml,
   toPosix,
 } from './lib/repo.ts';
+import { existsSync, readFileSync } from 'node:fs';
 
 export interface SpecifierException {
   workspace: string;
@@ -37,13 +33,11 @@ export interface SpecifierException {
 
 export interface CheckWorkspacesOptions {
   root: string;
-  /** Workspace dirs as pnpm resolves them; defaults to `pnpm ls -r`. */
-  pnpmWorkspaces?: string[];
   /** Repo files (posix, relative); defaults to git's tracked + untracked-not-ignored files. */
   repoFiles?: string[];
   /** Reviewed exotic-specifier exceptions; defaults to boundaries.js SPECIFIER_ALLOWLIST. */
   specifierAllowlist?: SpecifierException[];
-  /** Folder that holds lifecycle-allowlist.json and allow-builds.json. */
+  /** Folder that holds the registers (lifecycle-allowlist.json, allow-builds.json, ...). */
   registersDir?: string;
 }
 
@@ -218,295 +212,6 @@ function checkWorkspaceSpecifiers(
   }
 }
 
-const PNPMFILE = /(^|\/)\.?pnpmfile\.(c|m)?js$/;
-
-/**
- * pnpm loads the root `.pnpmfile.cjs`/`.pnpmfile.mjs` (or whatever the `pnpmfile` setting names)
- * on every install and runs its hooks, which can rewrite any manifest. Each one needs a reviewed
- * entry, pinned to its content hash, in pnpmfile-allowlist.json (code review M2).
- */
-function checkPnpmfiles(
-  root: string,
-  settings: Record<string, unknown>,
-  repoFiles: string[],
-  register: PnpmfileRegisterType,
-  findings: Finding[],
-): void {
-  const candidates = new Set(repoFiles.filter((file) => PNPMFILE.test(file)));
-  const named: [string, unknown][] = [
-    ['pnpmfile', settings.pnpmfile],
-    ['globalPnpmfile', settings.globalPnpmfile],
-  ];
-  const npmrc = join(root, '.npmrc');
-  if (existsSync(npmrc)) {
-    for (const match of readFileSync(npmrc, 'utf8').matchAll(
-      /^\s*(global-pnpmfile|pnpmfile)\s*=\s*(.+?)\s*$/gim,
-    )) {
-      named.push([`.npmrc ${match[1] ?? 'pnpmfile'}`, match[2]]);
-    }
-  }
-  for (const [setting, value] of named) {
-    if (value === undefined || value === null) continue;
-    if (setting.toLowerCase().includes('global')) {
-      findings.push({
-        rule: 'pnpm/pnpmfile',
-        path: setting.startsWith('.npmrc') ? '.npmrc' : 'pnpm-workspace.yaml',
-        message: `${setting} must not be set: a pnpmfile outside the repo can't be reviewed`,
-      });
-      continue;
-    }
-    for (const path of [value].flat()) {
-      if (typeof path !== 'string') continue;
-      const rel = posix.normalize(toPosix(path)).replace(/^\.\//, '');
-      if (rel.startsWith('/') || rel.startsWith('..')) {
-        findings.push({
-          rule: 'pnpm/pnpmfile',
-          path: 'pnpm-workspace.yaml',
-          message: `${setting} points outside the repository (${path}); it can't be reviewed`,
-        });
-      } else {
-        candidates.add(rel);
-      }
-    }
-  }
-  for (const file of [...candidates].sort()) {
-    const full = join(root, file);
-    const entry = register.entries.find((e) => e.path === file);
-    const hash = existsSync(full)
-      ? createHash('sha256').update(readFileSync(full)).digest('hex')
-      : undefined;
-    if (entry === undefined) {
-      findings.push({
-        rule: 'pnpm/pnpmfile',
-        path: file,
-        message:
-          'pnpm runs this pnpmfile on every install; it needs a reviewed entry in tooling/repo-scripts/pnpmfile-allowlist.json',
-      });
-    } else if (hash !== entry.sha256) {
-      findings.push({
-        rule: 'pnpm/pnpmfile',
-        path: file,
-        message: `content changed since review (sha256 ${hash ?? 'missing file'} ≠ ${entry.sha256}); review it again and update pnpmfile-allowlist.json`,
-      });
-    }
-  }
-}
-
-function checkLifecycleScripts(
-  where: string,
-  pkg: Record<string, unknown>,
-  allowlist: LifecycleRegister,
-  findings: Finding[],
-): void {
-  const scripts = pkg.scripts;
-  if (!isRecord(scripts)) return;
-  const name = typeof pkg.name === 'string' ? pkg.name : where;
-  for (const script of LIFECYCLE_SCRIPTS) {
-    const command = scripts[script];
-    if (command === undefined) continue;
-    const allowed = allowlist.entries.some(
-      (entry) => entry.package === name && entry.script === script && entry.command === command,
-    );
-    if (!allowed) {
-      findings.push({
-        rule: 'lifecycle/script',
-        path: where === '' ? 'package.json' : `${where}/package.json`,
-        message: `lifecycle script "${script}" is not in tooling/repo-scripts/lifecycle-allowlist.json (it would run on every pnpm install; SEC-F001-11)`,
-      });
-    }
-  }
-}
-
-type LifecycleRegister = z.infer<typeof LifecycleAllowlist>;
-type PnpmfileRegisterType = z.infer<typeof PnpmfileRegister>;
-type ConfigDependenciesRegisterType = z.infer<typeof ConfigDependenciesRegister>;
-
-/** pnpm 11's `isPluginName`: config dependencies whose pnpmfile pnpm loads automatically. */
-export function isPnpmPluginName(name: string): boolean {
-  return (
-    /^pnpm-plugin-/.test(name) || /^@pnpm\/plugin-/.test(name) || /^@[^/]+\/pnpm-plugin-/.test(name)
-  );
-}
-
-function configDependencySpecifier(value: unknown): string {
-  if (typeof value === 'string') return value;
-  if (isRecord(value) && typeof value.version === 'string' && typeof value.integrity === 'string') {
-    return `${value.version}+${value.integrity}`;
-  }
-  return JSON.stringify(value);
-}
-
-/**
- * configDependencies are installed before the workspace and can change pnpm's own behaviour:
- * pnpm 11 auto-loads the pnpmfile of any `pnpm-plugin-*`, `@pnpm/plugin-*` or
- * `@<scope>/pnpm-plugin-*` config dependency and runs its hooks before install. Every entry
- * therefore needs a reviewed register entry for its exact version and integrity (code review N1).
- */
-function checkConfigDependencies(
-  settings: Record<string, unknown>,
-  register: ConfigDependenciesRegisterType,
-  findings: Finding[],
-): void {
-  const deps = settings.configDependencies;
-  if (deps === undefined || deps === null) return;
-  if (!isRecord(deps)) {
-    findings.push({
-      rule: 'pnpm/config-dependencies',
-      path: 'pnpm-workspace.yaml',
-      message: 'configDependencies must be a mapping',
-    });
-    return;
-  }
-  for (const [name, value] of Object.entries(deps)) {
-    const specifier = configDependencySpecifier(value);
-    const reviewed = register.entries.some((e) => e.package === name && e.specifier === specifier);
-    if (reviewed) continue;
-    const plugin = isPnpmPluginName(name)
-      ? ' It is a pnpm plugin name, so pnpm also loads its pnpmfile and runs its hooks before install.'
-      : '';
-    findings.push({
-      rule: 'pnpm/config-dependencies',
-      path: 'pnpm-workspace.yaml',
-      message: `configDependencies.${name} = "${specifier}" is not in tooling/repo-scripts/config-dependencies.json with this exact version and integrity; config dependencies install before everything else and can change how pnpm behaves.${plugin}`,
-    });
-  }
-}
-
-function loadRegister<T>(
-  file: string,
-  schema: { parse: (value: unknown) => T },
-  findings: Finding[],
-): T | undefined {
-  if (!existsSync(file)) {
-    findings.push({ rule: 'registers/missing', path: file, message: 'register file is missing' });
-    return undefined;
-  }
-  try {
-    return schema.parse(readJson(file));
-  } catch (error) {
-    findings.push({ rule: 'registers/schema', path: file, message: String(error) });
-    return undefined;
-  }
-}
-
-function readWorkspaceSettings(root: string, findings: Finding[]): Record<string, unknown> {
-  const settings = readYaml(join(root, 'pnpm-workspace.yaml'));
-  if (isRecord(settings)) return settings;
-  findings.push({
-    rule: 'pnpm/settings',
-    path: 'pnpm-workspace.yaml',
-    message: 'not a YAML mapping',
-  });
-  return {};
-}
-
-/**
- * Resolves the `packages` globs of pnpm-workspace.yaml to workspace folders (those with a
- * package.json) without asking pnpm, so a widened glob is caught even when pnpm isn't run.
- */
-export function resolveWorkspaceGlobs(root: string, settings: Record<string, unknown>): string[] {
-  const globs = Array.isArray(settings.packages)
-    ? settings.packages.filter((g): g is string => typeof g === 'string')
-    : [];
-  const include = globs.filter((g) => !g.startsWith('!')).map((g) => g.replace(/^\.\//, ''));
-  const exclude = globs
-    .filter((g) => g.startsWith('!'))
-    .map((g) => g.slice(1).replace(/^\.\//, ''));
-  const found = globSync(
-    include.map((g) => `${g.replace(/\/+$/, '')}/package.json`),
-    {
-      cwd: root,
-      exclude: (path: string) => /(^|\/)node_modules(\/|$)/.test(toPosix(path)),
-    },
-  )
-    .map((file) => posix.dirname(toPosix(file)))
-    .filter((dir) => dir !== '.');
-  const excluded = new Set(
-    exclude.length === 0
-      ? []
-      : globSync(exclude, { cwd: root }).map((dir) => toPosix(dir).replace(/\/+$/, '')),
-  );
-  return [...new Set(found)].filter((dir) => !excluded.has(dir)).sort();
-}
-
-function checkPnpmSettings(
-  root: string,
-  settings: Record<string, unknown>,
-  allowBuilds: string[],
-  findings: Finding[],
-): void {
-  const packages = Array.isArray(settings.packages) ? settings.packages : [];
-  if (packages.some((glob) => typeof glob === 'string' && /^(\.\/)?packs(\/|$)/.test(glob))) {
-    findings.push({
-      rule: 'pnpm/packs-in-workspace',
-      path: 'pnpm-workspace.yaml',
-      message: 'packs/* must not be a workspace glob (RF-7)',
-    });
-  }
-
-  if (settings.enablePrePostScripts === true) {
-    findings.push({
-      rule: 'pnpm/enable-pre-post-scripts',
-      path: 'pnpm-workspace.yaml',
-      message: 'enablePrePostScripts must not be true (SEC-F001-19)',
-    });
-  }
-
-  if (settings.strictDepBuilds === false) {
-    findings.push({
-      rule: 'pnpm/strict-dep-builds',
-      path: 'pnpm-workspace.yaml',
-      message: 'strictDepBuilds must not be turned off (RF-3)',
-    });
-  }
-
-  const builds = settings.allowBuilds;
-  if (builds !== undefined && !isRecord(builds)) {
-    findings.push({
-      rule: 'pnpm/allow-builds',
-      path: 'pnpm-workspace.yaml',
-      message: 'allowBuilds must be a mapping',
-    });
-  } else if (builds !== undefined) {
-    for (const [pkg, value] of Object.entries(builds)) {
-      if (value === false) continue;
-      if (!allowBuilds.includes(pkg)) {
-        findings.push({
-          rule: 'pnpm/allow-builds',
-          path: 'pnpm-workspace.yaml',
-          message: `allowBuilds["${pkg}"] is ${JSON.stringify(value)} without a reviewed entry in tooling/repo-scripts/allow-builds.json (SEC-F001-19)`,
-        });
-      }
-    }
-  }
-
-  // dangerouslyAllowAllBuilds is banned in every place pnpm reads settings from.
-  for (const file of ['pnpm-workspace.yaml', '.npmrc', 'package.json']) {
-    const full = join(root, file);
-    if (!existsSync(full)) continue;
-    if (
-      /dangerouslyAllowAllBuilds|dangerously-allow-all-builds/i.test(readFileSync(full, 'utf8'))
-    ) {
-      findings.push({
-        rule: 'pnpm/dangerously-allow-all-builds',
-        path: file,
-        message: 'dangerouslyAllowAllBuilds must never be set (SEC-F001-19)',
-      });
-    }
-  }
-  const npmrc = join(root, '.npmrc');
-  if (
-    existsSync(npmrc) &&
-    /^\s*enable-pre-post-scripts\s*=\s*true/im.test(readFileSync(npmrc, 'utf8'))
-  ) {
-    findings.push({
-      rule: 'pnpm/enable-pre-post-scripts',
-      path: '.npmrc',
-      message: 'enable-pre-post-scripts must not be true (SEC-F001-19)',
-    });
-  }
-}
-
 function checkPython(repoFiles: string[], findings: Finding[]): void {
   for (const file of repoFiles) {
     if (!PYTHON_FILE.test(file)) continue;
@@ -519,48 +224,62 @@ function checkPython(repoFiles: string[], findings: Finding[]): void {
   }
 }
 
+function checkWorkspaceSettings(settings: Record<string, unknown>, findings: Finding[]): void {
+  const packages = Array.isArray(settings.packages) ? settings.packages : [];
+  if (packages.some((glob) => typeof glob === 'string' && /^(\.\/)?packs(\/|$)/.test(glob))) {
+    findings.push({
+      rule: 'pnpm/packs-in-workspace',
+      path: 'pnpm-workspace.yaml',
+      message: 'packs/* must not be a workspace glob (RF-7)',
+    });
+  }
+  if (settings.strictDepBuilds === false) {
+    findings.push({
+      rule: 'pnpm/strict-dep-builds',
+      path: 'pnpm-workspace.yaml',
+      message: 'strictDepBuilds must not be turned off (RF-3)',
+    });
+  }
+}
+
 export function checkWorkspaces(options: CheckWorkspacesOptions): Finding[] {
   const { root } = options;
-  const registersDir = options.registersDir ?? join(root, 'tooling', 'repo-scripts');
+
+  // 1. The static config gate. Nothing below may run while it has findings.
+  const gate = checkConfigGate({
+    root,
+    ...(options.registersDir ? { registersDir: options.registersDir } : {}),
+  });
+  if (gate.findings.length > 0) return gate.findings;
+
   const findings: Finding[] = [];
 
-  const lifecycle = loadRegister(
-    join(registersDir, 'lifecycle-allowlist.json'),
-    LifecycleAllowlist,
-    findings,
-  ) ?? {
-    entries: [],
-  };
-  const allowBuilds = loadRegister(
-    join(registersDir, 'allow-builds.json'),
-    AllowBuildsRegister,
-    findings,
-  ) ?? {
-    entries: [],
-  };
+  // 2. The gate's strict YAML reader and the full `yaml` parser must agree exactly, so no
+  //    setting can be read one way by the gate and another way by pnpm or the checks below.
+  const workspaceFile = join(root, 'pnpm-workspace.yaml');
+  const settingsRaw = readYaml(workspaceFile);
+  const settings = isRecord(settingsRaw) ? settingsRaw : {};
+  if (!isRecord(settingsRaw)) {
+    findings.push({
+      rule: 'pnpm/settings',
+      path: 'pnpm-workspace.yaml',
+      message: 'not a YAML mapping',
+    });
+  }
+  const strict = parseMiniYaml(readFileSync(workspaceFile, 'utf8'));
+  if (JSON.stringify(strict) !== JSON.stringify(settings)) {
+    findings.push({
+      rule: 'pnpm/yaml-differential',
+      path: 'pnpm-workspace.yaml',
+      message:
+        "the gate's strict YAML reader and the yaml package read this file differently; simplify the YAML",
+    });
+  }
 
-  const pnpmfiles = loadRegister(
-    join(registersDir, 'pnpmfile-allowlist.json'),
-    PnpmfileRegister,
-    findings,
-  ) ?? { entries: [] };
-
-  const configDeps = loadRegister(
-    join(registersDir, 'config-dependencies.json'),
-    ConfigDependenciesRegister,
-    findings,
-  ) ?? { entries: [] };
-
-  const settings = readWorkspaceSettings(root, findings);
+  // 3. Workspace coverage: every folder under the four roots is a workspace, and nothing else is.
   const dirs = listWorkspaceDirs(root);
-  const pnpmWorkspaces = new Set(options.pnpmWorkspaces ?? listPnpmWorkspaces(root));
-  const packages = new Map<string, Record<string, unknown>>();
-
-  // Every workspace pnpm would use must sit directly under apps/, packages/, services/ or
-  // tooling/: widened globs (`*/*`, `deploy/*`, `packs/**`) are caught whichever way they're
-  // written, from pnpm's own list and from resolving the globs here (code review m1).
   const inRoots = new Set(dirs);
-  const resolved = new Set([...pnpmWorkspaces, ...resolveWorkspaceGlobs(root, settings)]);
+  const resolved = new Set(resolveWorkspaceGlobs(root, settings.packages));
   for (const dir of [...resolved].sort()) {
     if (inRoots.has(dir)) continue;
     findings.push({
@@ -571,6 +290,7 @@ export function checkWorkspaces(options: CheckWorkspacesOptions): Finding[] {
     });
   }
 
+  const packages = new Map<string, Record<string, unknown>>();
   for (const dir of dirs) {
     const manifest = join(root, dir, 'package.json');
     if (!existsSync(manifest)) {
@@ -595,12 +315,11 @@ export function checkWorkspaces(options: CheckWorkspacesOptions): Finding[] {
     if (!isRecord(pkg)) continue;
     packages.set(dir, pkg);
 
-    if (!pnpmWorkspaces.has(dir)) {
+    if (!resolved.has(dir)) {
       findings.push({
-        rule: 'workspace/not-in-pnpm',
+        rule: 'workspace/not-in-globs',
         path: dir,
-        message:
-          'has a package.json but pnpm does not list it as a workspace (check pnpm-workspace.yaml)',
+        message: 'has a package.json but no pnpm-workspace.yaml glob includes it',
       });
     }
 
@@ -628,6 +347,7 @@ export function checkWorkspaces(options: CheckWorkspacesOptions): Finding[] {
     }
   }
 
+  // 4. Specifiers in every manifest and in pnpm-workspace.yaml.
   const internalNames = new Map<string, string>();
   for (const pkg of packages.values()) {
     const meta = pkg.ralysa;
@@ -635,7 +355,6 @@ export function checkWorkspaces(options: CheckWorkspacesOptions): Finding[] {
       internalNames.set(pkg.name, meta.kind);
     }
   }
-
   const allowlist = options.specifierAllowlist ?? SPECIFIER_ALLOWLIST;
   const rootPkg = readJson(join(root, 'package.json'));
   const everyManifest: [string, Record<string, unknown>][] = [
@@ -643,21 +362,13 @@ export function checkWorkspaces(options: CheckWorkspacesOptions): Finding[] {
     ...packages.entries(),
   ];
   for (const [where, pkg] of everyManifest) {
-    checkLifecycleScripts(where, pkg, lifecycle, findings);
     checkSpecifiers(where, pkg, internalNames, allowlist, findings);
   }
-
-  checkPnpmSettings(
-    root,
-    settings,
-    allowBuilds.entries.map((entry) => entry.package),
-    findings,
-  );
+  checkWorkspaceSettings(settings, findings);
   checkWorkspaceSpecifiers(settings, allowlist, findings);
-  const repoFiles = (options.repoFiles ?? listRepoFiles(root)).map(toPosix);
-  checkPnpmfiles(root, settings, repoFiles, pnpmfiles, findings);
-  checkConfigDependencies(settings, configDeps, findings);
-  checkPython(repoFiles, findings);
+
+  // 5. Python ban.
+  checkPython((options.repoFiles ?? listRepoFiles(root)).map(toPosix), findings);
 
   return findings;
 }

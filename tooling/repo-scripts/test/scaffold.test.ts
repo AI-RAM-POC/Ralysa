@@ -139,8 +139,7 @@ describe('scaffold templates pass every gate on creation (TC-F-001-46)', () => {
   }
 
   it('check-workspaces accepts all five new packages', () => {
-    const dirs = listWorkspaceDirs(root);
-    const findings = checkWorkspaces({ root, pnpmWorkspaces: dirs, repoFiles: [] });
+    const findings = checkWorkspaces({ root, repoFiles: [] });
     expect(findings).toEqual([]);
   });
 

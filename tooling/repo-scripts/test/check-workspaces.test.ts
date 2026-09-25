@@ -7,8 +7,6 @@ import { checkWorkspaces, exoticSpecifierKind } from '../src/check-workspaces.ts
 import { findRepoRoot } from '../src/lib/repo.ts';
 import { type FixtureWorkspace, makeFixtureRepo, validWorkspacePackage } from './fixture-repo.ts';
 
-const TOOLING = 'tooling/repo-scripts';
-
 function run(
   options: Parameters<typeof makeFixtureRepo>[0] = {},
   extra: {
@@ -18,10 +16,8 @@ function run(
 ) {
   const fixture = makeFixtureRepo(options);
   extra.setup?.(fixture);
-  const dirs = [TOOLING, ...(options.workspaces ?? []).map((w) => w.dir)];
   return checkWorkspaces({
     root: fixture.root,
-    pnpmWorkspaces: dirs,
     repoFiles: extra.repoFiles ?? [],
     specifierAllowlist: [],
   });
@@ -53,15 +49,15 @@ describe('check-workspaces: coverage (TC-F-001-01)', () => {
     );
   });
 
-  it('fails on a workspace pnpm does not list', () => {
-    const fixture = makeFixtureRepo({ workspaces: [service()] });
-    const findings = checkWorkspaces({
-      root: fixture.root,
-      pnpmWorkspaces: [TOOLING],
-      repoFiles: [],
-      specifierAllowlist: [],
+  it('fails on a workspace no pnpm-workspace.yaml glob includes', () => {
+    const fixture = makeFixtureRepo({
+      workspaces: [service()],
+      workspaceYaml: 'packages:\n  - "apps/*"\n  - "tooling/*"\n',
     });
-    expect(rules(findings)).toContain('workspace/not-in-pnpm');
+    const findings = checkWorkspaces({ root: fixture.root, repoFiles: [], specifierAllowlist: [] });
+    expect(findings).toContainEqual(
+      expect.objectContaining({ rule: 'workspace/not-in-globs', path: 'services/demo' }),
+    );
   });
 
   it.each(['lint', 'typecheck', 'test', 'build'])(
@@ -242,7 +238,6 @@ describe('check-workspaces: dependency specifiers (TC-F-001-42, SEC-F001-09 a, -
     });
     const findings = checkWorkspaces({
       root: fixture.root,
-      pnpmWorkspaces: [TOOLING, 'services/demo'],
       repoFiles: [],
       specifierAllowlist: [
         { workspace: 'services/demo', dependency: 'x', specifier: 'github:o/r', reason: 'fork' },
@@ -267,7 +262,6 @@ describe('check-workspaces: dependency specifiers (TC-F-001-42, SEC-F001-09 a, -
     });
     const findings = checkWorkspaces({
       root: fixture.root,
-      pnpmWorkspaces: [TOOLING, 'services/demo'],
       repoFiles: [],
       specifierAllowlist: [
         { workspace: 'services/demo', dependency: 'p', specifier, reason: 'nope' },
@@ -321,7 +315,6 @@ describe('check-workspaces: register files', () => {
     const root = findRepoRoot();
     const findings = checkWorkspaces({
       root,
-      pnpmWorkspaces: [],
       repoFiles: [],
       specifierAllowlist: [],
     });
@@ -361,7 +354,6 @@ describe('check-workspaces: pnpm-workspace.yaml catalogs and overrides (code rev
     });
     const findings = checkWorkspaces({
       root: fixture.root,
-      pnpmWorkspaces: [TOOLING],
       repoFiles: [],
       specifierAllowlist: [
         {
@@ -486,19 +478,6 @@ describe('check-workspaces: install-time hooks (code review M2)', () => {
 });
 
 describe('check-workspaces: workspaces outside the four roots (code review m1)', () => {
-  it('flags a workspace pnpm lists outside apps/, packages/, services/ and tooling/', () => {
-    const fixture = makeFixtureRepo();
-    const findings = checkWorkspaces({
-      root: fixture.root,
-      pnpmWorkspaces: [TOOLING, 'deploy/docker'],
-      repoFiles: [],
-      specifierAllowlist: [],
-    });
-    expect(findings).toContainEqual(
-      expect.objectContaining({ rule: 'workspace/outside-roots', path: 'deploy/docker' }),
-    );
-  });
-
   it.each([
     ['*/*', ['deploy/docker', 'packs/finance']],
     ['deploy/*', ['deploy/docker']],
@@ -513,7 +492,6 @@ describe('check-workspaces: workspaces outside the four roots (code review m1)',
     fixture.writeJson('deploy/docker/node_modules/x/package.json', { name: 'x' });
     const findings = checkWorkspaces({
       root: fixture.root,
-      pnpmWorkspaces: [TOOLING],
       repoFiles: [],
       specifierAllowlist: [],
     });
@@ -528,7 +506,6 @@ describe('check-workspaces: workspaces outside the four roots (code review m1)',
     fixture.writeJson('deploy/docker/package.json', { name: 'docker' });
     const findings = checkWorkspaces({
       root: fixture.root,
-      pnpmWorkspaces: [TOOLING],
       repoFiles: [],
       specifierAllowlist: [],
     });
