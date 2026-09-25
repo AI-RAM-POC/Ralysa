@@ -1,0 +1,99 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ralysa:schema:oauth-authorization-server-metadata.v1",
+  "title": "AuthorizationServerMetadata",
+  "type": "object",
+  "properties": {
+    "issuer": {
+      "type": "string",
+      "format": "uri"
+    },
+    "authorization_endpoint": {
+      "type": "string",
+      "format": "uri"
+    },
+    "token_endpoint": {
+      "type": "string",
+      "format": "uri"
+    },
+    "revocation_endpoint": {
+      "type": "string",
+      "format": "uri"
+    },
+    "jwks_uri": {
+      "type": "string",
+      "format": "uri"
+    },
+    "response_types_supported": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "type": "string",
+          "const": "code"
+        }
+      ],
+      "items": false,
+      "minItems": 1,
+      "maxItems": 1
+    },
+    "grant_types_supported": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "authorization_code",
+          "refresh_token",
+          "urn:ietf:params:oauth:grant-type:token-exchange",
+          "client_credentials"
+        ]
+      }
+    },
+    "code_challenge_methods_supported": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "type": "string",
+          "const": "S256"
+        }
+      ],
+      "items": false,
+      "minItems": 1,
+      "maxItems": 1
+    },
+    "token_endpoint_auth_methods_supported": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "enum": [
+          "none",
+          "private_key_jwt"
+        ]
+      }
+    },
+    "token_endpoint_auth_signing_alg_values_supported": {
+      "type": "array",
+      "prefixItems": [
+        {
+          "type": "string",
+          "const": "ES256"
+        }
+      ],
+      "items": false,
+      "minItems": 1,
+      "maxItems": 1
+    }
+  },
+  "required": [
+    "issuer",
+    "authorization_endpoint",
+    "token_endpoint",
+    "revocation_endpoint",
+    "jwks_uri",
+    "response_types_supported",
+    "grant_types_supported",
+    "code_challenge_methods_supported",
+    "token_endpoint_auth_methods_supported",
+    "token_endpoint_auth_signing_alg_values_supported"
+  ],
+  "additionalProperties": {}
+}

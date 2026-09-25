@@ -3,20 +3,35 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Placeholder package (F-001 design §2.1): only README.md and package.json until F-002 converts it (--kind service).",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
   "scripts": {
-    "build": "ralysa-repo placeholder-guard",
-    "lint": "ralysa-repo placeholder-guard",
-    "test": "ralysa-repo placeholder-guard",
-    "typecheck": "ralysa-repo placeholder-guard"
+    "build": "tsc -p tsconfig.build.json",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "typecheck": "tsc -p tsconfig.json"
   },
   "devDependencies": {
-    "@ralysa/repo-scripts": "workspace:*"
+    "@ralysa/eslint-config": "workspace:*",
+    "@ralysa/tsconfig": "workspace:*",
+    "@ralysa/vitest-config": "workspace:*",
+    "@types/node": "catalog:",
+    "eslint": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   },
   "ralysa": {
-    "kind": "placeholder",
+    "kind": "service",
     "shipped": true,
     "ui": false,
-    "artefacts": []
-  }
+    "artefacts": [
+      "dist"
+    ]
+  },
+  "description": "Ralysa control plane: token service (RTS), directory, audit ingest and query, sealer (F-002)."
 }

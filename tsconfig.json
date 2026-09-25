@@ -3,7 +3,12 @@
   "references": [
     { "path": "apps/ui-lab" },
     { "path": "apps/web" },
+    { "path": "packages/auth" },
+    { "path": "packages/protocol" },
+    { "path": "packages/secrets" },
     { "path": "packages/ui" },
+    { "path": "services/control-plane" },
+    { "path": "tooling/dev-stack" },
     { "path": "tooling/eslint-config" },
     { "path": "tooling/repo-scripts" },
     { "path": "tooling/stylelint-config" },

@@ -1,0 +1,11 @@
+{
+  "extends": "@ralysa/tsconfig/node-service.json",
+  "compilerOptions": {
+    // src/cli.ts runs on Node 24 type stripping before `pnpm install` (the .env generator), so
+    // imports carry .ts extensions and only erasable syntax is allowed. tsconfig.build.json
+    // rewrites the extensions when it emits dist/ (the compose mock-idp service, F-002-T09).
+    "allowImportingTsExtensions": true,
+    "erasableSyntaxOnly": true
+  },
+  "include": ["src", "test", "*.config.ts"]
+}

@@ -11,6 +11,8 @@ export default node;
 - `node`: node environment. For services, CLIs, tooling and isomorphic libraries.
 - `jsdom`: jsdom environment. For React components; the workspace adds `jsdom` as a devDependency.
 
-Both presets collect `src/**/*.test.{ts,tsx}` and `test/**/*.test.{ts,tsx}`, restore mocks, env and globals between tests, and fail when a workspace has no tests.
+- `integration`: node environment for a workspace's `test:integration` script. It collects only `test/integration/**/*.int.ts`, with longer timeouts, and is used on its own in `vitest.integration.config.ts` (not merged with `node`, because `mergeConfig` concatenates `include`).
+
+`node` and `jsdom` collect `src/**/*.test.{ts,tsx}` and `test/**/*.test.{ts,tsx}`, restore mocks, env and globals between tests, and fail when a workspace has no tests.
 
 **`test` is hermetic:** no network, database or containers. Tests that need Postgres, Redis or another service go in a separate `test:integration` script (see `docs/engineering/repo-conventions.md`). There are no environment variables.

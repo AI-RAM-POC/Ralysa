@@ -8,6 +8,16 @@
 // - The `secret-scan` job runs no install and no build.
 // - Every Playwright image reference is pinned by digest, and all use the same digest (CI and
 //   apps/ui-lab/scripts/e2e-update.sh), once T13/T14 add them.
+// F-002-T02 (design §2, §8.5; SEC-F002-27, -28):
+// - `ci/pre-install-gate-first`: in every job of every workflow, the pre-install gate runs before
+//   anything that invokes a package manager: a `run` line calling pnpm, pnpx, npx, npm, yarn,
+//   corepack or turbo, `actions/setup-node` with a `cache` (it runs `pnpm store path` or the
+//   like), or `pnpm/action-setup`.
+// - `ci/integration-no-secrets`: a job named `integration` references no `secrets.*`, has
+//   `permissions: contents: read` and nothing else, and checks out with
+//   `persist-credentials: false`.
+// - `ci/integration-artefact`: that job's container logs name `postgres` only (the OpenBao dev
+//   server prints its root token and unseal key), and its uploads expire within 3 days.
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { type Finding, isRecord, readJson, readYaml } from './lib/repo.ts';
@@ -49,6 +59,119 @@ function checkGitleaksCalls(path: string, text: string, findings: Finding[]): vo
         path,
         message: `a gitleaks call without --config: "${line.trim()}" (SEC-F001-06)`,
       });
+    }
+  }
+}
+
+/** A shell command word that runs a package manager (pnpm installs configDependencies first). */
+const PACKAGE_MANAGER = /(?:^|[\s;&|(`])(?:pnpm|pnpx|npx|npm|yarn|corepack|turbo)(?=$|[\s;&|)`])/;
+const PRE_INSTALL_GATE = /(?:^|[\s;&|])node\s+tooling\/repo-scripts\/src\/pre-install-gate\.ts\b/;
+
+/** What in a `uses:` step shells out to a package manager, if anything. */
+function packageManagerAction(step: Record<string, unknown>): string | undefined {
+  const uses = typeof step.uses === 'string' ? step.uses : '';
+  const withs = isRecord(step.with) ? step.with : {};
+  if (uses.startsWith('pnpm/action-setup@')) return uses;
+  if (uses.startsWith('actions/setup-node@') && withs.cache !== undefined && withs.cache !== '') {
+    return `${uses} with cache: ${JSON.stringify(withs.cache)}`;
+  }
+  return undefined;
+}
+
+function checkPreInstallGateFirst(
+  path: string,
+  name: string,
+  steps: Record<string, unknown>[],
+  findings: Finding[],
+): void {
+  let gateSeen = false;
+  for (const step of steps) {
+    const action = packageManagerAction(step);
+    if (action !== undefined && !gateSeen) {
+      findings.push({
+        rule: 'ci/pre-install-gate-first',
+        path,
+        message: `jobs.${name}: "${action}" runs a package manager before the pre-install gate; add "node tooling/repo-scripts/src/pre-install-gate.ts" first (SEC-F002-28)`,
+      });
+      return;
+    }
+    for (const line of commands(runText(step))) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('#')) continue;
+      if (PRE_INSTALL_GATE.test(trimmed)) gateSeen = true;
+      else if (PACKAGE_MANAGER.test(trimmed) && !gateSeen) {
+        findings.push({
+          rule: 'ci/pre-install-gate-first',
+          path,
+          message: `jobs.${name}: "${trimmed}" runs before the pre-install gate; every pnpm command installs configDependencies and loads pnpmfiles (SEC-F002-28)`,
+        });
+        return;
+      }
+    }
+  }
+}
+
+function checkIntegrationJob(
+  path: string,
+  job: Record<string, unknown>,
+  steps: Record<string, unknown>[],
+  findings: Finding[],
+): void {
+  const where = `${path} (jobs.integration)`;
+  if (/\bsecrets\s*\./.test(JSON.stringify(job))) {
+    findings.push({
+      rule: 'ci/integration-no-secrets',
+      path: where,
+      message:
+        'the integration job runs PR code and must reference no secrets.*; it generates throwaway credentials per run (SEC-F002-27)',
+    });
+  }
+  const permissions = job.permissions;
+  const leastPrivilege =
+    isRecord(permissions) &&
+    Object.keys(permissions).length === 1 &&
+    permissions.contents === 'read';
+  if (!leastPrivilege) {
+    findings.push({
+      rule: 'ci/integration-no-secrets',
+      path: where,
+      message: `the integration job needs "permissions: contents: read" and nothing else; got ${JSON.stringify(permissions)} (SEC-F002-27)`,
+    });
+  }
+  for (const step of steps) {
+    const uses = typeof step.uses === 'string' ? step.uses : '';
+    const withs = isRecord(step.with) ? step.with : {};
+    if (uses.startsWith('actions/checkout@')) {
+      const persist = withs['persist-credentials'];
+      if (persist !== false && persist !== 'false') {
+        findings.push({
+          rule: 'ci/integration-no-secrets',
+          path: where,
+          message:
+            'the integration job checks out with credentials persisted; set "persist-credentials: false" (SEC-F002-27)',
+        });
+      }
+    }
+    if (uses.startsWith('actions/upload-artifact@')) {
+      const days = Number(withs['retention-days']);
+      if (!Number.isInteger(days) || days < 1 || days > 3) {
+        findings.push({
+          rule: 'ci/integration-artefact',
+          path: where,
+          message: 'integration artefacts need "retention-days" of at most 3 (SEC-F002-27)',
+        });
+      }
+    }
+    for (const line of commands(runText(step))) {
+      if (!/\bdocker\s+compose\b.*\blogs\b/.test(line)) continue;
+      const services = line.slice(line.search(/\blogs\b/) + 'logs'.length);
+      if (/openbao/i.test(line) || !/\bpostgres\b/.test(services)) {
+        findings.push({
+          rule: 'ci/integration-artefact',
+          path: where,
+          message: `"${line.trim()}" must name the postgres service only: the OpenBao dev server logs its root token and unseal key (SEC-F002-27)`,
+        });
+      }
     }
   }
 }
@@ -104,6 +227,8 @@ export function checkCiInvariants(files: CiFiles): Finding[] {
       const steps = stepsOf(rawJob);
       const text = steps.map(runText).join('\n');
       checkGitleaksCalls(`${path} (jobs.${name})`, text, findings);
+      checkPreInstallGateFirst(path, name, steps, findings);
+      if (name === 'integration') checkIntegrationJob(path, rawJob, steps, findings);
       noteImages(path, JSON.stringify(rawJob));
 
       if (RANGE_SCAN.test(text)) {

@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ralysa:schema:oauth-error.v1",
+  "title": "OAuthError",
+  "type": "object",
+  "properties": {
+    "error": {
+      "type": "string",
+      "enum": [
+        "invalid_request",
+        "invalid_client",
+        "invalid_grant",
+        "unauthorized_client",
+        "unsupported_grant_type",
+        "invalid_scope",
+        "access_denied",
+        "temporarily_unavailable"
+      ]
+    },
+    "error_description": {
+      "type": "string"
+    },
+    "ralysa_error": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "idp_error",
+            "invalid_idp_token",
+            "untrusted_issuer",
+            "expired",
+            "replay",
+            "mfa_claim_missing",
+            "browser_binding_failed",
+            "code_not_redeemed",
+            "not_in_access_group",
+            "user_disabled",
+            "device_code_disabled",
+            "admin_requires_strong_flow",
+            "loopback_ip_mismatch",
+            "idp_unavailable",
+            "group_overage_unresolved",
+            "revoked",
+            "reuse_detected",
+            "idp_session_revoked"
+          ]
+        },
+        "i18n_key": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "code",
+        "i18n_key"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "required": [
+    "error"
+  ],
+  "additionalProperties": false
+}

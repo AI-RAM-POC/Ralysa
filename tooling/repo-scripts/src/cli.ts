@@ -15,6 +15,7 @@
 //   ralysa-repo check-ci-invariants      packageManager hash, fetch-depth, gitleaks --config, cancel-in-progress
 //   ralysa-repo check-provider-hosts [--artefacts]   provider API hostnames in source (or shipped artefacts)
 //   ralysa-repo check-no-demo            demo sentinel and sample text in shipped builds (after a build)
+//   ralysa-repo check-integration-scope  *.int.ts read the dev stack only inside hooks and tests
 // The secret scans themselves run through secret-scan-cli.ts (dependency-free).
 //   ralysa-repo placeholder-guard        run inside a placeholder package (its four scripts)
 //   ralysa-repo scaffold <path> --kind <kind>
@@ -26,6 +27,7 @@ import { checkGitleaksConfigFiles } from './check-gitleaks-config.ts';
 import { checkI18n } from './check-i18n.ts';
 import { checkNoDemo } from './check-no-demo.ts';
 import { checkImports } from './check-imports.ts';
+import { checkIntegrationScope } from './check-integration-scope.ts';
 import { checkProviderHosts, checkProviderHostsInArtefacts } from './check-provider-hosts.ts';
 import { checkUiLint } from './check-ui-lint.ts';
 import { checkTsrefs } from './check-tsrefs.ts';
@@ -52,6 +54,7 @@ const REPO_CHECKS: Record<string, Check> = {
   'check-ci-invariants': (root) => checkCiInvariantsFiles(root),
   'check-provider-hosts': (root) => checkProviderHosts(root),
   'check-ui-lint': (root) => checkUiLint({ root }),
+  'check-integration-scope': (root) => checkIntegrationScope({ root }),
   'check-i18n': (root) => {
     const { findings, warnings, needsReview } = checkI18n({ root });
     for (const warning of warnings)

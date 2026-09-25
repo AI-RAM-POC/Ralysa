@@ -1,0 +1,47 @@
+// @ralysa/protocol/auth: token claims and OAuth contracts (F-002 design §3.2, §3.3, §3.9).
+export {
+  AccessTokenHeader,
+  Audience,
+  FORBIDDEN_JOSE_HEADERS,
+  ServiceAccessTokenClaims,
+  Surface,
+  TOKEN_LIFETIMES,
+  TokenRejectReason,
+  UserAccessTokenClaims,
+  kidFor,
+  kidPattern,
+} from './claims.js';
+export {
+  AUTH_I18N_KEYS,
+  INVALID_AUTHORIZE_REQUEST_KEY,
+  REFRESH_REASON_OUTCOMES,
+  RalysaErrorCode,
+  RefreshReason,
+  SIGN_IN_REASON_OUTCOMES,
+  SignInReason,
+  authI18nKey,
+  refreshI18nKey,
+  signInI18nKey,
+} from './errors.js';
+export {
+  ACCESS_TOKEN_TYPE_URN,
+  AUTHORIZATION_CODE_PATTERN,
+  AUTHORIZATION_CODE_PREFIX,
+  AuthorizationCodeRequest,
+  AuthorizationServerMetadata,
+  AuthorizeQuery,
+  CLI_CLIENT_ID,
+  ClientCredentialsRequest,
+  GRANT_TYPES,
+  JWT_BEARER_ASSERTION_TYPE,
+  OAuthError,
+  REFRESH_TOKEN_PATTERN,
+  REFRESH_TOKEN_PREFIX,
+  RefreshRequest,
+  RevokeRequest,
+  TOKEN_EXCHANGE_GRANT,
+  TokenExchangeRequest,
+  TokenRequest,
+  TokenResponse,
+} from './oauth.js';
+export { ACCESS_TOKEN_ALG, ACCESS_TOKEN_TYP } from './version.js';
