@@ -65,7 +65,7 @@ describe('bundled font coverage (TC-F-001-14)', () => {
   });
 
   it('skips default-ignorable code points (bidi controls, joiners), which are never drawn', () => {
-    const controls = '‎‏؜⁦⁧⁨⁩‌‍';
+    const controls = '\u200E\u200F\u061C\u2066\u2067\u2068\u2069\u200C\u200D';
     expect(missingCodePoints(controls, faces, SANS_STACK)).toEqual([]);
   });
 

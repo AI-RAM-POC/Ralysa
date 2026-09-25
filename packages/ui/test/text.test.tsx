@@ -102,8 +102,8 @@ describe('<T> and isolate() (§7.3.6)', () => {
   });
 
   it('isolate() and isolateValues() use FSI … PDI for attribute text', () => {
-    expect(isolate('report.pdf')).toBe('⁨report.pdf⁩');
-    expect(isolateValues({ a: 'x', b: 2 })).toEqual({ a: '⁨x⁩', b: '⁨2⁩' });
+    expect(isolate('report.pdf')).toBe('\u2068report.pdf\u2069');
+    expect(isolateValues({ a: 'x', b: 2 })).toEqual({ a: '\u2068x\u2069', b: '\u20682\u2069' });
   });
 });
 

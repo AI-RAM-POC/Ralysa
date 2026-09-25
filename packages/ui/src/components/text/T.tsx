@@ -14,8 +14,8 @@ export type I18nKey = ParseKeys<Namespace>;
 
 export type InterpolationValues = Readonly<Record<string, string | number>>;
 
-const FSI = '⁨';
-const PDI = '⁩';
+const FSI = '\u2068';
+const PDI = '\u2069';
 
 /** Wraps a value in FIRST STRONG ISOLATE … POP DIRECTIONAL ISOLATE. */
 export function isolate(value: string | number): string {
@@ -27,10 +27,11 @@ export function isolateValues(values: InterpolationValues): Record<string, strin
   return Object.fromEntries(Object.entries(values).map(([name, value]) => [name, isolate(value)]));
 }
 
-// Private-use markers stand in for the values while i18next interpolates, so the translated
-// string can be split around them. They never reach the DOM.
-const MARKER = /(\d+)/;
-const marker = (index: number): string => `${String(index)}`;
+// Private-use markers (U+E000 … U+E001) stand in for the values while i18next interpolates, so
+// the translated string can be split around them. They never reach the DOM. Written as escapes:
+// invisible characters in source are easy to lose or mistype (PR #17 review 5).
+const MARKER = /\uE000(\d+)\uE001/u;
+const marker = (index: number): string => `\uE000${String(index)}\uE001`;
 
 export interface TProps {
   i18nKey: I18nKey;
