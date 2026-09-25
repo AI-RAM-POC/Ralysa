@@ -3,6 +3,9 @@
 // traceparent, rate limits on unauthenticated routes, health, discovery.
 import { newTraceId } from '@ralysa/protocol/common';
 import Fastify, { type FastifyBaseLogger, type FastifyInstance, LogController } from 'fastify';
+import { registerClientEvents } from './audit/routes/client-events.js';
+import { registerAuditQuery } from './audit/routes/query.js';
+import { registerServiceEvents } from './audit/routes/service-events.js';
 import { type RtsServices, assembleRtsDeps, exchangeEnv } from './auth/deps.js';
 import { registerGovernanceFeed } from './auth/governance-feed.js';
 import { registerAuthorizeRoutes } from './auth/routes/authorize.js';
@@ -25,7 +28,7 @@ export const BODY_LIMIT_BYTES = 256 * 1024;
 export interface AppDeps {
   config: ServeConfig;
   keys: SigningKeys;
-  /** Sessions, grants, sign-in, the governance feed and the directory routes (T08, T10). */
+  /** Sessions, grants, sign-in, the governance feed, directory and audit routes (T08–T12). */
   rts: RtsServices;
   /** Database liveness for /readyz. */
   pingDatabase: () => Promise<boolean>;
@@ -117,6 +120,9 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   registerAuthorizeRoutes(app, rts, exchangeEnv(rts));
   registerGovernanceFeed(app, rts);
   registerDirectoryRoutes(app, rts);
+  registerServiceEvents(app, rts);
+  registerClientEvents(app, rts);
+  registerAuditQuery(app, rts);
   await app.ready();
   return app;
 }

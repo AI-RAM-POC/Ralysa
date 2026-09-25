@@ -41,6 +41,11 @@ export {
   createRevocationFeed,
 } from './verify/revocation-feed.js';
 export {
+  type RejectionReporter,
+  type RejectionReporterOptions,
+  createRejectionReporter,
+} from './verify/rejection-reporter.js';
+export {
   type PrincipalResolver,
   type PrincipalResolverOptions,
   PrincipalNotFoundError,

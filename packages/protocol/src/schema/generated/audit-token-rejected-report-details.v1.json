@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ralysa:schema:audit-token-rejected-report-details.v1",
+  "title": "TokenRejectedReportDetails",
+  "type": "object",
+  "properties": {
+    "audience": {
+      "type": "string",
+      "enum": [
+        "control-plane",
+        "agent-host",
+        "model-gateway",
+        "mcp-gateway",
+        "workspace-runtime"
+      ]
+    },
+    "reason": {
+      "type": "string",
+      "enum": [
+        "malformed",
+        "wrong_alg",
+        "wrong_typ",
+        "forbidden_header",
+        "unknown_kid",
+        "bad_signature",
+        "unknown_issuer",
+        "wrong_audience",
+        "expired",
+        "not_yet_valid",
+        "issued_in_future",
+        "wrong_token_use",
+        "session_revoked",
+        "user_revoked",
+        "governance_stale"
+      ]
+    },
+    "client_ip": {
+      "type": "string",
+      "maxLength": 45
+    },
+    "dropped_count": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 1000000
+    }
+  },
+  "required": [
+    "audience",
+    "reason"
+  ],
+  "additionalProperties": false
+}

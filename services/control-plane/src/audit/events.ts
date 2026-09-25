@@ -1,6 +1,6 @@
 // Builders for the audit events the control plane itself writes (§3.5 catalogue). Server-set
 // facts go under `details` (or `details.server` where a client also contributes).
-import type { Outcome } from '@ralysa/protocol/audit';
+import type { Outcome, Source } from '@ralysa/protocol/audit';
 import { newTraceId, uuidv7 } from '@ralysa/protocol/common';
 import type { StoredEventInput } from './columns.js';
 import type { EmittedRejection } from './rejections.js';
@@ -31,9 +31,14 @@ export function systemEvent(fields: SystemEventFields): StoredEventInput {
 
 /**
  * auth.token_rejected (§3.5, §6.4). The caller is unauthenticated, so the actor is an unknown user.
- * `suppressed_count` is present only on the per-minute summary.
+ * `suppressed_count` is present only on the per-minute summary. `source` is the verifier that
+ * rejected the token: the control plane itself, or the service whose report this is (taken from
+ * its service token, never from the report, §3.4.4).
  */
-export function tokenRejectedEvent(rejection: EmittedRejection): StoredEventInput {
+export function tokenRejectedEvent(
+  rejection: EmittedRejection,
+  source: Source = 'control-plane',
+): StoredEventInput {
   return {
     event_id: uuidv7(),
     action: 'auth.token_rejected',
@@ -44,7 +49,7 @@ export function tokenRejectedEvent(rejection: EmittedRejection): StoredEventInpu
     details: {
       audience: rejection.audience,
       reason: rejection.reason,
-      client_ip: rejection.clientIp,
+      ...(rejection.clientIp === '' ? {} : { client_ip: rejection.clientIp }),
       client_network: rejection.network,
       ...(rejection.suppressedCount === undefined
         ? {}
@@ -53,7 +58,7 @@ export function tokenRejectedEvent(rejection: EmittedRejection): StoredEventInpu
         ? {}
         : { networks_suppressed: rejection.networksSuppressed }),
     },
-    source: 'control-plane',
+    source,
     attestation: 'server',
   };
 }

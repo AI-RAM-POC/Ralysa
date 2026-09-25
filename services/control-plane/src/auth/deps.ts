@@ -3,6 +3,7 @@ import type { KeyCustody, SecretStore } from '@ralysa/secrets';
 import { createInMemorySecretStore } from '@ralysa/secrets';
 import type { Kysely } from 'kysely';
 import type { RejectionAggregator } from '../audit/rejections.js';
+import { type ServiceRejections, createServiceRejections } from '../audit/service-rejections.js';
 import type { AuditWriter } from '../audit/writer.js';
 import type { ServeConfig } from '../config/schema.js';
 import type { Database } from '../db/types.js';
@@ -38,6 +39,13 @@ export interface RtsServices {
   directory: IdpDirectory;
   writer: AuditWriter;
   rejections: RejectionAggregator;
+  /**
+   * ralysa_audit_reader: the audit query and the client path's duplicate check. Without it those
+   * routes answer 503 (hermetic tests).
+   */
+  auditReader?: Kysely<Database>;
+  /** auth.token_rejected reports from services, aggregated per service (serve flushes it). */
+  serviceRejections?: ServiceRejections;
   /** KV: the audit HMAC key (and, through the Graph directory, the IdP client secret). */
   secrets?: SecretStore;
   /** The pinned IdP's discovery document and keys (default: fetched from `idp.issuer`). */
@@ -66,6 +74,8 @@ export interface RtsDeps {
   clients: ClientRegistry;
   verifier: ControlPlaneVerifier;
   rejections: RejectionAggregator;
+  auditReader: Kysely<Database> | undefined;
+  serviceRejections: ServiceRejections;
   policyVersion: string;
   idpMetadata: IdpMetadataSource;
   validator: EntraTokenValidator;
@@ -116,6 +126,14 @@ export function assembleRtsDeps(
         },
         orgId: config.org.id,
         policyVersion: policyVersion(config.access),
+      }),
+    auditReader: services.auditReader,
+    serviceRejections:
+      services.serviceRejections ??
+      createServiceRejections({
+        writer,
+        logger,
+        ...(services.metrics === undefined ? {} : { metrics: services.metrics }),
       }),
     oidc:
       services.oidc ??

@@ -5,14 +5,20 @@ export {
   AuditEventView,
   AuditQuery,
   AuditQueryResponse,
+  CLIENT_EVENTS_PER_USER_PER_MINUTE,
+  CLIENT_GAP_FINAL_AFTER_MS,
   CLIENT_SESSIONS_MAX_OPEN,
+  CLIENT_SESSION_UNTERMINATED_AFTER_MS,
   ClientAuditEventInput,
   ClientEventsRequest,
   ClientEventsResponse,
+  ClientEventsUnavailable,
   IngestStatus,
   IntentAck,
   ServiceEventsRequest,
   ServiceEventsResponse,
+  ServiceIngestStatus,
+  TokenRejectedReportDetails,
 } from './audit-api.js';
 export { AuthConfig } from './auth-config.js';
 export { GOVERNANCE_FEED, GovernanceState, KillSwitchScope } from './governance.js';

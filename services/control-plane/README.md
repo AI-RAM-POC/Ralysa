@@ -16,7 +16,7 @@ schema and logs in to OpenBao as its own role (SEC-F002-02). So far:
 | --------------------------------- | --------------------------------------------------------------------- | ------------------------------- |
 | `migrate --config <file>`         | `ralysa_migrator`                                                     | `db_credentials.migrator`       |
 | `migrate --audit --config <file>` | `ralysa_audit_migrator` → `SET ROLE ralysa_audit_owner` (break-glass) | `db_credentials.audit_migrator` |
-| `serve --config <file>` | `ralysa_cp_app`, `ralysa_audit_writer` (and `ralysa_audit_reader` from T12) | `db_credentials.*`; signs tokens with Transit `ralysa-rts-signing` |
+| `serve --config <file>` | `ralysa_cp_app`, `ralysa_audit_writer`, `ralysa_audit_reader` (the audit query and the client path's duplicate check, T12) | `db_credentials.*`; signs tokens with Transit `ralysa-rts-signing` |
 | `bootstrap-org --config <file>` (serve config) | `ralysa_cp_app` | `db_credentials.cp_app` |
 | `sealer --config <file>` | `ralysa_audit_sealer` (its own process and deployment) | `db_credentials.audit_sealer`; signs with Transit `ralysa-audit-checkpoint` |
 | `audit-verify --config <file> [--org <uuid>] [--shard <s>] [--log-checkpoints <jsonl>]` | `ralysa_audit_reader` (read-only) | `db_credentials.audit_reader`; reads the checkpoint key's public versions |
@@ -40,8 +40,10 @@ job exits non-zero, saying the migrations were applied but not recorded.
     idp_device`) with `auth.session.revoked cause=device_code_disabled` and logs
     `device_code_disabled` with the count. This runs on every start, so a switch turned off while
     the service was down takes effect too (SEC-F002-32, D-30);
-  - polls the signing key, replays the audit spool every 30 s, runs the session cleanup every
-    minute, and listens.
+  - polls the signing key, replays the audit spool every 30 s, runs the session cleanup and the
+    client-session sweep every minute, and listens;
+  - logs `service_without_audit_source` for a registered service whose name has no audit source
+    (see "Audit endpoints"): such a service can use the internal routes but write no audit.
   - writes one `config_loaded` line with the resolved config file path and the names (never the
     values) of `RALYSA_CFG__*` overrides. Every entry point writes this line.
 - **Routes:**
@@ -59,6 +61,9 @@ job exits non-zero, saying the migrations were applied but not recorded.
   | `GET /v1/me` | The signed-in user, the calling session's roles and the user's groups (user token) |
   | `GET /v1/internal/principals/:user_id` | A user's status, roles and groups (service token) |
   | `GET /v1/internal/governance` | Revocations, kill switches and `epoch` for every PEP (service token) |
+  | `POST /v1/audit/events` | 201: service audit ingestion within the service's action allow-list (service token, T12) |
+  | `POST /v1/audit/client-events` | 201 (or 423 when a kill-switch halts an intent): client-attested local-tool audit with intent acks (user token, T12) |
+  | `GET /v1/audit/events` | An audit page for a platform admin, after `audit.query` is committed (user token, T12) |
   | `GET /healthz` | Liveness |
   | `GET /readyz` | Readiness: database, an active and freshly polled signing key, no custody violation |
 
@@ -138,7 +143,10 @@ job exits non-zero, saying the migrations were applied but not recorded.
     revocation transaction may stay open longer than that overlap, so each one caps itself with
     Postgres `transaction_timeout` = 15 s from its first revocation statement (a transaction that
     runs out revokes nothing and the request fails).
-  - `/v1/me` checks the user token against revocation in the database, not through the feed.
+  - `/v1/me` and the audit routes check the user token against revocation in the database, not
+    through the feed. Since T12 the control plane uses `@ralysa/auth`'s verifiers (user and
+    service tokens) over its own JWKS rows with a database `RevocationSource`; the Bearer scheme
+    is case-insensitive, and an unreadable key set answers 503.
   - **Cleanup** (every minute, every replica, one statement per batch):
     - a pending session whose authorization code expired unused is revoked, and
       `auth.sign_in failure code_not_redeemed` is written once;
@@ -235,6 +243,78 @@ job exits non-zero, saying the migrations were applied but not recorded.
   - Flow B is a strong sign-in: members of the admin group get `platform_admin`.
 - **Org source** (SEC-F002-31): unauthenticated routes act in `config.org.id`. A header, host,
   path or body never selects the org.
+
+## Audit endpoints (F-002-T12)
+
+- **`POST /v1/audit/events`** (services, AC-11). A registered service's token only; a user token
+  or an unregistered service is 403 (recorded as `auth.token_rejected wrong_token_use`).
+  - 1–100 events and 256 KB per body; each event must pass the envelope schema, I-JSON `details`
+    and the `failure`-on-`auth.*`-only rule (else 422), and a user `actor.user_id` must exist in
+    the org (422).
+  - **Allow-list** (SEC-F002-03): every action must be in the service's `services[].audit_actions`
+    and outside the reserved namespaces (`auth.`, `audit.`, `secret.`, `directory.`, `db.`,
+    `policy.`, `kill_switch.`; only `auth.token_rejected` and `secret.rotated` may be listed).
+    Otherwise the whole batch is 403 and one `audit.ingest_rejected` (`details.service`,
+    `details.action`) is written per disallowed action.
+  - **Source** comes from the service name, never the body: `model-gateway`, `mcp-gateway`,
+    `workspace-runtime`, and `agent-host` → `agent-host-server`. A registered service with any
+    other name has no audit source: its batches are 403 (`audit.ingest_rejected`,
+    `reason_code = no_audit_source`).
+  - A `service` actor must be the calling service itself, and a `system` actor is refused (422).
+  - Each event is a plain `INSERT` in a savepoint as `ralysa_audit_writer` (a repeated `event_id`
+    is `duplicate`), all within 250 ms, else 503 `audit_unavailable` and nothing is stored.
+  - **Rejection reports**: `auth.token_rejected` events from a verifying service (built by
+    `@ralysa/auth`'s `createRejectionReporter`, `details` = `TokenRejectedReportDetails`) are not
+    inserted as sent. They go to a per-service aggregator (`src/audit/service-rejections.ts`): the
+    first 20 per client /24 or /64, reason and audience a minute are written individually, the
+    rest summarised with `suppressed_count`, at most 600 individual events per service a minute;
+    `dropped_count` reports go to the overflow summary. They are answered `aggregated` (or
+    `duplicate` for a report id seen in the last 10 minutes on this instance), and stored under
+    the service's source, never blocking the report.
+- **`POST /v1/audit/client-events`** (the local Agent Host, AC-16), user token (`aud =
+  control-plane`):
+  - The actor, org, `source = agent-host-local`, `attestation = client`, `surface` and `ts` are
+    the server's. Client data goes under `details.client`, server facts under `details.server`;
+    a reserved key in the client data is 422. Display strings lose bidi and control characters.
+  - Only the client allow-list (422 otherwise), 1–50 events, 4 KB per event in canonical form
+    (413), 256 KB per body (413).
+  - **Sessions:** a batch without `session_id` must start with `session.started` and gets a new
+    session bound to the token's `sid`. An unknown, another user's, another `sid`'s or an ended
+    session is 409 (a retry made only of stored events is still answered). A retried opening
+    batch whose `session.started` is already stored continues that session. At most 20 open
+    sessions per `sid` (429).
+  - **`client_seq`** per session: a jump is stored with `details.server.seq_gap` and the range is
+    kept open; an event inside an open range is stored with `details.server.late = true`; any
+    other seq at or below the last is 409; a repeated `event_id` is `duplicate`. At
+    `session.ended` every open range, and the tail up to `final_seq`, becomes one
+    `audit.client_seq_gap`.
+  - **Intents:** every `tool.call.requested` gets an `IntentAck` with the governance epoch. While
+    an active kill-switch covers the tenant, the user's department, or the host-declared
+    `details.client.pack_id` / `agent_id`, the intent is stored as `tool.call.denied`
+    (`reason_code = kill_switch`) and the answer is 423 with `halted = true`.
+  - **Fail closed:** if the insert fails or exceeds 250 ms, nothing is stored or advanced and the
+    answer is 503 `audit_unavailable` with `acks` (`ack = false` for every intent).
+  - 600 events a minute per user (per instance), then 429 with `Retry-After`. A null `outcome`
+    (an intent, a session event) is stored as `success` with `details.server.outcome_defaulted`;
+    a client `failure` outside `auth.*` is 422. A retried event already stored in this session
+    still advances the cursor (its write may have committed after a 503), and a retried intent
+    that was stored as `tool.call.denied` stays refused.
+  - **Sweep** (every minute, `FOR UPDATE SKIP LOCKED`): open gaps idle for 15 minutes become final
+    `audit.client_seq_gap` events; a session idle for 24 hours without `session.ended` gets
+    `audit.client_session_unterminated` and is closed. Event ids are derived from the session and
+    range, so a retried pass writes nothing twice.
+- **`GET /v1/audit/events`** (AC-12): `from` and `to` (at most 31 days), `user_id`, `action`,
+  `outcome`, `limit` (1–500, default 100), `cursor` (keyset on `ts`, `event_id`). It needs the
+  **session** role `platform_admin` and a current admin-group membership, checked before the
+  parameters are validated and both read at request
+  time. `audit.query success` (the filters and the policy version) is committed **before** any
+  result is read; if it can't be, the answer is 503. A non-admin gets 403 after
+  `audit.query denied not_platform_admin`. Reads use `ralysa_audit_reader` in a read-only
+  transaction; each event carries its seal (`shard`, `seq`) once sealed. `Cache-Control:
+  no-store`.
+- No `PUT`, `PATCH` or `DELETE` exists under `/v1/audit`. The per-instance limits (the client
+  rate limit, the rejection caps, the report de-duplication) multiply with replicas; a shared
+  limiter needs Redis (F-012). No new configuration or environment variables.
 
 ## Audit core
 

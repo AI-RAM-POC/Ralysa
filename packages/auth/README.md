@@ -22,6 +22,12 @@ const serviceTokens = createServiceTokenSource({
 });
 const feed = createRevocationFeed({ url: `${controlPlane}/v1/internal/governance`, serviceTokens });
 await feed.start(); // polls every 5 s; call feed.stop() on shutdown
+const rejections = createRejectionReporter({
+  url: `${controlPlane}/v1/audit/events`,
+  serviceTokens,
+  audience: 'model-gateway',
+});
+rejections.start(); // sends every second; call rejections.stop() (and flush()) on shutdown
 const verifier = createAccessTokenVerifier({
   issuer: rtsPublicBaseUrl,
   audience: 'model-gateway',
@@ -29,7 +35,7 @@ const verifier = createAccessTokenVerifier({
   kidPrefix: 'ralysa-rts-signing',
   revocation: feed,
   orgId, // from the service's config
-  onReject: (r) => aggregator.record({ ...r, orgId }), // auth.token_rejected (T12)
+  onReject: (r) => rejections.record(r), // auth.token_rejected, never blocks
 });
 const principals = createPrincipalResolver({ baseUrl: controlPlane, serviceTokens });
 ```
@@ -47,6 +53,15 @@ const principals = createPrincipalResolver({ baseUrl: controlPlane, serviceToken
   `VerifierUnavailableError`: answer 503 and fail closed.
 - `onReject` never receives the token. Aggregate rejections under the service's **configured**
   org, never the rejected token's `tid`.
+- **Rejection reports** (`createRejectionReporter`, SEC-F002-16): `record` queues a rejection
+  and never throws or waits. Every second the queue goes to `POST /v1/audit/events` as
+  `auth.token_rejected` reports (at most 100 per request) with the service's token; the control
+  plane aggregates them per client /24 or /64, reason and audience, and stores them under the
+  service's source and org. The service must be allow-listed for `auth.token_rejected`. The
+  queue holds 1,000; what doesn't fit is counted per reason and sent as a `dropped_count`
+  report. A batch the control plane couldn't take (no answer, 401, 429, 5xx, no service token)
+  is resent with the same event ids (the control plane answers `duplicate` for a repeat); one it
+  refuses (400, 403, 413, 422) is dropped and reported through `onError`.
 - **G-1.** The feed counts a poll as a confirmation only if all of these hold:
   - the answer is authenticated and valid;
   - its `issued_at` is within 30 s of this process's clock;

@@ -6,7 +6,10 @@ import { parseArgs } from 'node:util';
 import { CustodyViolationError, type KeyCustody } from '@ralysa/secrets';
 import { sql } from 'kysely';
 import { buildApp } from './app.js';
+import { CLIENT_SWEEP_INTERVAL_MS, sweepClientSessions } from './audit/client-sweep.js';
+import { sourceForService } from './audit/action-allowlist.js';
 import { tokenRejectedEvent } from './audit/events.js';
+import { createServiceRejections } from './audit/service-rejections.js';
 import { createRejectionAggregator } from './audit/rejections.js';
 import { openAuditSpool } from './audit/spool.js';
 import { createAuditWriter } from './audit/writer.js';
@@ -86,6 +89,14 @@ export async function serveCommand(args: string[]): Promise<number> {
     },
     { applicationName: 'ralysa-control-plane:serve', max: 5 },
   );
+  const readerPool = createPool(
+    config.db,
+    {
+      user: 'ralysa_audit_reader',
+      password: async () => (await secrets.get(config.db_credentials.audit_reader)).value,
+    },
+    { applicationName: 'ralysa-control-plane:serve', max: 5 },
+  );
   const db = createDb<Database>(pool);
   const spool = await openAuditSpool({
     dir: config.audit.spool_dir,
@@ -126,6 +137,13 @@ export async function serveCommand(args: string[]): Promise<number> {
           logger.warn('token_rejected_write_failed', { error: String(error) });
         }),
   });
+  // auth.token_rejected reports from verifying services, one aggregator per service (T11-2).
+  const serviceRejections = createServiceRejections({ writer, logger });
+  for (const service of config.services) {
+    if (sourceForService(service.name) === undefined) {
+      logger.warn('service_without_audit_source', { service: service.name });
+    }
+  }
   // The pinned tenant (discovery, keys) and Microsoft Graph for sign-in and every refresh (§6.3).
   const idpMetadata = createIdpMetadataSource({ issuer: config.idp.issuer });
   const directory = createGraphDirectory({
@@ -152,6 +170,8 @@ export async function serveCommand(args: string[]): Promise<number> {
       directory,
       writer,
       rejections,
+      auditReader: createDb<Database>(readerPool),
+      serviceRejections,
       secrets,
       idpMetadata,
       signInFailures,
@@ -176,8 +196,16 @@ export async function serveCommand(args: string[]): Promise<number> {
     ),
     setInterval(() => {
       rejections.flush();
+      serviceRejections.flush();
       signInFailures.flush();
     }, 5_000),
+    setInterval(
+      () =>
+        void sweepClientSessions({ db, orgId: config.org.id, writer }).catch((error: unknown) => {
+          logger.warn('client_session_sweep_failed', { error: String(error) });
+        }),
+      CLIENT_SWEEP_INTERVAL_MS,
+    ),
     setInterval(
       () =>
         void runCleanup({
@@ -202,9 +230,10 @@ export async function serveCommand(args: string[]): Promise<number> {
   });
   for (const timer of timers) clearInterval(timer);
   rejections.flush(true);
+  serviceRejections.flush(true);
   signInFailures.flush(true);
   await app.close();
-  await Promise.all([pool.end(), writerPool.end()]);
+  await Promise.all([pool.end(), writerPool.end(), readerPool.end()]);
   logger.info('serve_stopped');
   return 0;
 }
