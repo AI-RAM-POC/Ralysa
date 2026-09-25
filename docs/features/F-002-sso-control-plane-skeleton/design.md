@@ -1880,4 +1880,4 @@ The required changes are corrections, not redesigns. Two ADR clarifications are 
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| | | | | |
+| Ram Mohan Rao Adduri | Founder / Product owner | Approved | 2026-09-25 | Standing authorization, recorded by Claude. Architect review: sound (RC-1..12 applied, AD-1..4 accepted). Security review: 2 High + Medium required changes applied; Low/Info in task DoD. G3 escalations (ADR-0004 d4, ADR-0030, ADR-0031) pending human decision; none blocks F-002. |
