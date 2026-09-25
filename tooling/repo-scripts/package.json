@@ -8,7 +8,8 @@
     "ralysa-repo": "./src/cli.ts"
   },
   "exports": {
-    "./check-contrast": "./src/check-contrast.ts"
+    "./check-contrast": "./src/check-contrast.ts",
+    "./check-i18n": "./src/check-i18n.ts"
   },
   "scripts": {
     "build": "echo \"@ralysa/repo-scripts: runs from source on Node 24 (type stripping), nothing to build\"",

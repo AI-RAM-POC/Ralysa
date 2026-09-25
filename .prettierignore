@@ -1,5 +1,6 @@
 # Generated, vendored or owned by other tools
 pnpm-lock.yaml
+**/src/i18n/generated/
 node_modules/
 dist/
 coverage/

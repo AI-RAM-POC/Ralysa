@@ -339,6 +339,92 @@ None of these runs an install script. `allowBuilds` is unchanged in T06.
 - **TC-F-001-07**, Tailwind part: arbitrary colours (`bg-[#fff]`, `text-[rgb(…)]`, `border-[oklch(…)]`, `bg-[color:#…]`) → `no-restricted-classes`; `bg-red-500`, `text-slate-900`, `bg-white`, `p-7` and `rounded-3xl` → `no-unknown-classes`.
 - A manual check, not a test: `eslint --stdin` in `packages/ui` with the real entry point reported `bg-red-500` (unknown), `ml-4` (logical) and `marginLeft` (inline style). `bg-canvas`, `p-4`, `text-fg-muted` and `h-control-md` passed.
 
+## T08: i18n
+
+### What landed
+
+- **`packages/ui`**:
+  - `src/contracts/i18n.ts` (§3.3).
+  - `createI18n`: one i18next instance per app, `en` bundled, other locales loaded by dynamic import through an in-memory backend (no HTTP, no Locize). In test mode a missing key throws `MissingKeyError`, and there is no `en` fallback.
+  - `LocaleProvider`: `useSyncExternalStore` on `languageChanged`, then `<html lang dir>` and the Radix `DirectionProvider`; `useLocale()` returns `{ locale, dir, options, setLocale }`.
+  - `resolveInitialLocale` (`?lang=`, `localStorage` `ralysa.locale`, `navigator.languages`, `en`) and `browserStorage()`.
+  - The `ui` catalog (locale endonyms) with its `review.json`, `i18next.config.ts` and the generated key types.
+  - Dependencies: `i18next`, `react-i18next`, `@radix-ui/react-direction` (all through the catalog, so ui and the apps share one instance of each).
+- **`apps/web`**:
+  - The `web` catalog (`web:app.name`) and `review.json`.
+  - `App` renders `<main><h1>{t('app.name')}</h1></main>`.
+  - `main.tsx` wires `tokens.css`, `createI18n`, `LocaleProvider` and `ThemeProvider`.
+  - `i18next.config.ts`, typed keys (including the `ui` namespace) and a tsconfig reference to `packages/ui`. ESLint lints Tailwind classes against `@ralysa/ui/tailwind.css`.
+  - The production bundle puts each `ar` catalog in its own chunk (`ui-*.js`, `web-*.js`).
+- **`@ralysa/eslint-config`**: `i18next/no-literal-string` and the new `ralysa/no-literal-attribute-text` in `reactUi()`; neither applies to test files.
+- **`@ralysa/repo-scripts`**: `check-i18n` (in `pnpm repo:check`, so it runs in the CI `repo-checks` job) and the `./check-i18n` export.
+- **`pnpm-workspace.yaml`**: `allowBuilds: { '@swc/core': false }` with its reason inline. Install passes under `strictDepBuilds`, and i18next-cli works without SWC's postinstall: the native binding comes from the platform `optionalDependency`.
+- **`.prettierignore`**: `**/src/i18n/generated/`.
+
+### Offline check of i18next-cli (SEC-F001-19, T08 definition of done)
+
+Run on 2026-09-25 in `packages/ui` and `apps/web`. Each command ran under two independent network blocks at once:
+- macOS `sandbox-exec -p '(version 1)(allow default)(deny network*)'`;
+- a Node preload (`NODE_OPTIONS=--import=net-guard.mjs`) that logs and throws on `net.Socket#connect` to a host, `tls.connect`, `dns.lookup`/`resolve`, `http(s).request`/`get` and `fetch`.
+
+Positive controls, run first:
+- `fetch('https://registry.npmjs.org/')` under the guard was logged as `BLOCKED fetch` and threw.
+- `dns.lookup('registry.npmjs.org')` under the sandbox failed with `ENOTFOUND`, and `curl` under the sandbox failed with `Could not resolve host`.
+
+```
+ui  | i18next-cli extract --ci --dry-run | exit=0 | guard loaded in 1 process(es) | blocked network attempts=0
+ui  | i18next-cli types                  | exit=0 | guard loaded in 1 process(es) | blocked network attempts=0
+ui  | i18next-cli status                 | exit=0 | guard loaded in 1 process(es) | blocked network attempts=0
+web | i18next-cli extract --ci --dry-run | exit=0 | guard loaded in 1 process(es) | blocked network attempts=0
+web | i18next-cli types                  | exit=0 | guard loaded in 1 process(es) | blocked network attempts=0
+web | i18next-cli status                 | exit=0 | guard loaded in 1 process(es) | blocked network attempts=0
+```
+
+- `extract` reported "No files were updated".
+- `status` reported `ar` at 100 % (ui: 2/2 keys; web: 1/1).
+- No command started a child process (the guard loaded once per run). All three commands **make no network calls**.
+- The Locize commands (`locize-*`, `localize`) are never used.
+
+### Recorded decisions and deviations
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T08-1 | **Design deviation** | The `ui` catalogs are at `packages/ui/src/locales/{en,ar}/ui.json`, not `packages/ui/locales/…` (§7.4.3). `apps/web/locales/…` is as designed. | The library build compiles `src/` only (`rootDir: src`). A JSON module under `src/` is emitted next to the code (`dist/locales/…`), which the dynamic `ar` import needs; a file outside `rootDir` can't be imported by emitted code. |
+| T08-2 | **Design deviation** | `i18next/no-literal-string` covers JSX text and string children. Attribute text is covered by a new local rule, `ralysa/no-literal-attribute-text`, over `USER_VISIBLE_ATTRIBUTES`. | eslint-plugin-i18next 6.1.5 hard-codes that native DOM elements may carry literal text in every attribute except `placeholder`, `alt`, `aria-label`, `value` and `title` (`isAllowedDOMAttr`). So `<div aria-description="…">` or `<option label="…">` passed whatever the options said. The local rule checks the listed attributes on every element, including literals inside `{…}`, template literals and condition branches. |
+| T08-3 | Addition | `USER_VISIBLE_ATTRIBUTES` adds `aria-roledescription`, `aria-placeholder` and `aria-valuetext` to the §7.4.4 list. | They are read out by screen readers just like `aria-label`. |
+| T08-4 | Option choice | The i18next rule uses `words.exclude: [/^[^\p{L}]*$/u]`, so only strings without a letter are exempt, and `should-validate-template: true`. | The plugin's default word list also exempts ALL-CAPS text (`<p>OK</p>`) and exempts only ASCII punctuation. Template-literal children were otherwise unchecked. |
+| T08-5 | Option choice | i18next-cli `removeUnusedKeys: false`. `extract --ci --dry-run` therefore fails when code uses a key missing from any catalog, including a key present in `en` but missing from `ar`, and ignores keys the code doesn't reference statically. | That is the §7.4.5 contract ("fails if code uses a key that's missing"). Unused-key cleanup (`status --unused`) isn't part of F-001. |
+| T08-6 | Implementation choice | The native-review marking (OQ-D8) is a register, `<locales>/review.json`, mapping each `ar` key to `"needs-native-review"` or `{ reviewer, date }`. `check-i18n` fails on a missing or stale entry and prints the open count. | JSON catalogs can't carry comments. A register makes the marking machine-checked, and an Arabic string can't be added without being marked. Every current `ar` string is `needs-native-review`: ui 2, web 1. |
+| T08-7 | **Known limitation** | eslint-plugin-i18next skips the whole initialiser of a variable whose name is ALL CAPS (`const FAQ = () => <p>Question</p>` isn't reported). A test pins this so a plugin fix is noticed. | This is a plugin behaviour (`VariableDeclarator` → `isUpperCase`) with no option to turn it off. The backstops are the runtime missing-key check (test mode) and review. It isn't worth forking the plugin now. |
+| T08-8 | **Gap in T02/T03 (fixed minimally)** | `packages/ui/tsconfig.json`, the check config, now has `noEmit: false`, `emitDeclarationOnly: true` and `outDir: node_modules/.tmp/tsc-check`. `tsconfig.build.json` sets `emitDeclarationOnly: false` again. | `check-tsrefs` requires an app to reference a library it depends on. But every workspace tsconfig is a no-emit composite (T02-5), and TypeScript rejects a reference to a no-emit project (`TS6310 Referenced project … may not disable emit`). `apps/web` → `packages/ui` is the first library dependency, so this is the first time it came up. **Follow-up:** the `library` scaffold template (and `@ralysa/tsconfig` if preferred) should carry the same setting, or `check-tsrefs` should change, before `packages/workbench`/`views` are scaffolded. I didn't change the shared base or the template here. |
+| T08-9 | Implementation choice | i18next, react-i18next and `@radix-ui/react-direction` are catalog-pinned `dependencies` of `@ralysa/ui` and `@ralysa/web`, not peer dependencies. | pnpm resolves identical versions with identical peers to one store path, so the React contexts are shared. The catalog guarantees the versions match. |
+| T08-10 | Scope note | `check-i18n` runs in `pnpm repo:check` (the CI `repo-checks` job), not in `quality` (§8.4 TC-F-001-12 "Location: quality"). `extract --ci` does run in each UI workspace's `lint` (`quality`). | `check-i18n` is a repo-level scan of every UI workspace, like the other `check-*` scripts. It sits outside Turbo, so a cache replay can never skip it. |
+| T08-11 | Implementation note | The generated `i18next.d.ts` (written once by i18next-cli, then only `resources.d.ts` is regenerated) and `resources.d.ts` are committed. `src/i18n/generated/` is in `.prettierignore` because i18next-cli's output isn't Prettier-formatted, and formatting it would make `check:generated` report drift. | §3.5 drift check. |
+| T08-12 | Wording | The ui catalog's `locale.name.en` is "English" in both locales (endonyms: a language picker names each language in its own script). `check-i18n` reports it as an `i18n/untranslated` **warning**, not a failure. | This is intended; the review register notes it. |
+
+### Versions (npm registry, 2026-09-25 ~10:10 UTC)
+
+| Package | Design | Pinned | Notes |
+|---|---|---|---|
+| `i18next` | 26.x | **26.4.2** (catalog) | Published 2026-09-03; the 26.4 line started 2026-08-20. MIT, no dependencies. |
+| `react-i18next` | 17.x | **17.0.15** (catalog) | Published 2026-09-21T18:19Z, which is outside the 3-day window (cut-off 2026-09-22T10:10Z). Peer `i18next >= 26.2.0`, `react >= 16.8`. MIT. |
+| `i18next-cli` | 1.74.x | **1.74.1** (catalog) | Published 2026-09-17. MIT, engines `node >= 22`. **Policy note:** the 1.74 line is 9 days old, under the §2.2 30-day rule, but the design names 1.74.x (as T01 did for Turbo 2.11). Brings `@swc/core` 1.16.x (postinstall blocked: `allowBuilds: false`) and its platform binaries as optional dependencies. |
+| `eslint-plugin-i18next` | 6.1.x | **6.1.5** | Published 2026-06-28. ISC; one dependency (`requireindex`); no peer range declared. It works under ESLint 10 without `@eslint/compat`: it uses `context.sourceCode` with fallbacks. The 31 cases in `test/i18n.test.ts` run through ESLint 10.11.0 with no fatal message. |
+| `@radix-ui/react-direction` | (`radix-ui` 1.6.x) | **1.1.4** (catalog) | Published 2026-07-24. It's the exact version `radix-ui` 1.6.7 depends on, so the T11 primitives will share its direction context. |
+
+### Tests added (T08)
+
+- **TC-F-001-10** (`tooling/eslint-config/test/i18n.test.ts`, 31 cases, typed `.tsx` fixtures in a temp project):
+  - Reported: JSX text, fragments, string and template children, ALL-CAPS and Arabic text; each of the 9 user-visible attributes on native elements and components, including a literal inside `{…}` and a condition branch.
+  - Allowed: `t()` keys, `className`, `data-*`, `id`, `href`, `type`, `role`, non-text ARIA, non-visible component props, strings without letters, strings outside JSX.
+  - The messages name the fix; test files are exempt; both rules are `error`; the ALL-CAPS limitation is pinned.
+- **TC-F-001-12**:
+  - `tooling/repo-scripts/test/check-i18n.test.ts` (15): a complete pair passes; missing and extra keys, all six Arabic plural forms, key grammar, empty and non-string values, interpolation parity, missing locale or namespace, the review register (missing, stale, reviewed, bad status), the untranslated warning, the workspace wiring, and the real repository (0 findings).
+  - `packages/ui/test/i18n-extract.test.ts` (4): the extractor's dry run on a fixture project reports no change when the keys are complete, and a change (which is what `--ci` fails on) for a key used in code but missing from the catalogs, or missing from `ar` only. It also passes on the real package.
+- **AC-6**, unit level (`packages/ui/test/i18n.test.tsx`, jsdom, 8): the `resolveInitialLocale` order and throwing storage; `en` bundled with `ar` loaded once on first use; the production fallback; test mode throws on a missing key, including one only `en` has; `LocaleProvider` sets `<html lang dir>`, the Radix direction and the strings in both directions **without a reload** (a window marker survives and the rendered node is the same object). The E2E version (TC-F-001-11) is T13's.
+- **Typed keys** (`packages/ui/test/i18n-contract.test.ts`): `@ts-expect-error` on `t('locale.name.fr')` and `i18n.t('ui:nonexistent.key')`, so `typecheck` fails if keys stop being typed. The contract matches `check-i18n` (locales, source locale, `KEY_RE`) and Intl's plural categories.
+- `apps/web/test/App.test.tsx`: the heading renders from the `web` catalog in `en` and `ar` (test mode, so a missing key fails).
+
 ## Version confirmations (npm registry, 2026-09-25 ~08:20 UTC)
 
 Policy (§2.2): the latest patch of a line GA for at least 30 days, and `minimumReleaseAge` holds back anything under 3 days old. Cut-off for the 3-day rule: 2026-09-22T08:20Z.
@@ -374,3 +460,9 @@ No dependency added by T01 to T03 runs a build script: `allowBuilds` is still `{
 - **Guard fixtures in `repo-checks`** (`node --test .claude/hooks/test/`) arrive with T15 (human merge).
 - **T15 and required-checks.json:** T15 must keep T03's `required-checks.json` content (T03-2).
 - Bump Turbo, Prettier, Vite and `@eslint-react` to their newest patches once those are outside the 3-day window.
+- **T06 to T08 follow-ups:**
+  - Native-speaker review of every `ar` string (3 open, in the two `review.json` files; OQ-D8, still open externally).
+  - `color.bg.surfaceRaised` needs values and contrast pairs when the first raised component lands (T06-5, likely T11).
+  - Apply the T08-8 declaration-only check config to the `library` scaffold template, or decide another fix for `check-tsrefs` versus no-emit composites, before `packages/workbench` and `packages/views` are scaffolded.
+  - Bump `jsdom` to 30.1.1 once it is outside the 3-day window.
+  - TC-F-001-11 (E2E locale switch) and the Playwright console listener for runtime missing keys arrive with T13.

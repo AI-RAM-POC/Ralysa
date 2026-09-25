@@ -7,6 +7,7 @@ export {
   type TokenTheme,
   tokenVar,
 } from './tokens/index.js';
+export * from './i18n/index.js';
 export {
   applyTheme,
   isThemePreference,

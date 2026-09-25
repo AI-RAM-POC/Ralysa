@@ -5,15 +5,19 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
+    "check:generated": "i18next-cli types --quiet",
     "dev": "vite",
-    "lint": "eslint .",
+    "lint": "eslint . && i18next-cli extract --ci --dry-run --quiet",
     "preview": "vite preview",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json"
   },
   "dependencies": {
+    "@ralysa/ui": "workspace:*",
+    "i18next": "catalog:",
     "react": "catalog:",
-    "react-dom": "catalog:"
+    "react-dom": "catalog:",
+    "react-i18next": "catalog:"
   },
   "devDependencies": {
     "@ralysa/eslint-config": "workspace:*",
@@ -23,6 +27,7 @@
     "@types/react-dom": "catalog:",
     "@vitejs/plugin-react": "catalog:",
     "eslint": "catalog:",
+    "i18next-cli": "catalog:",
     "typescript": "catalog:",
     "vite": "catalog:",
     "vitest": "catalog:"

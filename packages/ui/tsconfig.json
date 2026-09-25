@@ -4,7 +4,13 @@
     // scripts/ and the Node-side tests run on Node 24 type stripping and import .ts files directly.
     // tsconfig.build.json switches both options back off, so shipped src/ can't use Node types.
     "types": ["node"],
-    "allowImportingTsExtensions": true
+    "allowImportingTsExtensions": true,
+    // A referenced project may not disable emit (TS6310), and apps reference this library
+    // (check-tsrefs). The check config therefore emits declarations only, into a scratch folder
+    // nothing reads; the real build is tsconfig.build.json → dist/.
+    "noEmit": false,
+    "emitDeclarationOnly": true,
+    "outDir": "${configDir}/node_modules/.tmp/tsc-check"
   },
-  "include": ["src", "test", "scripts", "*.config.ts"]
+  "include": ["src", "src/locales/*/*.json", "test", "scripts", "*.config.ts"]
 }

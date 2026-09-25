@@ -19,15 +19,30 @@ Components use **semantic** tokens only. Palette values are never emitted as CSS
 
 `ThemeProvider` writes `data-theme` on `<html>` (`light`, `dark`, or nothing for `system`); `resolveInitialTheme()` reads `?theme=` and then `localStorage` (`ralysa.theme`, a development convenience).
 
+## i18n (F-001-T08)
+
+| Path | What |
+|---|---|
+| `src/contracts/i18n.ts` | `LOCALES` (`en`, `ar`; `en` is the source), `NAMESPACES` (`ui`, `web`, `lab`), `KEY_RE` (2–5 lowerCamel segments), `PLURAL_CATEGORIES`. |
+| `src/i18n/createI18n.ts` | `createI18n({ catalogs, locale, defaultNS, mode })`: one i18next instance per app. `en` is bundled; other locales are loaded by dynamic import on first use (no HTTP backend, no cloud). `mode: 'test'` throws `MissingKeyError` on a missing key and turns off the `en` fallback. |
+| `src/i18n/LocaleProvider.tsx` | Sets `lang` and `dir` on `<html>` whenever the language changes, feeds Radix `DirectionProvider`, and exposes `useLocale()` → `{ locale, dir, options, setLocale }`. Switching is a re-render, not a reload. |
+| `src/i18n/locale.ts` | `resolveInitialLocale({ search, storage, languages })`: `?lang=`, then `localStorage` `ralysa.locale`, then `navigator.languages` by primary subtag, then `en`. `browserStorage()` returns `null` where storage throws. |
+| `src/locales/{en,ar}/ui.json`, `uiCatalog` | The `ui` namespace. Kept under `src/` so the library build emits them next to the code. |
+| `src/locales/review.json` | Native-review status of every `ar` string. Placeholder Arabic is `"needs-native-review"` until a native speaker approves it (OQ-D8); `check-i18n` fails on a missing entry. |
+| `i18next.config.ts` | i18next-cli, offline only: `lint` runs `extract --ci --dry-run` (a key used in code but missing from a catalog fails), `check:generated` runs `types`. |
+| `src/i18n/generated/` | Typed keys (`resources.d.ts`, `i18next.d.ts`): `t('ui:nonexistent.key')` is a type error. Not formatted by Prettier (it's regenerated). |
+
+Components call `useTranslation('ui')` explicitly; an app's own namespace is its `defaultNS`.
+
 ## Scripts
 
 | Script | Does |
 |---|---|
 | `build` | `build-tokens.ts`, then `tsc -p tsconfig.build.json` (browser library emit: no Node types in `src/`) |
-| `check:generated` | Regenerates the token outputs (CI then runs `git status --porcelain`) |
-| `lint` | ESLint (`base`, `react-ui` against `src/styles/tailwind.css`, `tests`) and Stylelint (`@ralysa/stylelint-config`): raw colours, logical layout and token-backed classes only (AC-3, AC-4) |
-| `test` | Vitest: token schema and generator (TC-F-001-06), contrast gate on the real pairs (TC-F-001-23), theme plumbing |
-| `typecheck` | `tsc -p tsconfig.json` (src, tests and scripts) |
+| `check:generated` | Regenerates the token outputs and the i18n key types (CI then runs `git status --porcelain`) |
+| `lint` | ESLint (`base`, `react-ui` against `src/styles/tailwind.css`, `tests`), Stylelint (`@ralysa/stylelint-config`) and `i18next-cli extract --ci --dry-run`: raw colours, logical layout, token-backed classes, no hard-coded strings, no missing keys (AC-3 to AC-6) |
+| `test` | Vitest: token schema and generator (TC-F-001-06), contrast gate on the real pairs (TC-F-001-23), theme plumbing, i18n runtime and locale switch (AC-6), extract `--ci` behaviour (TC-F-001-12), contract parity with `check-i18n` and typed keys |
+| `typecheck` | `tsc -p tsconfig.json` (src, tests and scripts). Emits declarations only, into `node_modules/.tmp/tsc-check`, because apps reference this project and TypeScript rejects a reference to a no-emit project (TS6310). |
 
 After changing a token, run `pnpm --filter @ralysa/ui build` and commit `src/tokens/generated.ts` and `src/styles/theme.css`. If you add a colour token, add its pairs to `contrast-pairs.json` or list it as exempt with a reason; the test fails otherwise.
 

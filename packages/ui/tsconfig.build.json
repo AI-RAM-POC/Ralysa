@@ -3,6 +3,7 @@
   "compilerOptions": {
     // Emit covers src/ only, compiled as a browser library: no Node types.
     "types": [],
-    "allowImportingTsExtensions": false
+    "allowImportingTsExtensions": false,
+    "emitDeclarationOnly": false
   }
 }

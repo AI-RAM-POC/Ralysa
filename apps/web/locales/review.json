@@ -1,0 +1,6 @@
+{
+  "$description": "Native-speaker review status of every secondary-locale string (F-001 design §7.4.3, OQ-D8). check-i18n fails if a key is missing here. Use \"needs-native-review\" for placeholder or machine-assisted text, and { \"reviewer\": \"<name>\", \"date\": \"YYYY-MM-DD\" } once a native speaker has approved it. app.name is a placeholder transliteration of the product name until brand work settles the Arabic name (OQ-F001-1).",
+  "ar": {
+    "web:app.name": "needs-native-review"
+  }
+}

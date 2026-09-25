@@ -9,6 +9,7 @@ node tooling/repo-scripts/src/cli.ts repo-check        # every repo-level check 
 node tooling/repo-scripts/src/cli.ts check-workspaces
 node tooling/repo-scripts/src/cli.ts check-tsrefs
 node tooling/repo-scripts/src/cli.ts check-turbo-config
+node tooling/repo-scripts/src/cli.ts check-i18n
 pnpm scaffold <apps|packages|services>/<name> --kind <library|library-isomorphic|service|app|cli>
 node tooling/repo-scripts/src/cli.ts summary [--file .turbo/runs/<id>.json] [--out "$GITHUB_STEP_SUMMARY"]
 ralysa-repo placeholder-guard                          # the four scripts of every placeholder package
@@ -22,6 +23,12 @@ ralysa-repo placeholder-guard                          # the four scripts of eve
 | `placeholder-guard` | A placeholder package holds anything besides `README.md` and `package.json`. |
 | `summary` | A workspace is missing one of the four required tasks in the Turbo run. It also renders the workspace × task table for the CI job summary, reading only the run's `execution` and `tasks` (never the `user` or `scm` blocks). |
 | `check-tsrefs` | The root `tsconfig.json` doesn't reference exactly the workspaces that have a `tsconfig.json`, or a workspace doesn't reference a TypeScript library it depends on. |
+| `check-i18n` (§7.4.5, AC-6) | In a UI workspace's catalog folder (`locales/` or `src/locales/`): the locale folders aren't exactly `en` and `ar`; a namespace file is missing in a locale; the key sets differ, allowing for plurals (a key with `en` `_one`/`_other` needs all six CLDR categories in `ar`); a key breaks the `KEY_RE` grammar; a value is empty or not a string; `{{interpolation}}` names differ between locales; an `ar` key has no entry in `review.json` (`"needs-native-review"`, or `{ "reviewer", "date" }` once a native speaker approves it; OQ-D8), or `review.json` names a key that doesn't exist; or the workspace lacks an `i18next.config.ts`, `i18next-cli extract --ci` in `lint` or `i18next-cli types` in `check:generated`. An `ar` value equal to its `en` value and containing Latin letters is a **warning**. The run prints how many strings still need native review. |
+
+## Library exports (run inside other packages' tests)
+
+- `@ralysa/repo-scripts/check-contrast` (§7.1.4, AC-11): WCAG 2.1 `contrastRatio`, `MIN_RATIO` (text 4.5, large text 3, non-text 3, focus 3) and `checkContrast({ pairs, exempt, resolve })`, which fails on a pair below its minimum, a translucent colour, an unresolved token or an exempt token used in a pair. It imports nothing, so a browser-library workspace can import it from source. `@ralysa/ui`'s `test` runs it on the real tokens.
+- `@ralysa/repo-scripts/check-i18n`: the constants and `checkCatalogs` above; `@ralysa/ui` asserts its i18n contract matches them.
 
 ## Scaffold templates
 

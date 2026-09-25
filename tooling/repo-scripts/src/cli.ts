@@ -7,10 +7,12 @@
 //   ralysa-repo check-workspaces         workspace contract, scripts, lifecycle/specifier/Python rules
 //   ralysa-repo check-tsrefs             tsconfig project references
 //   ralysa-repo check-turbo-config       remote cache off, globalDependencies, uncached checks
+//   ralysa-repo check-i18n               i18n catalogs: parity, plurals, grammar, native review
 //   ralysa-repo placeholder-guard        run inside a placeholder package (its four scripts)
 //   ralysa-repo scaffold <path> --kind <kind>
 //   ralysa-repo summary [--file <run.json>] [--out <file>]
 import { appendFileSync } from 'node:fs';
+import { checkI18n } from './check-i18n.ts';
 import { checkTsrefs } from './check-tsrefs.ts';
 import { checkConfigGate } from './config-gate.ts';
 import { checkTurboConfigFile } from './check-turbo-config.ts';
@@ -29,6 +31,15 @@ const REPO_CHECKS: Record<string, Check> = {
   'check-workspaces': (root) => checkWorkspaces({ root }),
   'check-tsrefs': (root) => checkTsrefs({ root }),
   'check-turbo-config': (root) => checkTurboConfigFile(root),
+  'check-i18n': (root) => {
+    const { findings, warnings, needsReview } = checkI18n({ root });
+    for (const warning of warnings)
+      console.warn(`  ! [${warning.rule}] ${warning.path}: ${warning.message}`);
+    for (const [dir, count] of Object.entries(needsReview)) {
+      console.log(`  i ${dir}: ${String(count)} string(s) marked needs-native-review (OQ-D8)`);
+    }
+    return findings;
+  },
 };
 
 function report(name: string, findings: Finding[]): boolean {

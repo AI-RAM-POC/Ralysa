@@ -8,9 +8,13 @@
 //     no-restricted-classes, and ralysa/no-physical-inline-style
 //   - only token-backed Tailwind classes (§7.1.1): better-tailwindcss no-unknown-classes against
 //     the workspace's Tailwind entry point (`@ralysa/ui/tailwind.css`)
+//   - no hard-coded UI strings (§7.4.4, AC-5): i18next/no-literal-string reports JSX text and
+//     string literals in user-visible attributes; everything else (className, data-*, id, href,
+//     type, test ids, ...) is ignored. Demo sample content lives in JSON, not TSX literals.
 import eslintReact from '@eslint-react/eslint-plugin';
 import { fixupPluginRules } from '@eslint/compat';
 import betterTailwind from 'eslint-plugin-better-tailwindcss';
+import i18next from 'eslint-plugin-i18next';
 import jsxA11y from 'eslint-plugin-jsx-a11y';
 import reactHooks from 'eslint-plugin-react-hooks';
 import globals from 'globals';
@@ -21,6 +25,23 @@ import { LOGICAL_IGNORE, NO_THEME_ENTRY_POINT, RESTRICTED_CLASSES } from './tail
 import { TEST_FILES } from './tests.js';
 
 export const UI_FILES = ['**/*.{js,mjs,jsx,ts,tsx}'];
+
+/**
+ * JSX attributes whose string value a user reads or hears (§7.4.4). The design's list is
+ * aria-label, aria-description, title, alt, placeholder and label; the other ARIA text
+ * attributes are added for the same reason.
+ */
+export const USER_VISIBLE_ATTRIBUTES = [
+  'aria-label',
+  'aria-description',
+  'aria-roledescription',
+  'aria-placeholder',
+  'aria-valuetext',
+  'title',
+  'alt',
+  'placeholder',
+  'label',
+];
 
 const jsxA11yPlugin = fixupPluginRules(jsxA11y);
 
@@ -64,7 +85,7 @@ export function reactUi({ files = UI_FILES, tailwindEntryPoint = NO_THEME_ENTRY_
       name: 'ralysa/react-ui/design-system',
       files,
       ignores: TEST_FILES,
-      plugins: { ralysa: ralysaPlugin, 'better-tailwindcss': betterTailwind },
+      plugins: { ralysa: ralysaPlugin, 'better-tailwindcss': betterTailwind, i18next },
       settings: {
         // tailwindcss is resolved next to the entry point, so a workspace that only lints with
         // the ui theme doesn't need its own tailwindcss dependency.
@@ -79,6 +100,21 @@ export function reactUi({ files = UI_FILES, tailwindEntryPoint = NO_THEME_ENTRY_
         'better-tailwindcss/enforce-logical-properties': ['error', { ignore: LOGICAL_IGNORE }],
         'better-tailwindcss/no-restricted-classes': ['error', { restrict: RESTRICTED_CLASSES }],
         'better-tailwindcss/no-unknown-classes': 'error',
+        // JSX text and string children. Attributes are left to ralysa/no-literal-attribute-text,
+        // because this plugin treats most attributes of native DOM elements as safe. Only
+        // strings without a letter are exempt (the plugin's default also exempts ALL-CAPS text).
+        'i18next/no-literal-string': [
+          'error',
+          {
+            mode: 'jsx-only',
+            'jsx-attributes': { exclude: ['.*'] },
+            words: { exclude: [/^[^\p{L}]*$/u] },
+            'should-validate-template': true,
+            message:
+              'User-visible text must come from an i18n key, e.g. t("ns:area.element") (AC-5). Literal',
+          },
+        ],
+        'ralysa/no-literal-attribute-text': ['error', { attributes: USER_VISIBLE_ATTRIBUTES }],
       },
     },
   ];

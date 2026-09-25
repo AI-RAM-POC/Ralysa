@@ -14,10 +14,15 @@
   },
   "scripts": {
     "build": "node scripts/build-tokens.ts && tsc -p tsconfig.build.json",
-    "check:generated": "node scripts/build-tokens.ts",
-    "lint": "eslint . && stylelint \"**/*.css\" --allow-empty-input",
+    "check:generated": "node scripts/build-tokens.ts && i18next-cli types --quiet",
+    "lint": "eslint . && stylelint \"**/*.css\" --allow-empty-input && i18next-cli extract --ci --dry-run --quiet",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@radix-ui/react-direction": "catalog:",
+    "i18next": "catalog:",
+    "react-i18next": "catalog:"
   },
   "peerDependencies": {
     "react": "^19.3.0"
@@ -32,6 +37,7 @@
     "@types/react": "catalog:",
     "@types/react-dom": "catalog:",
     "eslint": "catalog:",
+    "i18next-cli": "catalog:",
     "jsdom": "catalog:",
     "react": "catalog:",
     "react-dom": "catalog:",
