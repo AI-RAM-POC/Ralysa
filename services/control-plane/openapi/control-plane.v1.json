@@ -3345,7 +3345,7 @@
         }
       },
       "get": {
-        "summary": "Audit query (AC-12): session role platform_admin and a current admin-group membership; audit.query is committed before any result is read; keyset paging on (ts, event_id)",
+        "summary": "Audit query (AC-12): session role platform_admin and a current admin-group membership; audit.query is committed before any result is read; keyset paging on (ts, event_id), not a snapshot: an event committed late with a ts before the last key already read is not on the next page, and re-running the query over the same range returns it",
         "tags": [
           "audit"
         ],

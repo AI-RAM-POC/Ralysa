@@ -311,7 +311,10 @@ job exits non-zero, saying the migrations were applied but not recorded.
   result is read; if it can't be, the answer is 503. A non-admin gets 403 after
   `audit.query denied not_platform_admin`. Reads use `ralysa_audit_reader` in a read-only
   transaction; each event carries its seal (`shard`, `seq`) once sealed. `Cache-Control:
-  no-store`.
+  no-store`. Paging is not a snapshot: `ts` is set at insert and a row becomes visible at commit,
+  so an event whose write commits late with a `ts` before the last key of a page already read is
+  not on the next page; re-running the query over the same range returns every committed event
+  (R33-9; exports page on `ingest_seq` in F-011).
 - No `PUT`, `PATCH` or `DELETE` exists under `/v1/audit`. The per-instance limits (the client
   rate limit, the rejection caps, the report de-duplication) multiply with replicas; a shared
   limiter needs Redis (F-012). No new configuration or environment variables.

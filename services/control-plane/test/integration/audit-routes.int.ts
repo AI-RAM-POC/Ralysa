@@ -244,15 +244,25 @@ describe.skipIf(stack === undefined)('audit endpoints (F-002-T12)', () => {
       return await fn();
     } finally {
       await settled();
-      const waiting = async () =>
+      // Before the lock is released, every refused insert must have ended: a writer transaction
+      // still between statements (not yet queued on the lock) would otherwise commit after the
+      // ROLLBACK. So wait until no writer backend in this database is running or inside a
+      // transaction, and no insert waits on the table (R33 nit 1). The writer's statement_timeout
+      // ends each lock wait within 250 ms.
+      const busy = async () =>
         (
-          await t().superuser.query<{ n: number }>(
-            `select count(*)::int as n from pg_locks
-              where relation = 'audit.audit_event'::regclass and not granted`,
+          await t().superuser.query<{ writers: number; waiters: number }>(
+            `select
+               (select count(*)::int from pg_stat_activity
+                 where datname = current_database() and usename = 'ralysa_audit_writer'
+                   and state <> 'idle') as writers,
+               (select count(*)::int from pg_locks
+                 where relation = 'audit.audit_event'::regclass and not granted) as waiters`,
           )
-        ).rows[0]?.n ?? 0;
-      for (let i = 0; i < 10_000 && (await waiting()) > 0; i++) {
-        // Polls the lock table; the writer's statement_timeout ends each wait within 250 ms.
+        ).rows[0] ?? { writers: 0, waiters: 0 };
+      for (let i = 0; i < 10_000; i++) {
+        const { writers, waiters } = await busy();
+        if (writers === 0 && waiters === 0) break;
       }
       await su.query('ROLLBACK');
     }
