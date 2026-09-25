@@ -143,6 +143,8 @@ export interface KubernetesAuthRole {
   bound_service_account_namespaces: [string];
   audience: string;
   token_policies: [string];
+  /** Always false: see TOKEN_NEEDS_DEFAULT_POLICY. */
+  token_no_default_policy: false;
   token_ttl: string;
   token_max_ttl: string;
 }
@@ -164,10 +166,20 @@ export function kubernetesAuthRoles(options: {
     bound_service_account_namespaces: [options.namespace],
     audience: options.audience,
     token_policies: [name],
+    token_no_default_policy: false,
     token_ttl: '15m',
     token_max_ttl: '1h',
   }));
 }
+
+/**
+ * Every Ralysa auth role (AppRole and Kubernetes) keeps OpenBao's `default` policy on its tokens.
+ * @ralysa/secrets relies on it: after a 403 it calls `auth/token/lookup-self` (granted by
+ * `default`) to tell an invalid token from a policy denial, and logs in again only for the
+ * former. Without `default`, every policy denial would look like an invalid token and trigger a
+ * new login, consuming a single-use secret_id each time (code review of PR #19).
+ */
+export const TOKEN_NEEDS_DEFAULT_POLICY = { token_no_default_policy: false } as const;
 
 /**
  * Dev AppRole settings. Production refuses AppRole unless `vault.auth.allow_approle` and then
@@ -175,6 +187,7 @@ export function kubernetesAuthRoles(options: {
  * source address is the Docker bridge, so the CIDRs are loopback plus the private ranges.
  */
 export const DEV_APPROLE = {
+  ...TOKEN_NEEDS_DEFAULT_POLICY,
   secret_id_num_uses: 1,
   secret_id_ttl: '10m',
   token_ttl: '15m',
@@ -312,7 +325,6 @@ export async function bootstrapVault(
   return { keys, kvCreated, policies, appRoles };
 }
 
-/** Reads a DB role password from KV with an operator/root token (bootstrap-db only). */
 /** Records a completed bootstrap (see BOOTSTRAP_MARKER). Call after the Postgres roles exist. */
 export async function markBootstrapped(
   bao: BaoRequest,
@@ -338,6 +350,7 @@ export async function isBootstrapped(
   return true;
 }
 
+/** Reads a DB role password from KV with an operator/root token (bootstrap-db only). */
 export async function readDbPassword(
   bao: BaoRequest,
   key: DbRoleKey,
@@ -353,17 +366,29 @@ export async function readDbPassword(
 }
 
 /** Logs in with a fresh single-use secret_id (dev and tests only; needs a root/operator token). */
-export async function appRoleLogin(
+/** The role_id and a fresh single-use secret_id of a dev AppRole (root token). */
+export async function appRoleCredentials(
   root: BaoRequest,
-  anonymous: BaoRequest,
   role: string,
-): Promise<string> {
+): Promise<{ roleId: string; secretId: string }> {
   const roleId = dataOf(
     expectOk(await root('GET', `auth/approle/role/${role}/role-id`), 'role-id'),
   ).role_id;
   const secretId = dataOf(
     expectOk(await root('POST', `auth/approle/role/${role}/secret-id`, {}), 'secret-id'),
   ).secret_id;
+  if (typeof roleId !== 'string' || typeof secretId !== 'string') {
+    throw new Error(`approle ${role}: no role_id or secret_id`);
+  }
+  return { roleId, secretId };
+}
+
+export async function appRoleLogin(
+  root: BaoRequest,
+  anonymous: BaoRequest,
+  role: string,
+): Promise<string> {
+  const { roleId, secretId } = await appRoleCredentials(root, role);
   const login = expectOk(
     await anonymous('POST', 'auth/approle/login', { role_id: roleId, secret_id: secretId }),
     `approle login ${role}`,

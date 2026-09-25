@@ -1,6 +1,6 @@
 # F-002: Implementation notes
 
-> Phase 5 · Owner: developer agent · Branch `feat/F-002-foundations` (T01–T03, one commit per task; T04 follows on its own branch) · Design: [design.md](./design.md) (G4 recorded 2026-09-25) · Security review: [security.md](./security.md) · Date: 2026-09-25
+> Phase 5 · Owner: developer agent · Branches `feat/F-002-foundations` (T01–T03, PR #18, merged) and `feat/F-002-secrets-db-audit` (T04–T06), one commit per task · Design: [design.md](./design.md) (G4 recorded 2026-09-25) · Security review: [security.md](./security.md) · Date: 2026-09-25
 > These notes carry the evidence the design asks each task to record: versions, deviations, "to verify" results and anything left open. The PR description links here.
 
 ## Environment
@@ -160,3 +160,249 @@ Checked for later tasks and **not added**, because no code uses them yet: `kysel
 | R-6 | No guard against `.refine()`/`.superRefine()` on wire types. | **Decision: enforce, don't just document.** Checked on zod 4.6.5: `z.toJSONSchema` silently drops custom checks even with `unrepresentable: 'throw'`, so a refinement would make the zod schema and the published JSON Schema disagree. New `findCustomChecks()` in the generator walks the zod tree (including lazy and recursive types such as `IJson`), and `toJsonSchema` throws on any custom check. A unit test also walks **every** exported schema of the four families, registered or not. | `schema.test.ts`: `refine`, `superRefine`, `check(z.refine)` and a refinement nested in a union all fail; built-in checks pass; all exports are clean. |
 | R-7 | The harness probe checked only the Transit mount, so a bootstrap that stopped half-way looked ready. | `bootstrap` now writes a completion marker `kv/data/ralysa/dev-stack/bootstrapped` (root token, outside every Ralysa policy) **after** the Postgres roles step. The probe also requires the `ralysa-cp-serve` policy and the marker. This covers the case hit locally where psql failed after the OpenBao part. | Unit tests for the marker path and `isBootstrapped`. `stack.int.ts` asserts the marker. Manual check: after the marker was deleted, the probe reported "the last bootstrap did not finish…", and re-running bootstrap restored it. |
 | R-8 | The `AuthorizeQuery.redirect_uri` port pattern `[1-9][0-9]{0,4}` accepted 65536–99999. | **Deviation from the design's regex (§3.2, `/^http:\/\/(127\.0\.0\.1\|\[::1\]):([1-9][0-9]{0,4})\/callback$/`):** tightened to exactly 1–65535 with no leading zeros. It is stricter only, and every port a real loopback listener can bind still passes. The generated `oauth-authorize-query.v1.json` was regenerated. | `auth.test.ts`: 1, 9999, 59999, 64999, 65499, 65529 and 65535 accepted; 0, 01, 65536, 65540, 66000, 99999 and 100000 refused. |
+
+## Carried review nits (from PR #18, on `feat/F-002-secrets-db-audit`)
+
+- The no-glob test now covers **every** policy, operator included. It uses a small OpenBao glob matcher (`+` = one segment, a trailing `*` = any suffix) to require that no allow pattern matches a sample of denied custody paths: key config, export, backup, restore and import.
+- The `stack.int.ts` comment now names `check-integration-scope`.
+- The `readDbPassword` doc comment is back above its function.
+
+## T04: `packages/secrets`
+
+### What landed
+
+- `ports.ts`: `SecretStore`, `KeyCustody`, `KeyDescription`, `PublicKeyVersion`, `VaultAuth`, `RuntimeEnv` (design §3.7).
+- `openbao/http.ts`: `fetch` client. The address must be plain `http(s)://host[:port][/path]`. Every API path segment must match `[A-Za-z0-9_.+-]+` with no `.` or `..`. A default 5 s timeout applies.
+- `openbao/auth.ts`: Kubernetes, AppRole and token login with the environment rules in `assertAuthAllowed`. Logins are single-flight and renew at half the lease.
+- `openbao/kv2.ts`: `get` and polling `watch` over mount-first paths.
+- `openbao/transit.ts`: `describe` (custody flags, type, public JWKs from the PEM) and `sign` (`sha2-256`, `key_version`, `marshaling_algorithm=jws`, a 64-byte r‖s check).
+- `memory/`: the two doubles. Key custody uses WebCrypto keys whose private halves are non-extractable, plus `setFlags` and `setMinAvailableVersion` for custody-monitor tests.
+- `errors.ts`: `SecretsError` codes and `CustodyViolationError`. No message carries a token, value or body.
+- Dev-stack harness: `roleCredentials(stack, role)` (role_id plus a fresh single-use secret_id), so adapter tests log in through AppRole themselves.
+
+### Versions
+
+| Item | Pinned | Evidence |
+|---|---|---|
+| `jose` | **6.2.12** (devDependency of `@ralysa/secrets`, integration verification only) | Published 2026-09-05 (20 days old), the latest 6.2 patch; the 6.2 line is well past 30 days. MIT, no dependencies, no install scripts. T07/T11 add it as a runtime dependency of control-plane and auth and move it to the catalog then. |
+
+### Recorded decisions and deviations
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T04-1 | **Bug found by the integration test, fixed** | After a 403, the adapter logs in again only if `auth/token/lookup-self` with the same token is also refused. A policy denial (valid token) is returned as `access_denied` without a new login. | The first version re-logged in on every 403. With the dev AppRole's single-use `secret_id`, a legitimate denial (serve reading `db/migrator`) burned the credential and turned the denial into `auth_failed`. In production the same would make each denial cost a login. `lookup-self` is in OpenBao's default policy. |
+| T04-2 | Addition to the port | `createOpenBao` takes `allowAppRole` (from config `vault.allow_approle`). AppRole is refused when `env=production` without it; token auth is refused unless `env` is `dev` or `test`. `assertAuthAllowed` is exported so T07's config guards call the same rule. | §3.7 says "production only with allow_approle" but its `createOpenBao` signature has no field for it. |
+| T04-3 | Addition to the port | `SecretStore.watch` takes an optional `onError`. Polling continues after an error, and the version seen at start is not reported. | §3.7's signature has no error channel. The T13 rotation watcher needs to see OpenBao outages without the watch dying. |
+| T04-4 | Implementation choice | `PublicKeyVersion.jwk` is a `PublicJwk` (`kty`, `crv`, `x`, `y` only), not the DOM `JsonWebKey`. | The isomorphic lib has no DOM types. The narrower type also guarantees that no private or `key_ops` members reach JWKS. |
+| T04-5 | Implementation choice | `describe` refuses any key type but `ecdsa-p256` (`unsupported_key`) as well as either custody flag. The flag check treats a **missing** flag as `true` (fail closed). | ES256 is the only algorithm the design mints with (§3.2.4). A reply without the flags is not proof of custody. |
+| T04-6 | Implementation choice | The in-memory custody's `sign` still signs after `setFlags`, as Transit does. Only `describe` refuses. | The custody monitor (T07/T16) is what stops signing. If the double refused too, TC-33's hermetic half would pass without the monitor doing anything. |
+| T04-7 | Hardening | `check-integration-scope` skips listed files that no longer exist. | `git ls-files --cached` still lists a deleted file until the deletion is staged, and the check crashed on it while this task replaced `wiring.int.ts`. |
+
+### Tests (T04)
+
+- `test/openbao.test.ts` (fake `fetch`, 40 cases):
+  - the auth matrix per environment, including a refusal before any request;
+  - address validation;
+  - Kubernetes login (single-flight, reused, re-login only when the token is invalid, no re-login on a policy denial);
+  - an AppRole login failure and an unreachable OpenBao, whose messages don't contain the role id, secret id or token;
+  - KV path mapping, the status → code mapping, a deleted version and path traversal refusals;
+  - `watch` with fake timers: a new version reported once, errors reported while polling continues, nothing after `stop`;
+  - Transit `describe` (JWK shape, `min_available_version`, each custody flag and a missing flag, non-P-256);
+  - `sign` (request body, 64 bytes, a wrong version, a wrong length, non-vault formats, key-name traversal).
+- `test/memory.test.ts`: versions and `watch`; `fail`; two key versions whose signatures verify only against their own JWK; unknown keys and unavailable versions; flags flipped at runtime are refused and then accepted again.
+- `test/integration/openbao.int.ts` (dev stack):
+  - **a Transit ES256 JWS verifies with `jose` against the published key for two versions**, and never under the other version's key;
+  - `describe` refuses a key after `exportable` is flipped at runtime, and another after `allow_plaintext_backup` alone is flipped (OpenBao 2.6.2 accepts that flag without `exportable`; checked), on throwaway keys [SEC-F002-11];
+  - **the KV v2 watch reports a new version**;
+  - the serve AppRole reads `db/cp_app` but gets `access_denied` on `db/migrator`, and signs with `ralysa-rts-signing` but not with `ralysa-audit-checkpoint`.
+
+## T05: database
+
+### What landed
+
+- `src/db/sql/bootstrap-roles.sql`, the DBA script. It is plain SQL, idempotent and run once per database as a superuser, with these parts:
+  - a UTF-8 and superuser check;
+  - the roles, none with an elevated attribute;
+  - the NOLOGIN `ralysa_audit_owner`, granted to `ralysa_audit_migrator` `WITH INHERIT FALSE, SET TRUE`, plus an assertion that `ralysa_migrator` is not a member;
+  - database CONNECT and CREATE grants, and `REVOKE ALL ON SCHEMA public FROM PUBLIC`;
+  - the superuser-owned `ralysa_admin.record_audit_schema_ddl()` and two event triggers (`ddl_command_end`, `sql_drop`), `ENABLE ALWAYS`, which write `audit.schema_changed` for any DDL on `audit` or `ralysa_meta_audit` [SEC-F002-01 b].
+- Migrations (static providers, up only):
+  - `audit/0001_audit_store`: `audit.current_org()`; `audit_event`, `audit_seal` (foreign key to the event) and `audit_checkpoint`; FORCE RLS; column-level INSERT for the writer; reader and sealer grants; `reject_modify_row`/`_stmt` and `reject_truncate` on all three tables, `ENABLE ALWAYS`.
+  - `cp/0001` to `cp/0004`: the §4.4 tables, FORCE RLS with one policy per operation, per-table grants, and the `organization.region` immutability trigger.
+- `src/db/migrate.ts`: both sets. Each runs as its login role; the audit set issues `SET ROLE ralysa_audit_owner` on its single connection. Kysely history lives in `ralysa_meta` and `ralysa_meta_audit`. Both sets check UTF-8 and check the role matches the set.
+- `src/db/pools.ts` (one pool per role; password as a function, fetched from OpenBao at connect), `src/db/kysely.ts` (`createDb`, `withOrg` with a UUID check), `src/db/types.ts` (the Kysely `Database`).
+- `src/config/` (the shared `Common` parts plus `MigrateConfig` and `MigrateAuditConfig`, the common production guards, and a YAML loader whose errors name paths only), `src/secrets/vault.ts` (auth material from files or a named env var), and `src/main.ts` (`migrate [--audit]`).
+- `migrations.lock.json` (per-file `{sha256}` entries, T05-21), the `check-migrations-immutable` repo check, `pnpm migrations:lock`, and a CI step that fetches `main` for the comparison.
+- The SEC-F002-31 lint ban in the control-plane ESLint config.
+- Dev-stack `bootstrap` now applies `bootstrap-roles.sql`. The harness gains `dbPassword` and `BOOTSTRAP_ROLES_SQL`. There are dev configs for `migrate` and `migrate --audit`.
+
+### Versions
+
+| Item | Pinned | Evidence |
+|---|---|---|
+| `kysely` | **0.29.6** (catalog; control-plane dependency) | Published 2026-09-16 (9 days old); the 0.29 line started 2026-05-08. MIT, no dependencies, no install scripts. 0.29 moved `Migrator` and `Migration` to `kysely/migration` (the root exports are deprecated). |
+| `pg` / `@types/pg` | 8.23.0 / 8.23.1, moved to the **catalog** | Now used by dev-stack and control-plane (T02 note). |
+
+### Recorded decisions and deviations
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T05-1 | **Deviation from §8.2** | Dev-stack `bootstrap` applies `bootstrap-roles.sql` but does **not** run the migrations. They run through the control plane's own commands (`pnpm --filter @ralysa/control-plane migrate:audit:dev`, then `migrate:dev`), and integration tests migrate a fresh database per file. | Bootstrap runs before any build, both locally and in the CI job; the migrations are TypeScript in the control plane. Importing control-plane from dev-stack would create a dependency cycle, since control-plane has dev-stack as a devDependency. |
+| T05-2 | Interpretation | `bootstrap-roles.sql` sets no passwords and has no psql meta-commands. The dev stack sets passwords first (T02's SCRAM-over-stdin script), then appends this file to the same stdin. | One file serves the production DBA and the dev stack, and tests can run it through a driver. Passwords stay on the stdin channel (SEC-F002-29). |
+| T05-3 | Deviation from §4.3 | Locking schema `public` is in `bootstrap-roles.sql`, not in `cp/0001`. `cp/0001` refuses to run if `ralysa_cp_app` could still create objects in `public`. | `public` belongs to `pg_database_owner`, so the migrator cannot revoke on it. |
+| T05-4 | Implementation choice | `GRANT ralysa_audit_owner TO ralysa_audit_migrator WITH INHERIT FALSE, SET TRUE` (PostgreSQL 16+). | The audit migrator has the owner's rights only after an explicit `SET ROLE`, never implicitly. The test checks `pg_has_role(…, 'USAGE') = false` and `'SET' = true`. |
+| T05-5 | Design gap, filled | Event-trigger attribution: the org is the caller's `app.org_id`, else the single organization, else the nil UUID. The migrate jobs set `app.org_id` from `config.org.id` on their one connection. When `audit.audit_event` doesn't exist (its own first migration, or after a drop), the DDL goes to the server log as a `WARNING` (`log_line_prefix` names user and client). The trigger also records the audit migration's own DDL. | §4.5 doesn't say which org a DDL event belongs to, and the org can't come from config inside the database. Recording migration DDL too is simply what "any DDL on the audit schema" means. |
+| T05-6 | Hardening | Every audit trigger, the region trigger and the event triggers are `ENABLE ALWAYS`, so they also fire under `session_replication_role = replica`. `audit.modify_denied` is written only when the statement touched at least one row. With several orgs in one statement (a superuser, since RLS limits the owner to one org), the event carries the first row's org. | SEC-F002-25 says no Ralysa role may set that GUC (tested); ALWAYS also covers a superuser. A zero-row statement changes nothing and would only add noise. Phase 0 has one organization. |
+| T05-7 | Implementation choice | The audit tables have UPDATE and DELETE RLS policies although nobody is granted those operations. | Without a policy, FORCE RLS makes the owner's `UPDATE` match zero rows before the row trigger runs. The statement would change nothing but leave no `audit.modify_denied`, which TC-23 requires. |
+| T05-8 | Implementation choice | `cp.organization` has `org_id uuid GENERATED ALWAYS AS (id) STORED`. Every cp table has a foreign key `org_id → cp.organization(id)`. | TC-19: every table has `org_id`. The RLS policy stays uniform. Referential checks bypass RLS, so the app role needs no REFERENCES grant. |
+| T05-9 | Deviation from §4.1 (DELETE list) | `ralysa_cp_app` gets DELETE on `cp.group_membership`. It does not yet get DELETE on `cp.auth_session`. | Memberships are "replaced at each sign-in/refresh" (§4.4), which needs DELETE. The 30-day session purge belongs to T08's cleanup job, which will grant it in a new migration. |
+| T05-10 | Scope note | `cp.usage_record` has no grants. `ralysa_usage_writer` doesn't exist yet. `cp.kill_switch` is SELECT-only for the app. | The usage writer role and its grant arrive with F-004 (stack.ts already says so). F-012 writes kill switches. |
+| T05-11 | Simplification | No down functions at all. | §4.2: `migrate` is up-only everywhere, and downs "exist only for local development". A local reset is `down -v` plus migrate. Unused downs would still be code to keep immutable. |
+| T05-12 | Implementation choice | Events generated inside the database (`audit.modify_denied`, `audit.schema_changed`) use `gen_random_uuid()` (v4) and a random 32-hex `trace_id`. | PostgreSQL 17 has no `uuidv7()`. Application events get UUIDv7 ids from the writer (T06). |
+| T05-13 | Design gap, filled | `vault.auth` config shapes: `kubernetes {role, jwt_path}`, `approle {role_id, secret_id_path}`, `token {token_env}`. Secret material comes from a file or a named env var, never the config. `KvPath` accepts only `<kv mount>/ralysa/control-plane/…`. | §3.8 names `VaultAuthConfig` without fields. Its rule is that config holds paths and ids only. |
+| T05-14 | Scope split with T07 | T05 adds `Common`, `MigrateConfig`, `MigrateAuditConfig`, the common production guards (token auth, AppRole without `allow_approle`, non-https vault, `db.ssl=false`), the YAML loader and `main.ts` with `migrate` only. T07 adds serve, sealer and audit-verify, env overrides, the serve-specific guards and the seal-status check. | The migrate commands are T05's and need a config; building only the shared parts avoids pre-empting T07. |
+| T05-15 | Scope note | The SEC-F002-31 tests that an `X-Org-Id` header and a body `org_id` are ignored land with T07's routes. | There is no HTTP surface in T05. The rule itself is documented at `withOrg`. |
+| T05-16 | Hardening | `migrations.lock.json` also hashes the shared helpers beside the sets (`ddl.ts`). The check compares against `main`'s lock (the CI `repo-checks` job now fetches `main`) and is a finding in CI if the base can't be read. | Released migrations import `ddl.ts`, so an edit there would change them. Comparing with the base stops a rewritten lock from hiding an edit to a released migration. |
+| T05-17 | **Latent T02 bug, fixed** | `turbo.json` now passes `RALYSA_REQUIRE_DEV_STACK` through to `test:integration` (`passThroughEnv`). New `check-turbo-config` rule `turbo/integration-require-env`. | Turbo's strict env mode hid the variable, so `RALYSA_REQUIRE_DEV_STACK=1 turbo run test:integration` **skipped** without a stack instead of failing. CI was not affected: Turbo passes `CI` through, and with the stack down `CI=1` failed as intended. Found while the local stack was stopped (see T05-20). |
+| T05-18 | Fix | `listRepoFiles` (repo-scripts) drops files that no longer exist on disk. | `git ls-files --cached` lists a deleted-but-unstaged file. The repo-copy test fixture crashed on T04's deleted `wiring.int.ts`. T04-7's local guard is now redundant but harmless. |
+| T05-19 | Test detail | TC-23's TRUNCATE check uses `TRUNCATE … CASCADE`. | A plain `TRUNCATE audit.audit_event` is already refused by the `audit_seal` foreign key (`0A000`) before the guard runs. CASCADE reaches the guard trigger, which refuses with `42501`. |
+| T05-21 | Implementation choice | `migrations.lock.json` is `{"version": 2, "migrations": {"<set>/<file>": {"sha256": "…"}}}`, not a flat name → hash map. The unpushed branch was rebuilt so no commit contains the flat form. | gitleaks' `generic-api-key` rule read `"…_tokens.ts": "<sha256>"` as a keyword next to a secret (2 findings in `secret-scan pr`). A nested object fixes this without allow-listing a path, so the scanner stays at full strength. |
+| T05-22 | Fix before merge (found starting T06) | The two database-written events now carry the §3.5 catalogue fields. `audit.modify_denied` has `actor.service=audit-store` and `details {op, table, db_role, row_count}`. `audit.schema_changed` is **one event per affected object**, with `actor.service=dba-event-trigger` and `details {command_tag, object_type, object_identity, event, session_user, current_user}`. `current_user` is the caller's effective role, taken from the `role` setting, because inside the SECURITY DEFINER function `current_user` is the function owner. | The first version used its own field names and one event per DDL command. Changed while #19 is unmerged, because `audit/0001` becomes immutable once it's on `main`. |
+| T05-20 | Environment note | During the run, the shared dev-stack containers were stopped externally (exit 137), probably by another session using the same `ralysa-dev` compose project and fixed ports. The stack was recreated and every suite re-run. | Only one dev stack can run per machine. Parallel agent sessions should coordinate on it. |
+
+### Tests (T05)
+
+- **Unit** (`test/config.test.ts`, `test/db.test.ts`, 22 cases):
+  - env defaults to production;
+  - secret-looking values, foreign paths and traversal are refused where a KV path belongs;
+  - each migrate job's config names only its own credentials [SEC-F002-02, AR-9];
+  - unknown keys are refused; token auth names an env var; errors name fields, not values; the YAML loader;
+  - each common production guard, and the same settings allowed in dev;
+  - vault auth reads files and env at login time;
+  - the migration sets are ordered and up-only, audit runs as the owner via SET ROLE;
+  - **the writer column grant equals the input envelope's fields plus the server-set org, source, attestation and client_seq, and never `ts`, `ingest_seq` or `schema_version`** [AR-8];
+  - `withOrg` refuses non-UUID and uppercase ids.
+- **Integration** (`test/integration/db.int.ts`, 29 cases, one fresh database per file):
+  - **TC-F-002-19:**
+    - the cp and audit table lists;
+    - every table has `org_id`, `relrowsecurity` and `relforcerowsecurity`;
+    - `endpoint_region` and `inference_region` exist on both tables;
+    - the history schemas exist and are excluded;
+    - ownership: the audit store is owned by `ralysa_audit_owner`, cp by `ralysa_migrator`;
+    - the role layout: migrator is not a member, the audit migrator is SET-only, the owner is NOLOGIN;
+    - migrate twice is a no-op, and `bootstrap-roles.sql` is idempotent.
+  - **TC-F-002-23:**
+    - the writer gets `42501` on SELECT, UPDATE, DELETE and TRUNCATE, and on inserting `ts` or `schema_version`;
+    - the writer can't insert another org's event (RLS WITH CHECK);
+    - the cp migrator gets `42501` on `audit.*`;
+    - **as the owner via `ralysa_audit_migrator`**, a multi-row UPDATE and DELETE on `audit_event`, `audit_seal` and `audit_checkpoint` changes 0 rows and writes exactly **one** `audit.modify_denied` with `row_count`, and `app.org_id` is restored;
+    - TRUNCATE raises on all three;
+    - **`ALTER TABLE … DISABLE TRIGGER` and re-enabling write two `audit.schema_changed` events** attributed to the login user and the org;
+    - the owner can't alter the event trigger;
+    - all rows are still present afterwards.
+  - **TC-F-002-27:**
+    - a query outside `withOrg` errors for the app and reader roles;
+    - the other org's rows are invisible;
+    - the pooled connection has no `app.org_id` after `withOrg`, and a query on it errors;
+    - `withOrg` refuses an injection-shaped id;
+    - `organization.region` is immutable (`23514`) while other columns update.
+  - **SEC-F002-25:** no Ralysa role can `SET session_replication_role` (`42501`).
+  - **AC-15:** `bootstrap-roles.sql` and `migrate` both refuse a `SQL_ASCII` database; `migrate` refuses the wrong login role for a set.
+- **Repo checks:**
+  - `check-migrations-immutable.test.ts` (8): shared helpers are hashed and `index.ts` is not; the lock matches; unlocked, changed, helper-changed and missing-file findings; a rewritten lock can't launder a released change; a dropped base entry is flagged; a missing base is a finding in CI only; an invalid lock; the real repository is clean;
+  - `check-turbo-config` (2 new): the pass-through rule.
+- **Manual:**
+  - the built CLI against the dev database: `migrate:audit:dev` and then `migrate:dev` apply 1 and 4 migrations, a rerun applies none, an audit-shaped config given to `migrate` is refused (exit 2), and an unknown command prints usage (exit 2);
+  - the lint ban flags `'SET ROLE …'`, `set_config('app.org_id', $1, false)` and `set app.org_id`, passes the `true` form, and exempts `src/db/migrate.ts`.
+
+## Code review of PR #19 (changes requested): resolutions
+
+| # | Finding | Resolution | Evidence |
+|---|---|---|---|
+| R19-1 | **Blocking.** The SEC-F002-31 lint ban matched single `Literal`/`TemplateElement` nodes. Kysely's tagged ``sql`select set_config('app.org_id', ${org}, false)` `` split around `${}` and passed. `set_config('role', …)` and `SET SESSION AUTHORIZATION` weren't covered. | New rule **`ralysa/no-session-db-settings`** in `@ralysa/eslint-config` (registered in the `ralysa` plugin) replaces the selector ban. It reads string literals and **whole template literals, tagged or not**, joining the quasis with a placeholder. It bans: `SET [SESSION\|LOCAL] ROLE`, `SET SESSION AUTHORIZATION`, `SET [SESSION\|LOCAL] app.…`; `set_config('role'\|'session_authorization', …)` in any form; and `set_config('app.…', …)` unless the third argument is the literal `true`. The third argument is found with a quote- and paren-aware argument split. The control-plane config enables it for `src/**` except `src/db/migrate.ts`. | `tooling/eslint-config/test/session-db-settings.test.ts` (RuleTester, 8 valid and 16 invalid cases, including the tagged-template `false` form, `${local}` as the flag, a missing flag, `role` and `session_authorization`, SET ROLE, SET LOCAL ROLE, SET SESSION AUTHORIZATION, SET app., and nested calls with quoted commas). `services/control-plane/test/lint-config.test.ts`: the rule is `error` for application files and absent only for `src/db/migrate.ts`, and ESLint flags the tagged `false` form in `src/db/kysely.ts`. |
+| R19-2 | The owner or a superuser could pre-set `ralysa.modify_denied_rows` (e.g. `-1`) so that no `audit.modify_denied` was written. | `audit/0001` adds `audit.reject_modify_reset()`, a **BEFORE … FOR EACH STATEMENT** trigger (`ENABLE ALWAYS`) on all three tables that resets the row counter and the org before any row trigger runs. A pre-set value can't cancel the count or change the attributed org. | Integration: with `rows=-1` and `org=ORG_B` pre-set, a 3-row DELETE still changes 0 rows and writes exactly one `audit.modify_denied` for ORG_A, and none for ORG_B. |
+| R19-3 | Re-login relies on `lookup-self`, which comes from OpenBao's `default` policy. With `token_no_default_policy=true`, every policy 403 would re-login and burn a single-use `secret_id`. | **Decision:** keep the `lookup-self` design, and pin and document the requirement. `TOKEN_NEEDS_DEFAULT_POLICY` sets `token_no_default_policy: false` explicitly on the dev AppRoles and on every Kubernetes-auth role in the template (a typed `false` field). The requirement is written next to the templates, in `auth.ts` and in the secrets README. The alternative (re-login only after the lease half-life) would make an early-revoked token unusable until then; OpenBao's `default` policy is already on every token unless explicitly removed. | Unit: the dev AppRole and every Kubernetes role have `token_no_default_policy: false`. Integration: each entry-point and service AppRole token calls `lookup-self` (200) and lists `default` and its own policy. |
+
+### Open items carried forward (no code in T04–T05)
+
+| # | Item | Where it lands |
+|---|---|---|
+| OI-1 | The DDL event trigger attributes an event to the caller's `app.org_id`, else the single organization, else the nil UUID (T05-5). Once there are several orgs, a DDL statement belongs to no org. This needs a system scope or one event per org. | Revisit with multi-org (F-006+); the DDL change must also be recorded for off-host log checks. |
+| OI-2 | `KvPath` in the config accepts `<any mount>/ralysa/control-plane/…` but isn't cross-checked against `vault.kv_mount`. | F-002-T07 (config work): a refinement at load time. It must be a load-time check, not a zod refinement, because R-6 bans refinements on wire schemas. |
+
+## T06: audit core
+
+Branch `feat/F-002-audit-core`, stacked on `feat/F-002-secrets-db-audit` (#19).
+
+### What landed
+
+- `src/audit/columns.ts`: `toColumns()` maps the envelope to the `audit_event` columns (the writer's side). `StoredEventInput` is the input envelope plus the server-assigned `source`, `attestation` and `client_seq`.
+- `src/audit/sealer/chain.ts`: `rowToEnvelope()` (the only way back from a row), `rowEventHash()`, `verifySeals()` (reports the first divergent seq, with a reason of `seq_gap`, `prev_hash_mismatch`, `event_hash_mismatch` or `hash_mismatch`), and `verifyChain(db, org, shard)`.
+- `src/audit/writer.ts`: `createAuditWriter()`.
+  - `write()` fails closed with savepoint inserts, `23505` → `duplicate`, a 250 ms bound (JS race plus a transaction-local `statement_timeout`), and `AuditUnavailableError`.
+  - `writeOrSpool()` sends the batch to the spool on unavailability.
+  - `validateStoredEvent()` applies the strict input schema, I-JSON, `failure` only on `auth.*`, and `client_seq` only on client events.
+- `src/audit/spool.ts`, `src/audit/rejections.ts`, and `src/audit/events.ts` (the `systemEvent`, `tokenRejectedEvent` and `migrationAppliedEvents` builders).
+- `src/audit/sealer/sealer.ts`: `sealOnce()` (per-shard transaction with `pg_try_advisory_xact_lock`, head, 10,000-row lookback with an anti-join, batch of 1,000, lag gauge; the sweep drops the lookback and counts `audit_seal_late_total`) and `runSealerLoop()`.
+- `main.ts`: the `sealer` entry point (`SealerConfig`: `audit_sealer` credential only). Both migrate jobs now write `db.migration.applied` through the writer role.
+- `@ralysa/protocol/common` `uuidv7()` (RFC 9562), used for control-plane event ids.
+- `src/observability/`: `Metrics` and `Logger` ports with no-op, in-memory and JSON-line implementations.
+
+### Recorded decisions and deviations
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T06-1 | Deviation from §2.2 | UUIDv7 comes from a 20-line `uuidv7()` in `@ralysa/protocol/common` (WebCrypto randomness), not the `uuid` package. | One small, fully tested function is less supply-chain surface than a dependency, and the protocol package is isomorphic anyway. |
+| T06-2 | Scope split with T16 | `SealerConfig` has `interval_ms`, `sweep_interval_s` and `db_credentials.audit_sealer`. T16 adds `checkpoint_key` and `checkpoint_interval_s` when the sealer starts signing. | Checkpoints are T16's (design §10). |
+| T06-3 | Design gap, filled | Metrics and logs go through minimal ports (`Metrics.increment/gauge`, a JSON-line `Logger`). T07 binds them to the service's exporter and pino with its redaction. | The design names the metrics (`audit_write_failures_total`, `audit_spool_lost_total`, `audit_seal_lag_seconds`, `audit_seal_late_total`) but the service's metrics and logging stack is T07's. |
+| T06-4 | Interpretation | "Seal lag" is the age of the oldest event sealed in a pass, measured on the database clock at sealing. Above 5 s the loop logs `audit_seal_lag_high`. The alert itself is on the gauge. | §4.6 sets the target (≤ 5 s) and the metric but not how it's measured. The database clock avoids host skew. |
+| T06-5 | Interpretation | `writeOrSpool()` spools only on `AuditUnavailableError`. An invalid event (a programming error) is thrown, never spooled. The spool isn't wired to an entry point yet: `serve` (T07) opens it with `persistent` from config. | A bad event can never become valid, so spooling it would just replay a failure forever. |
+| T06-6 | Implementation choice | `auth.token_rejected` has `actor.type=user` with every id null (the caller is unauthenticated), plus `details.client_network` (the /24 or /64 aggregation key) alongside `client_ip`. | The catalogue lists `audience`, `reason`, `client_ip` and `suppressed_count`. The network makes the summary rows auditable. |
+| T06-7 | Implementation choice | If `db.migration.applied` can't be written after the migrations committed, the migrate job exits 1 with "migrations applied but db.migration.applied was not recorded". | SR-29 requires the migration path to be audited. The migrations can't be undone, so a visible failure is the honest outcome, and the job is one-shot and operator-run. |
+| T06-8 | Hardening | `validateStoredEvent` rejects `client_seq` on a server-attested event and reserved keys under `details.client`. | Server provenance stays unambiguous ahead of T12's client path. |
+
+### Tests (T06)
+
+- **Unit** (39 new cases):
+  - `audit-chain.test.ts`:
+    - **the stored row hashes to the protocol's frozen golden vector** (`939a8a46…`, and chain `18c0ae2e…`), so `toColumns` → row → `rowToEnvelope` round-trips byte-exactly;
+    - absent and null fields hash alike;
+    - `ts` always has 3 digits and `Z`;
+    - structured members and bigint map back;
+    - every value change changes the hash;
+    - `verifySeals` accepts an intact chain and pinpoints a changed event, a broken link, a missing seal and a wrong `prev_hash`.
+  - `audit-writer.test.ts`: validation refusals; UUIDv7 system events; `db.migration.applied` with the lock checksum (`unknown` when absent); `auth.token_rejected` with and without `suppressed_count`.
+  - `audit-spool.test.ts`: directory `0700` and files `0600`; replay order, `original_ts` and `spooled`, then deletion; stop-and-keep on failure; a symlinked directory refused; `audit_spool_lost_total` only when not persistent.
+  - `audit-rejections.test.ts`: /24 and /64, including mapped IPv4 and `::`; 20 then a summary with `suppressed_count`; per-key isolation; the 600 per minute instance cap.
+- **Integration** (`test/integration/audit.int.ts`, 11 cases):
+  - `db.migration.applied` for all 5 migrations with checksums;
+  - store and duplicate (a duplicate mid-batch doesn't fail it) [AR-8];
+  - **fail-closed in under 1 s** while the table is locked, with the metric incremented;
+  - **a spooled denial replayed** with `details.server.spooled` and `original_ts` [SEC-F002-24];
+  - the aggregator writes 2 events and then one summary with `suppressed_count=3`;
+  - all shards sealed and `verifyChain` ok, and a second pass is a no-op;
+  - **the running loop seals a new event within 5 s**;
+  - **three concurrent sealers (two pools, batch 7) never fork: 30 seals and a valid chain** [SEC-F002-26];
+  - **a late-committing event is sealed on the next pass** at seq 2;
+  - **a superuser rewrite of a sealed event (triggers disabled) is reported at seq 2 as `event_hash_mismatch`**, and the event trigger recorded the `ALTER TABLE`s [AR-6];
+  - the sealer role can't update seals or insert events.
+- **Manual:** the built CLI against the dev database. `migrate:audit:dev` and `migrate:dev` recorded 5 `db.migration.applied` events. `start:sealer` sealed the 66 events in the `control-plane` shard, including the DDL events from the migrations, and stopped cleanly on SIGTERM (exit 0).
+
+### Code review of PR #21 (changes requested): resolutions
+
+| # | Finding | Resolution | Evidence |
+|---|---|---|---|
+| R21-1 | **Blocking.** After the 600/min cap, every new (network, reason, audience) still got a bucket and a summary, so spreading across many /24s or /64s flooded the store, and the Map grew without bound (§6.4, SEC-F002-16). | The aggregator now bounds both output and memory. A key bucket exists only for a key that got an individual event, so there are at most 600. After the cap, rejections from keys without a bucket go to one **overflow bucket per (reason, audience)**: at most 20, then one catch-all per org. Each overflow bucket counts distinct networks up to a cap of 1,024 instead of storing them. At close, per-key summaries go out for the 50 buckets with the most suppressed rejections, and the rest fold into the overflow summaries (`network: overflow`, `suppressed_count`, `details.networks_suppressed`). A window therefore emits at most 600 + 50 + 21 events whatever the traffic, and every rejection is either written or counted. | `audit-rejections.test.ts`: 10,000 distinct IPv4 /24s and 10,000 distinct IPv6 /64s (plus repeat traffic) each give ≤ 671 events, ≤ 600 key buckets, ≤ 21 overflow buckets and ≥ 1 overflow summary with counts; the sum of written plus suppressed equals the input; the maps are empty after close; the network count saturates at 1,024. |
+| R21-2 | Spool durability and corruption handling. | Each file is written to a temp name with `wx` and mode 0600, **fsync'd**, renamed, and the **directory fsync'd**. Stale `.spool-*.tmp` files are removed at start (never acknowledged). On replay, a file that doesn't parse or has `version !== 1` (or a bad shape) is **moved to `quarantine/`** (0700) with `audit_spool_quarantined_total` and an error log, and the replay continues. | `audit-spool.test.ts`: a corrupt file and a version-9 file are quarantined, the valid file is replayed, and the metric equals 2; a stale temp file is removed at start. |
+| R21-3 | Document that a write may commit after the 250 ms timeout reported failure. | Comment at the race in `writer.ts`, citing §5.8: the caller refused or spooled, and a later replay of the same `event_id` is `duplicate`. The README describes the same. | — |
+| R21-4 | `migrations.lock.json` isn't in `dist`, so the checksum was `'unknown'`. | `pnpm migrations:lock` now also writes `src/db/migration-checksums.generated.ts`, nested like the lock so the secret scanner stays quiet. `check-migrations-immutable` fails with `migrations/checksums-module-stale` when it disagrees with the lock. `migrationAppliedEvents` **throws** when a checksum is missing. The generated file is in `.prettierignore` (the generator owns its format). | `check-migrations-immutable.test.ts`: a stale module is a finding. `audit-writer.test.ts`: a missing checksum throws. Integration: all 5 `db.migration.applied` rows carry 64-hex checksums. |
+| R21-5 | T06-7's failure mode (migrations committed, event not recorded) needs a reconcile. | **Open item OI-3** (below). No code in T06. | — |
+| R21-6 | Found while re-running the suite | The aggregator integration test asserted `ingest_seq` order, but the emitted writes run concurrently, so it was flaky (1 in 3 local runs). It now compares the rows order-independently; 5 consecutive runs pass. | — |
+| R19-c1 | Carried from #19: unclosed `set_config` calls weren't flagged. | The setting name is read by its own regex right after `set_config(`, so `"… set_config('role', " + x` is judged by its first argument. An unclosed `app.*` call is refused, since it can't be shown to be local. | RuleTester: 3 new invalid fixtures (`role` by concatenation, unclosed `app.org_id … false`, unclosed `session_authorization` template) and 1 valid one (an unclosed unrelated setting). |
+| R19-c2 | Carried from #19: the `DEV_APPROLE` doc comment was displaced by `TOKEN_NEEDS_DEFAULT_POLICY`. | Moved back above `DEV_APPROLE`. | — |
+
+### Open items (continued)
+
+| # | Item | Where it lands |
+|---|---|---|
+| OI-3 | Reconcile for missed `db.migration.applied`: compare `ralysa_meta*.migration` (name, `executed_at`) with the recorded events and write any missing ones (marked `details.server.reconciled=true`), from the migrate job at start or from `audit-verify`. | T16 (`audit-verify`) or a follow-up; T06-7 makes the gap visible (exit 1) meanwhile. |

@@ -1,5 +1,6 @@
 // @ralysa/protocol/common: ids, traceparent and the problem body.
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import {
   ERROR_CODES,
   Problem,
@@ -12,6 +13,7 @@ import {
   newTraceId,
   parseTraceparent,
   problemType,
+  uuidv7,
 } from '../src/common/index.js';
 
 describe('ids', () => {
@@ -93,5 +95,24 @@ describe('Problem (RFC 9457)', () => {
     const base = { type: problemType('internal'), title: 'x', code: 'internal' };
     expect(Problem.safeParse({ ...base, status: 200 }).success).toBe(false);
     expect(Problem.safeParse({ ...base, status: 500, code: 'nope' }).success).toBe(false);
+  });
+});
+
+describe('uuidv7 (RFC 9562 §5.7)', () => {
+  it('encodes the millisecond timestamp, version 7 and the RFC variant', () => {
+    const id = uuidv7(0x0192f0a07b3c);
+    expect(id).toMatch(/^0192f0a0-7b3c-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    expect(z.uuid().safeParse(id).success).toBe(true);
+  });
+
+  it('sorts by time and is unique within a millisecond', () => {
+    const ids = [uuidv7(1_000), uuidv7(2_000), uuidv7(3_000)];
+    expect([...ids].sort()).toEqual(ids);
+    const same = new Set(Array.from({ length: 1000 }, () => uuidv7(5_000)));
+    expect(same.size).toBe(1000);
+  });
+
+  it.each([-1, 1.5, 2 ** 48])('refuses the timestamp %s', (ms) => {
+    expect(() => uuidv7(ms)).toThrow(RangeError);
   });
 });

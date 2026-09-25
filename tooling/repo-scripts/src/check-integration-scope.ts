@@ -3,7 +3,7 @@
 // `describe.skipIf(stack === undefined)` still runs the describe callback at collection time, so a
 // `stack` read directly in that callback (not inside a hook, test or helper function) crashes the
 // run instead of skipping it. This check finds such reads in every test/integration/**/*.int.ts.
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import ts from 'typescript';
 import { type Finding, listRepoFiles } from './lib/repo.ts';
@@ -158,7 +158,10 @@ export function checkIntegrationScopeSource(path: string, text: string): Finding
 }
 
 export function checkIntegrationScope({ root, files }: CheckIntegrationScopeOptions): Finding[] {
-  const targets = (files ?? listRepoFiles(root)).filter(isIntegrationTestFile);
+  // git ls-files --cached still lists a file deleted in the working tree until it is staged.
+  const targets = (files ?? listRepoFiles(root))
+    .filter(isIntegrationTestFile)
+    .filter((file) => existsSync(join(root, file)));
   return targets.flatMap((file) =>
     checkIntegrationScopeSource(file, readFileSync(join(root, file), 'utf8')),
   );

@@ -997,6 +997,11 @@ The `quality` job of PR #17 (run 36137033999) failed twice; neither showed up lo
 | n4 | `shaping.spec.ts` relied on `document.fonts.check()`, which is also true when no face matches. | It also requires a loaded `FontFace` of family Noto Sans Arabic Variable whose `unicodeRange` covers U+0600–06FF. | `shaping.spec.ts` (3 engines). |
 | n5 | `test-report.md` lacked rows for the automated TCs. | Rows for TC-F-001-15 ("automated pass; native-speaker approval pending (OQ-D8)"), 18, 20 and 24. | – |
 | process | The shared worktree switched branches mid-review. | PR #20 now has its own worktree (`.claude/worktrees/f001-e2e`); other branches use other worktrees. | – |
+## T05 follow-up: flaky secret-scan self-test (branch `fix/F-001-gitleaks-selftest-flake`, 2026-09-25)
+
+| # | Finding | Fix | Tests |
+|---|---|---|---|
+| T05-F1 | PR #20's `secret-scan` job failed once with `aws-access-token not reported at src/config.ts:1`, and a rerun passed. The synthetic key was `AKIA` plus 16 random characters. One draw, `AKIAXJXIAGWXFLALLQAA`, has Shannon entropy 2.97, and the AWS rule's floor is 3, so gitleaks correctly skipped it (a match is dropped when its entropy is <= the floor). About 1 draw in 6 000 falls that low: gitleaks missed 1 of 3 000 in a local run. The GitHub PAT, Azure, LiteLLM, Mistral, Groq and canary values had the same exposure, at lower rates. | `detectable(prefix, alphabet, length, floor)` in `secret-scan-selftest.ts` redraws until the whole value (what each planted rule measures) clears the floor by 0.1 and doesn't match the rule's allow-list (the AWS rule ignores keys ending in `EXAMPLE`). It throws after 1 000 draws rather than looping. `RULE_ENTROPY` holds the floors. Every planted value in `syntheticSet()`, the artefact shape plants, `canary()` and the TC-F-001-39 positives now uses it. | New `test/secret-scan-entropy.test.ts` (12): entropy values, including 2.97 for the missed key; a low draw and an allow-listed draw are redrawn (injected `draw`); an impossible floor throws; 2 000 generated sets all clear every floor; `RULE_ENTROPY` equals the floors in `.gitleaks.toml` and the vendored default config. **Mutation check:** with the entropy test removed from `detectable()`, 2 tests fail. |
 
 ## Version confirmations (npm registry, 2026-09-25 ~08:20 UTC)
 

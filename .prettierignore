@@ -21,3 +21,4 @@ docs/
 .github/workflows/release.yml
 test-results/
 playwright-report/
+services/control-plane/src/db/migration-checksums.generated.ts

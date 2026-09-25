@@ -3,24 +3,26 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "default": "./dist/index.js"
-    }
-  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "lint": "eslint .",
+    "migrate": "node dist/main.js migrate",
+    "migrate:audit": "node dist/main.js migrate --audit",
+    "migrate:audit:dev": "node --env-file=../../deploy/docker/dev/.env dist/main.js migrate --audit --config ../../deploy/docker/dev/control-plane.migrate-audit.dev.yaml",
+    "migrate:dev": "node --env-file=../../deploy/docker/dev/.env dist/main.js migrate --config ../../deploy/docker/dev/control-plane.migrate.dev.yaml",
+    "start:sealer": "node dist/main.js sealer",
+    "start:sealer:dev": "node --env-file=../../deploy/docker/dev/.env dist/main.js sealer --config ../../deploy/docker/dev/control-plane.sealer.dev.yaml",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
     "typecheck": "tsc -p tsconfig.json"
   },
   "devDependencies": {
+    "@ralysa/dev-stack": "workspace:*",
     "@ralysa/eslint-config": "workspace:*",
     "@ralysa/tsconfig": "workspace:*",
     "@ralysa/vitest-config": "workspace:*",
     "@types/node": "catalog:",
+    "@types/pg": "catalog:",
     "eslint": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
@@ -33,5 +35,16 @@
       "dist"
     ]
   },
-  "description": "Ralysa control plane: token service (RTS), directory, audit ingest and query, sealer (F-002)."
+  "description": "Ralysa control plane: token service (RTS), directory, audit ingest and query, sealer (F-002).",
+  "dependencies": {
+    "@ralysa/protocol": "workspace:*",
+    "@ralysa/secrets": "workspace:*",
+    "kysely": "catalog:",
+    "pg": "catalog:",
+    "yaml": "catalog:",
+    "zod": "catalog:"
+  },
+  "bin": {
+    "control-plane": "./dist/main.js"
+  }
 }

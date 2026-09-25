@@ -11,7 +11,7 @@ const stack = await devStackOrSkip();
 
 describe.skipIf(stack === undefined)('dev stack smoke (F-002-T02)', () => {
   // `stack` is only read inside hooks and tests: the describe body still runs at collection time
-  // when the suite is skipped, and must not touch the stack there (see static-guard.test.ts).
+  // when the suite is skipped, and must not touch the stack there (the repo check `check-integration-scope` enforces this).
   let superuser: pg.Client | undefined;
   beforeAll(async () => {
     superuser = new pg.Client({ ...stack!.postgres });
