@@ -3,7 +3,7 @@
 // is a real credential, and none exists as a literal in the repo.
 import { describe, expect, it } from 'vitest';
 import { runGitleaks } from '../src/secret-scan.ts';
-import { frag, randomFrom } from '../src/secret-scan-selftest.ts';
+import { RULE_ENTROPY, canary, detectable, frag, randomFrom } from '../src/secret-scan-selftest.ts';
 import { ARTEFACT_CONFIG_PATH, REPO_CONFIG_PATH, gitleaks, writeFile } from './gitleaks-bin.ts';
 import { makeTempDir } from './temp.ts';
 
@@ -36,27 +36,30 @@ function scan(lines: string[], config = REPO_CONFIG_PATH): Map<number, string[]>
   return byLine;
 }
 
-const sk = (): string => `${frag('sk', '-')}${randomFrom(`${ALNUM}_-`, 24)}`;
+// Positives must clear each rule's entropy floor, or gitleaks rightly skips them (PR #20 flake).
+const sk = (): string => detectable(frag('sk', '-'), `${ALNUM}_-`, 24, RULE_ENTROPY['litellm-key']);
+const hex = (): string => detectable('', HEX, 32, RULE_ENTROPY['azure-openai-key']);
+const mistral = (): string => detectable('', ALNUM, 32, RULE_ENTROPY['mistral-api-key']);
 
 const POSITIVES: [string, string][] = [
-  ['azure-openai-key', `AZURE_OPENAI_API_KEY=${randomFrom(HEX, 32)}`],
-  ['azure-openai-key', `  "api-key": "${randomFrom(HEX, 32)}",`],
+  ['azure-openai-key', `AZURE_OPENAI_API_KEY=${hex()}`],
+  ['azure-openai-key', `  "api-key": "${hex()}",`],
   [
     'azure-openai-key',
     // The hostname is split: check-provider-hosts bans it in source outside the gateway.
-    `const endpoint = "https://ralysa.${frag('openai', '.azure', '.com')}"; const k = "${randomFrom(HEX, 32)}";`,
+    `const endpoint = "https://ralysa.${frag('openai', '.azure', '.com')}"; const k = "${hex()}";`,
   ],
-  ['azure-openai-key', `cognitiveservices_key: ${randomFrom(HEX, 32)}`],
+  ['azure-openai-key', `cognitiveservices_key: ${hex()}`],
   ['litellm-key', `LITELLM_MASTER_KEY="${sk()}"`],
   ['litellm-key', `general_settings: { master_key: ${sk()} }`],
   ['litellm-key', `virtual_key = '${sk()}'`],
-  ['mistral-api-key', `MISTRAL_API_KEY=${randomFrom(ALNUM, 32)}`],
-  ['mistral-api-key', `new Mistral({ apiKey: "${randomFrom(ALNUM, 32)}" })`],
-  ['groq-api-key', `const key = "${frag('gs', 'k_')}${randomFrom(ALNUM, 52)}";`],
+  ['mistral-api-key', `MISTRAL_API_KEY=${mistral()}`],
+  ['mistral-api-key', `new Mistral({ apiKey: "${mistral()}" })`],
   [
-    'ralysa-selftest-canary',
-    `${frag('RALYSA_SELFTEST', '_CANARY_')}${randomFrom('ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789', 24)}`,
+    'groq-api-key',
+    `const key = "${detectable(frag('gs', 'k_'), ALNUM, 52, RULE_ENTROPY['groq-api-key'])}";`,
   ],
+  ['ralysa-selftest-canary', canary()],
 ];
 
 describe('custom gitleaks rules (TC-F-001-39)', () => {
@@ -76,12 +79,12 @@ describe('custom gitleaks rules (TC-F-001-39)', () => {
   it('no custom rule fires on look-alike negatives', () => {
     const negatives = [
       // A bare 32-hex hash with no provider context.
-      `checksum = "${randomFrom(HEX, 32)}"`,
-      `etag: ${randomFrom(HEX, 32)}`,
+      `checksum = "${hex()}"`,
+      `etag: ${hex()}`,
       // A UUID next to an Azure keyword (dashes break the 32-hex run).
       `AZURE_OPENAI_DEPLOYMENT_ID = "${crypto.randomUUID()}"`,
       // An Azure keyword too far from the hex value.
-      `azure ${'x'.repeat(60)} ${randomFrom(HEX, 32)}`,
+      `azure ${'x'.repeat(60)} ${hex()}`,
       // sk- without LiteLLM context.
       `token = "${sk()}"`,
       // LiteLLM context but no sk- key.
