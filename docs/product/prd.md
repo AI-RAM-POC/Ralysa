@@ -1,7 +1,7 @@
 # Product Requirements Document
 
 > Phase 2 · Owner: product-manager · Source: requirements/Ralysa_Spec.md (v0.3) + docs/market/summary.md (G1 approved 2026-09-25) · Last updated: 2026-09-25
-> Status: **Draft for G2 review.** Market recommendations R-1 to R-9 and the "Proposed changes to the spec / roadmap" table in `docs/market/summary.md` are treated as accepted product direction. Where they change the spec, the REQ cites "summary R-n" and the MA-ID, and the change is listed under [Deviations from spec](#deviations-from-spec). The spec itself is not edited.
+> Status: **G2 approved 2026-09-25 (with conditions).** Market recommendations R-1 to R-9 and the "Proposed changes to the spec / roadmap" table in `docs/market/summary.md` are treated as accepted product direction. Where they change the spec, the REQ cites "summary R-n" and the MA-ID, and the change is listed under [Deviations from spec](#deviations-from-spec). The spec itself is not edited.
 
 ## How to read this document
 
