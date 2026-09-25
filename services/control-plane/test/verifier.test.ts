@@ -9,6 +9,7 @@ import type { Rejection } from '../src/audit/rejections.js';
 import { createClientRegistry } from '../src/auth/clients.js';
 import { mintAccessToken } from '../src/auth/tokens/mint.js';
 import { createControlPlaneVerifier, createOwnKeySet } from '../src/auth/verifier.js';
+import { createPinoLogger } from '../src/observability/pino.js';
 import { fakeKeys } from './fixtures/fake-keys.js';
 import { fakeRts } from './fixtures/fake-rts.js';
 import { ORG_ID, serveConfig } from './fixtures/serve-config.js';
@@ -109,13 +110,19 @@ describe('route authentication', () => {
         size: () => ({ keys: 0, overflow: 0 }),
       },
     });
+    const lines: string[] = [];
     const instance = await buildApp({
       config: serveConfig(),
       keys: fake.keys,
       rts,
+      logger: createPinoLogger('info', { write: (line: string) => lines.push(line) }),
       pingDatabase: () => Promise.resolve(true),
     });
-    return { instance, rejected, fake };
+    const unavailable = () =>
+      lines
+        .map((line) => JSON.parse(line) as { msg?: string; error?: Record<string, unknown> })
+        .filter((line) => line.msg === 'verifier_unavailable');
+    return { instance, rejected, fake, lines, unavailable };
   }
 
   it('a bare token (no Bearer scheme) is malformed and recorded under the config org', async () => {
@@ -156,6 +163,44 @@ describe('route authentication', () => {
     expect(res.statusCode).toBe(503);
     expect(res.json()).toMatchObject({ code: 'temporarily_unavailable' });
     expect(rejected).toEqual([]);
+  });
+
+  it('a revocation read fault is logged once at warn with its cause, and no token (R32 follow-up)', async () => {
+    const { instance, fake, lines, unavailable } = await app();
+    const token = await mintAccessToken(fake.keys, userClaims());
+    const res = await instance.inject({
+      url: '/v1/me',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(res.statusCode).toBe(503);
+    const logged = unavailable();
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatchObject({ level: 'warn', token_kind: 'user' });
+    // The cause (the database fault), not the generic wrapper.
+    expect(logged[0]?.error?.type).not.toBe('VerifierUnavailableError');
+    expect(lines.join('\n')).not.toContain(token);
+    expect(lines.join('\n')).not.toContain(token.split('.')[1] ?? token);
+  });
+
+  it('a key set fault is logged with a scrubbed summary of its cause and no token (R32 follow-up)', async () => {
+    const { instance, fake, lines, unavailable } = await app();
+    const token = await mintAccessToken(fake.keys, serviceClaims());
+    // A fault whose message carries the token itself: the summary must scrub it.
+    fake.keys.jwks = () => Promise.reject(new Error(`jwks rows unreadable near ${token}`));
+    const res = await instance.inject({
+      url: '/v1/internal/governance',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(res.statusCode).toBe(503);
+    const logged = unavailable();
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatchObject({
+      level: 'warn',
+      token_kind: 'service',
+      error: { type: 'Error', message: expect.stringContaining('jwks rows unreadable') as string },
+    });
+    expect(lines.join('\n')).not.toContain(token);
+    expect(lines.join('\n')).not.toContain(token.split('.')[1] ?? token);
   });
 
   it('an unreadable key set answers 503 and records no rejection', async () => {

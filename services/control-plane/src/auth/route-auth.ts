@@ -1,8 +1,9 @@
 // Bearer authentication for the control plane's own routes (§6.1): user tokens for /v1/me and the
 // user audit routes, service tokens for /v1/internal/* and POST /v1/audit/events. A rejection
 // answers 401 with WWW-Authenticate and is recorded through the auth.token_rejected aggregator
-// with the org from config (OI-4). The verifier is @ralysa/auth's (T11-11); when the key set
-// can't be read the answer is 503, not a token rejection.
+// with the org from config (OI-4). The verifier is @ralysa/auth's (T11-11); when the key set or
+// the revocation state can't be read the answer is 503, not a token rejection, and one warn line
+// (`verifier_unavailable`) carries a scrubbed summary of the underlying fault, never the token.
 import {
   type VerifiedPrincipal,
   type VerifiedService,
@@ -11,6 +12,7 @@ import {
 import type { TokenRejectReason } from '@ralysa/protocol/auth';
 import type { FastifyRequest } from 'fastify';
 import { HttpProblem } from '../http/errors.js';
+import { errorSummary } from '../http/logging.js';
 import type { RtsDeps } from './deps.js';
 
 type AuthDeps = Pick<RtsDeps, 'verifier' | 'rejections' | 'config'>;
@@ -65,7 +67,16 @@ export async function authenticate(
     const result = await deps.verifier.service.verify(header);
     return result.ok ? result.service : reject(result.reason);
   } catch (error) {
-    if (error instanceof VerifierUnavailableError) throw new HttpProblem('temporarily_unavailable');
+    if (error instanceof VerifierUnavailableError) {
+      // Logged under `error`, never `err` (review of #26); the summary is type, scrubbed message
+      // and code of the cause (a database or fetch fault), so an outage is diagnosable without a
+      // token in the log (R32 follow-up).
+      request.log.warn(
+        { error: errorSummary(error.cause ?? error), token_kind: kind },
+        'verifier_unavailable',
+      );
+      throw new HttpProblem('temporarily_unavailable');
+    }
     throw error;
   }
 }

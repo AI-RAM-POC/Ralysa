@@ -142,8 +142,15 @@ export interface ServiceTokenVerifier {
 }
 
 export class VerifierUnavailableError extends Error {
-  constructor(message = 'the verification keys could not be fetched') {
-    super(message);
+  /**
+   * `cause` carries the underlying fault (a fetch or database error) so the PEP can log a summary
+   * of it; it is never part of the message, and a caller must scrub it before logging.
+   */
+  constructor(
+    message = 'the verification keys could not be fetched',
+    options?: { cause?: unknown },
+  ) {
+    super(message, options);
     this.name = 'VerifierUnavailableError';
   }
 }
@@ -330,13 +337,13 @@ function mapJoseError(error: unknown): Error {
   }
   if (error instanceof errors.JOSEAlgNotAllowed) return new Rejected('wrong_alg');
   if (error instanceof errors.JWKSTimeout || error instanceof errors.JWKSInvalid) {
-    return new VerifierUnavailableError();
+    return new VerifierUnavailableError(undefined, { cause: error });
   }
   if (error instanceof errors.JOSEError && error.code === 'ERR_JOSE_GENERIC') {
     // jose's remote set reports a failed JWKS fetch or a non-200 as a plain JOSEError.
-    return new VerifierUnavailableError();
+    return new VerifierUnavailableError(undefined, { cause: error });
   }
   if (error instanceof errors.JOSEError) return new Rejected('malformed');
   // A fetch that threw (DNS, connection refused), or a local key set that threw.
-  return new VerifierUnavailableError();
+  return new VerifierUnavailableError(undefined, { cause: error });
 }
