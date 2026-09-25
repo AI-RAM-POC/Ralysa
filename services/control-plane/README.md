@@ -16,7 +16,7 @@ schema and logs in to OpenBao as its own role (SEC-F002-02). So far:
 | --------------------------------- | --------------------------------------------------------------------- | ------------------------------- |
 | `migrate --config <file>`         | `ralysa_migrator`                                                     | `db_credentials.migrator`       |
 | `migrate --audit --config <file>` | `ralysa_audit_migrator` → `SET ROLE ralysa_audit_owner` (break-glass) | `db_credentials.audit_migrator` |
-| `sealer --config <file>` | `ralysa_audit_sealer` (its own process and deployment); `ralysa_audit_writer` for its own `secret.custody_violation` | `db_credentials.audit_sealer`, `.audit_writer`; signs with Transit `ralysa-audit-checkpoint` |
+| `sealer --config <file>` | `ralysa_audit_sealer` (its own process and deployment) | `db_credentials.audit_sealer`; signs with Transit `ralysa-audit-checkpoint` |
 | `audit-verify --config <file> [--org <uuid>] [--shard <s>] [--log-checkpoints <jsonl>]` | `ralysa_audit_reader` (read-only) | `db_credentials.audit_reader`; reads the checkpoint key's public versions |
 
 Both migrate jobs also write one `db.migration.applied` per applied migration (with the
@@ -54,9 +54,11 @@ job exits non-zero, saying the migrations were applied but not recorded.
     `ralysa-audit-checkpoint`. It inserts `audit.audit_checkpoint` and logs the same record as
     one `audit_checkpoint` line, the off-host copy.
   - Every `custody_poll_s` (30 s) it re-reads the key's `exportable` and
-    `allow_plaintext_backup`. If either is set, checkpoint signing stops (sealing continues),
-    `secret.custody_violation` is written once, and the `secret_custody_violation` gauge goes
-    to 1.
+    `allow_plaintext_backup`. If either is set, checkpoint signing stops **for the life of the
+    process** (sealing continues). `secret.custody_violation` is recorded with both flags through
+    `audit.record_custody_violation()` (audit/0002, the sealer's only way to add an event),
+    retried every poll until the database confirms it, and the `secret_custody_violation` gauge
+    goes to 1. See the runbook below.
 - **`audit-verify`** (`src/audit/verify/audit-verify.ts`) checks, per shard, and prints the
   first divergent `seq`, exiting non-zero on any finding:
   - every checkpoint signature against its key version;
@@ -126,3 +128,27 @@ In production every entry point refuses to start with token auth, AppRole withou
 | `test:integration`                 | `test/integration/**/*.int.ts` against the dev stack (`deploy/docker/dev`, see `tooling/dev-stack`). Each file gets its own migrated database. |
 | `migrate`, `migrate:audit`         | The migrate entry points (pass `--config`).                                                                                                    |
 | `migrate:dev`, `migrate:audit:dev` | The same against the dev stack, loading `deploy/docker/dev/.env`.                                                                              |
+
+## Runbook: checkpoint key custody violation
+
+**What happened.** Someone set `exportable` or `allow_plaintext_backup` on the Transit key
+`ralysa-audit-checkpoint`. OpenBao (like Vault) **cannot turn either flag off again**: a request
+to clear it answers 200 and changes nothing (checked on 2.6.2). Assume the private key may
+have been exported.
+
+**What the system does.**
+- The sealer stops signing checkpoints for good and keeps sealing. It records
+  `secret.custody_violation`, and the gauge `secret_custody_violation{key=…}` is 1.
+- `audit-verify` refuses to verify with a flagged key and exits 1.
+- Checkpoints made while the key was flagged prove nothing.
+
+**Recovery (manual until SEC-F002-35 b–d land).**
+1. Treat it as a security incident. Find who flipped the flag in the OpenBao audit device log
+   (SEC-F002-11), and preserve the sealer's `audit_checkpoint` log lines (the off-host copy).
+2. Run `audit-verify --log-checkpoints <shipped log>` against a restored copy of the key's
+   public versions, taken from the log or an earlier `describe`, so history up to the flip can
+   still be checked against the logged checkpoints.
+3. Recovery by key epoch (a new key name, pinned thumbprints, a checkpoint payload that names
+   the key) is designed in SEC-F002-35 (b) and not built yet. Until then, don't recreate a key
+   under the same name: the sealer treats a flagged key that later reads as clean as still
+   violated and logs `checkpoint_key_clean_after_violation` (SEC-F002-37).

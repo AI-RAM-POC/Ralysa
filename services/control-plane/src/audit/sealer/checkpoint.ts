@@ -8,9 +8,9 @@
 // audit-verify --log-checkpoints compares against the table.
 //
 // Custody: every poll (30 s) the key is described again. If `exportable` or
-// `allow_plaintext_backup` is set, checkpoint signing stops (sealing continues, so audit-verify
-// will report checkpoint_gap), `secret.custody_violation` is written once per violation, and the
-// state is exposed for readiness. Signing resumes when both flags are false again.
+// `allow_plaintext_backup` is set, checkpoint signing stops for good (sealing continues, so
+// audit-verify reports checkpoint_gap) and secret.custody_violation is recorded through
+// audit.record_custody_violation() until the database confirms it. See createCheckpointSigner.
 import { CHECKPOINT_KEY, checkpointPayload } from '@ralysa/protocol/audit';
 import { toHex } from '@ralysa/protocol/common';
 import { CustodyViolationError, type KeyCustody } from '@ralysa/secrets';
@@ -19,8 +19,6 @@ import { withOrg } from '../../db/kysely.js';
 import type { Database } from '../../db/types.js';
 import type { Logger } from '../../observability/logger.js';
 import { type Metrics, noopMetrics } from '../../observability/metrics.js';
-import { systemEvent } from '../events.js';
-import type { AuditWriter } from '../writer.js';
 
 export const CHECKPOINT_INTERVAL_MS = 60_000;
 export const CUSTODY_POLL_MS = 30_000;
@@ -33,36 +31,68 @@ export interface CheckpointSigner {
   sign(payload: Uint8Array): Promise<{ keyVersion: number; signature: Uint8Array }>;
 }
 
+export interface CustodyFlags {
+  exportable: boolean;
+  allowPlaintextBackup: boolean;
+}
+
+/** Records a violation; true = inserted, false = already recorded in the last 5 minutes. */
+export type CustodyRecorder = (flags: CustodyFlags) => Promise<boolean>;
+
+/**
+ * The sealer's recorder: audit.record_custody_violation() (audit/0002) on the SEALER's own pool,
+ * inside withOrg(config.org.id). The sealer holds no writer credential (SEC-F002-34).
+ */
+export function dbCustodyRecorder(
+  db: Kysely<Database>,
+  orgId: string,
+  /** The logical key recorded; the function allow-lists exactly this name (audit/0002, B4). */
+  key: string = CHECKPOINT_KEY,
+): CustodyRecorder {
+  return (flags) =>
+    withOrg(db, orgId, async (trx) => {
+      const { rows } = await sql<{ recorded: boolean }>`
+        select audit.record_custody_violation(${key}, ${flags.exportable}, ${flags.allowPlaintextBackup})
+          as recorded`.execute(trx);
+      return rows[0]?.recorded === true;
+    });
+}
+
 export interface CheckpointSignerOptions {
   custody: KeyCustody;
   key?: string;
-  orgId: string;
-  /** Writes secret.custody_violation (the sealer's insert-only writer). */
-  writer: AuditWriter;
+  recordViolation: CustodyRecorder;
   logger: Logger;
   metrics?: Metrics;
 }
 
+const pairOf = (flags: CustodyFlags): string =>
+  `${String(flags.exportable)}/${String(flags.allowPlaintextBackup)}`;
+
+/**
+ * The checkpoint signer and its custody monitor. A custody violation is TERMINAL for the life of
+ * the process (SEC-F002-35 a): OpenBao, like Vault, can't turn `exportable` or
+ * `allow_plaintext_backup` off again, so a key that later reads as clean has been recreated under
+ * the same name (SEC-F002-37). Signing stays stopped and that is logged; recovery is a new key
+ * (runbook). The violation is recorded with both flags (SEC-F002-40) and retried on every poll
+ * until the database confirms it (SEC-F002-39); the function's 5-minute dedupe keeps retries
+ * from duplicating. A flag seen once stays set, so a second flag appearing later is a new pair
+ * and is recorded too.
+ */
 export function createCheckpointSigner(options: CheckpointSignerOptions): CheckpointSigner {
   const key = options.key ?? CHECKPOINT_KEY;
   const metrics = options.metrics ?? noopMetrics;
   let version: number | undefined;
-  let violation: string | undefined;
+  let violation: CustodyFlags | undefined;
+  let recordedPair: string | undefined;
 
-  const report = async (flag: string) => {
-    options.logger.error('secret_custody_violation', { key, flag });
-    metrics.gauge('secret_custody_violation', 1, { key });
+  const record = async (flags: CustodyFlags) => {
+    if (recordedPair === pairOf(flags)) return;
     try {
-      await options.writer.writeOrSpool(options.orgId, [
-        systemEvent({
-          action: 'secret.custody_violation',
-          outcome: 'error',
-          service: 'sealer',
-          reasonCode: flag,
-          details: { key, flag },
-        }),
-      ]);
+      await options.recordViolation(flags);
+      recordedPair = pairOf(flags);
     } catch (error) {
+      metrics.increment('secret_custody_violation_record_failures_total', { key });
       options.logger.error('secret_custody_violation_not_recorded', {
         key,
         error: error instanceof Error ? error.message : String(error),
@@ -74,12 +104,16 @@ export function createCheckpointSigner(options: CheckpointSignerOptions): Checkp
     async poll() {
       try {
         const described = await options.custody.describe(key);
-        version = described.latestVersion;
         if (violation !== undefined) {
-          options.logger.info('secret_custody_restored', { key });
-          metrics.gauge('secret_custody_violation', 0, { key });
+          // Reachable only if the key was recreated under the same name (SEC-F002-37).
+          options.logger.error('checkpoint_key_clean_after_violation', {
+            key,
+            action: 'signing stays stopped',
+          });
+          await record(violation);
+          return false;
         }
-        violation = undefined;
+        version = described.latestVersion;
         return true;
       } catch (error) {
         if (!(error instanceof CustodyViolationError)) {
@@ -88,13 +122,24 @@ export function createCheckpointSigner(options: CheckpointSignerOptions): Checkp
             key,
             error: error instanceof Error ? error.message : String(error),
           });
+          if (violation !== undefined) await record(violation);
           return violation === undefined && version !== undefined;
         }
-        const flag = error.exportable ? 'exportable' : 'allow_plaintext_backup';
-        if (violation !== flag) {
-          violation = flag;
-          await report(flag);
+        const flags: CustodyFlags = {
+          exportable: error.exportable || (violation?.exportable ?? false),
+          allowPlaintextBackup:
+            error.allowPlaintextBackup || (violation?.allowPlaintextBackup ?? false),
+        };
+        if (violation === undefined || pairOf(violation) !== pairOf(flags)) {
+          options.logger.error('secret_custody_violation', {
+            key,
+            exportable: flags.exportable,
+            allow_plaintext_backup: flags.allowPlaintextBackup,
+          });
+          metrics.gauge('secret_custody_violation', 1, { key });
         }
+        violation = flags;
+        await record(flags);
         return false;
       }
     },

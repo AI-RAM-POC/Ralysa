@@ -18,14 +18,23 @@ export function createDb<DB>(pool: pg.Pool): Kysely<DB> {
   return new Kysely<DB>({ dialect: new PostgresDialect({ pool }) });
 }
 
+export interface WithOrgOptions {
+  /** A READ ONLY transaction: verifiers can't write even if their role could (review of #23). */
+  readOnly?: boolean;
+}
+
 export async function withOrg<DB, R>(
   db: Kysely<DB>,
   orgId: string,
   fn: (trx: Transaction<DB>) => Promise<R>,
+  options: WithOrgOptions = {},
 ): Promise<R> {
   assertOrgId(orgId);
-  return db.transaction().execute(async (trx) => {
-    await sql`select set_config('app.org_id', ${orgId}, true)`.execute(trx);
-    return fn(trx);
-  });
+  const builder = db.transaction();
+  return (options.readOnly === true ? builder.setAccessMode('read only') : builder).execute(
+    async (trx) => {
+      await sql`select set_config('app.org_id', ${orgId}, true)`.execute(trx);
+      return fn(trx);
+    },
+  );
 }

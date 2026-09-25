@@ -7,15 +7,16 @@
 //      an event and recomputed every later seal passes (2) on the stored seals but fails here,
 //      at the first checkpoint covering that seq, because it can't forge the signature;
 //   4. cadence: consecutive checkpoints with seals between them are ≤ 120 s apart, and a seal
-//      older than 120 s is covered by a checkpoint (else checkpoint_gap: e.g. a stopped sealer);
+//      older than 120 s (on the DATABASE clock) is covered by a checkpoint (else checkpoint_gap:
+//      e.g. a stopped sealer);
 //   5. with logged checkpoints (--log-checkpoints), every logged checkpoint exists in the table
 //      with the same values (deleted or replaced checkpoint rows).
-// The first divergent seq per shard is reported.
+// The first divergent seq per shard is reported. Every read runs in a READ ONLY transaction.
 import { webcrypto } from 'node:crypto';
 import { GENESIS_PREV_HASH, checkpointPayload, chainHash } from '@ralysa/protocol/audit';
 import { toHex } from '@ralysa/protocol/common';
 import type { PublicJwk } from '@ralysa/secrets';
-import type { Kysely } from 'kysely';
+import { type Kysely, sql } from 'kysely';
 import { withOrg } from '../../db/kysely.js';
 import type { Database } from '../../db/types.js';
 import { readSeals, rowEventHash, verifySeals } from '../sealer/chain.js';
@@ -47,6 +48,7 @@ export interface AuditVerifyOptions {
   /** Public key per checkpoint key version. */
   publicKeys: ReadonlyMap<number, PublicJwk>;
   logCheckpoints?: readonly CheckpointRecord[];
+  /** Defaults to the database clock (clock_timestamp()) over the reader connection. */
   now?: Date;
   maxGapMs?: number;
 }
@@ -68,7 +70,16 @@ function verifyKey(jwk: PublicJwk): Promise<webcrypto.CryptoKey> {
 export async function auditVerify(
   options: AuditVerifyOptions,
 ): Promise<{ findings: Finding[]; shards: ShardReport[] }> {
-  const now = options.now ?? new Date();
+  const now =
+    options.now ??
+    (await withOrg(
+      options.db,
+      options.orgId,
+      async (trx) =>
+        (await sql<{ now: Date }>`select clock_timestamp() as now`.execute(trx)).rows[0]?.now ??
+        new Date(),
+      { readOnly: true },
+    ));
   const maxGap = options.maxGapMs ?? MAX_CHECKPOINT_GAP_MS;
   const findings: Finding[] = [];
   const reports: ShardReport[] = [];
@@ -76,13 +87,17 @@ export async function auditVerify(
   for (const shard of options.shards) {
     const shardFindings: Finding[] = [];
     const seals = await readSeals(options.db, options.orgId, shard);
-    const checkpoints = await withOrg(options.db, options.orgId, (trx) =>
-      trx
-        .selectFrom('audit.audit_checkpoint')
-        .selectAll()
-        .where('shard', '=', shard)
-        .orderBy('seq')
-        .execute(),
+    const checkpoints = await withOrg(
+      options.db,
+      options.orgId,
+      (trx) =>
+        trx
+          .selectFrom('audit.audit_checkpoint')
+          .selectAll()
+          .where('shard', '=', shard)
+          .orderBy('seq')
+          .execute(),
+      { readOnly: true },
     );
 
     // (2) the stored seals are internally consistent …

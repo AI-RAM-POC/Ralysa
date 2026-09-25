@@ -225,3 +225,91 @@ Indicative, following `docs/architecture/security.md` §7. The Gulf control numb
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
 | | | | | |
+
+## T16-1 deviation — security review (2026-09-25)
+
+**Scope.** Decision T16-1 (implementation-notes.md): the sealer process holds the insert-only `ralysa_audit_writer` DB credential (`SealerConfig.db_credentials.audit_writer`, OpenBao policy `ralysa-cp-sealer` → `read kv/.../db/audit_writer`) so it can write `secret.custody_violation`. This departs from design §4.6 and §6.5 and from SEC-F002-02 / SEC-F002-26 ("sealer reads `audit_sealer` only"). Also in scope: other T16 risks (custody irreversibility and recovery, the audit-verify trust model). Review of code at `main` 9213344. Read-only; nothing was run against any live system.
+
+**Verdict: ACCEPT-WITH-CONDITIONS** (Phase 0, dev/CI stack only). The remediation (audit/0002 SECURITY DEFINER function, §B) is **required before the F-002 G6 security test and before any deployment outside dev/CI, whichever comes first**. Tracked as SEC-F002-34.
+
+### A. Is the deviation acceptable for Phase 0?
+
+**Verified facts (Confirmed):**
+- The writer role has column-level `INSERT` on `audit.audit_event` only. It has no SELECT, UPDATE, DELETE or TRUNCATE, and no rights on seals or checkpoints (`services/control-plane/src/db/migrations/audit/0001_audit_store.ts:143`).
+- In the sealer, the writer pool is used only by the checkpoint signer's custody reporter (`services/control-plane/src/main.ts:122-141`, `services/control-plane/src/audit/sealer/checkpoint.ts:52-71`).
+- `serve`, `migrate` and `migrate --audit` already hold the same credential (`services/control-plane/src/config/schema.ts:74,80`; `tooling/dev-stack/src/bootstrap-vault.ts:94,110,111`).
+- The policy test asserts the new grant (`tooling/dev-stack/test/integration/policies.int.ts:64`).
+
+**What changes if the sealer is compromised.** Before T16-1, a compromised sealer could delay sealing or skip events (completeness), write chain seals over existing events, and sign checkpoints over whatever chain head it chose. It could **not** make events up. With the writer credential, it can insert events with any writer column (for example `actor_type='user'`, any `actor_user_id`, `attestation='server'`, any `action`), seal them, and immediately sign a checkpoint over them. A forged event and a valid-looking signed anchor now come from **one** principal. The writer/sealer split is exactly the separation of duties that SEC-F002-02 and -26 exist to keep. The marginal capability is moderate: a compromised `serve` can already insert forged events, and an honest sealer would seal them. But one process now covers the whole insert → seal → attest path, and the sealer holds a Transit sign right plus a DB password it never needed before.
+
+**Conditions for acceptance (all required):**
+1. **No non-dev deployment** (pilot, staging with real identities, customer, production) while `SealerConfig.db_credentials` contains `audit_writer`. If audit/0002 hasn't landed when F-002 reaches G6, add a production refusal to `commonProductionRefusals`: a `sealer` config with `db_credentials.audit_writer` must fail to load when `env` is `production`. That guard is defence in depth, not a replacement for the remediation.
+2. **Record the deviation in the design.** In design.md §4.1 (role table), §4.6 and §6.5, note SEC-F002-02 / -26 as "met except deviation T16-1, remediation SEC-F002-34". Log the self-decision under the standing authorization, as CLAUDE.md requires.
+3. **Keep the writer's use narrow.** The sealer's writer pool stays `max: 1` and is passed only to `createCheckpointSigner`. Add a unit or grep test that no other sealer module imports or receives it.
+4. **Fix the SEC-F002-39 retry defect** (below) in the same change as §B, or earlier.
+
+### B. Remediation: `audit/0002_custody_violation_fn`
+
+This is the right remediation. A narrowly scoped SECURITY DEFINER function turns "can insert any event" into "can record one fixed fact about one key". It follows the existing `audit.reject_modify_stmt()` pattern (`0001_audit_store.ts:165-188`).
+
+| # | Requirement |
+|---|---|
+| B1 | **New migration** `services/control-plane/src/db/migrations/audit/0002_custody_violation_fn.ts`, applied through the break-glass `migrate --audit` path (runs as `ralysa_audit_migrator` → `SET ROLE ralysa_audit_owner`, so the function is owned by the NOLOGIN owner). `0001` is untouched (`check-migrations-immutable`). Add it to `migrations.lock.json` and the generated checksums. The DDL event trigger will write `audit.schema_changed` for it (expected evidence). |
+| B2 | **Signature:** `audit.record_custody_violation(p_key text, p_exportable boolean, p_allow_plaintext_backup boolean) RETURNS boolean` (true = inserted, false = suppressed). Two booleans let both flags be recorded at once (SEC-F002-40). |
+| B3 | **Declaration:** `LANGUAGE plpgsql VOLATILE SECURITY DEFINER SET search_path = pg_catalog, pg_temp`, every object schema-qualified (`audit.audit_event`, `audit.current_org()`, `pg_catalog.gen_random_uuid()`). `pg_temp` explicitly **last**. No dynamic SQL (`EXECUTE`). |
+| B4 | **Input validation:** raise `22023` when `p_key IS NULL` or `p_key <> 'ralysa-audit-checkpoint'` (hard allow-list; RTS keys are recorded by `serve` through its own writer). Also raise `22023` when both booleans are false or either is NULL. No free text and no jsonb parameter. |
+| B5 | **Fixed fields**, nothing from the caller except B4's inputs: `action='secret.custody_violation'`, `actor_type='system'`, `actor_service='sealer'`, `actor_user_id` and `actor_idp_subject` NULL; `outcome='error'`, `reason_code` = `'exportable'` if `p_exportable` else `'allow_plaintext_backup'`; `source='control-plane'`, `attestation='server'`; `trace_id = replace(gen_random_uuid()::text,'-','')`; `event_id = gen_random_uuid()` (document that DB-minted events are v4); `details = jsonb_build_object('key', p_key, 'exportable', p_exportable, 'allow_plaintext_backup', p_allow_plaintext_backup, 'flag', <reason_code>, 'db_role', session_user::text, 'via', 'audit.record_custody_violation')`. |
+| B6 | **Org attribution:** `org_id := audit.current_org()` (caller's transaction-local `app.org_id` from `withOrg(config.org.id)`; fails closed when unset). No `org_id` parameter. FORCE RLS applies, so the insert must satisfy the policy under that setting; the function must not change `app.org_id`. |
+| B7 | **Flood bound and idempotency:** take `pg_advisory_xact_lock(hashtext('custody:' \|\| org \|\| ':' \|\| p_key))` first; then return false without inserting if an event with the same `org_id`, `action`, `details->>'key'` and the same flag pair exists with `ts > clock_timestamp() - interval '5 minutes'` (covered by `audit_event_org_action_ts`). At most 12 events per hour per (org, key, flag pair). This lets the sealer retry every poll until recorded (SEC-F002-39) without duplicates. |
+| B8 | **Grants:** `REVOKE ALL ON FUNCTION audit.record_custody_violation(text, boolean, boolean) FROM PUBLIC;` and `GRANT EXECUTE ... TO ralysa_audit_sealer;` only. |
+| B9 | **Code and config:** remove `writerPool`/`createAuditWriter` from `sealerCommand` (`main.ts:122-141,163`); the signer calls `select audit.record_custody_violation($1,$2,$3)` inside `withOrg` on the **sealer** pool; `SealerConfig.db_credentials` back to `z.strictObject({ audit_sealer: KvPath })` (`schema.ts:95`); remove `dbRead(ctx,'audit_writer')` from `ralysa-cp-sealer` (`bootstrap-vault.ts:106`); remove `audit_writer` from `deploy/docker/dev/control-plane.sealer.dev.yaml`; update design §4.1 row `ralysa_audit_sealer` to "+ EXECUTE on `audit.record_custody_violation`". |
+
+**Required tests:**
+
+| # | Test |
+|---|---|
+| T1 | `ralysa_audit_sealer` calling it inserts exactly one row with every B5 field as specified, attributed to `current_org()`. |
+| T2 | Invalid key (`ralysa-rts-signing`, `''`, NULL, a 200-character string, `x'; drop …`), both flags false, or NULL flags → `22023`, no row. |
+| T3 | Two calls within 5 minutes → one row, second returns false. Different flag pair → new row. Two concurrent sessions → one row. |
+| T4 | `ralysa_audit_writer`, `ralysa_audit_reader`, `ralysa_cp_app`, `ralysa_migrator` → `42501` on EXECUTE; `has_function_privilege('public', …, 'EXECUTE')` is false. |
+| T5 | Without `app.org_id` → error, no row. Under `withOrg(A)`, row `org_id = A`. |
+| T6 | `pg_proc`: `prosecdef = true`, `proconfig` contains `search_path=pg_catalog, pg_temp`, owner `ralysa_audit_owner`. |
+| T7 | Sealer still cannot INSERT into `audit.audit_event` directly (`42501`). |
+| T8 | Policy test: `['ralysa-cp-sealer','read',db('audit_writer'),DENIED]` (`policies.int.ts:64` flips). |
+| T9 | Config test: a `sealer` config with `audit_writer` fails validation. |
+| T10 | TC-F-002-33 integration (flip `exportable` at runtime) still gives exactly one `secret.custody_violation` with `actor.service=sealer`. |
+| T11 | Applying audit/0002 writes one `audit.schema_changed` event. |
+
+### C. Other T16 findings
+
+| ID | Finding | Status | Severity | Evidence | Recommendation |
+|---|---|---|---|---|---|
+| SEC-F002-34 | Sealer holds the insert-only writer credential (deviation T16-1); see §A. | Confirmed | Medium (dev-only: Low) | `main.ts:122-141`; `schema.ts:95`; `bootstrap-vault.ts:106` | §B, before G6 or any non-dev deployment. |
+| SEC-F002-35 | **Custody violation cannot be undone and there is no recovery path.** In Vault, `exportable` and `allow_plaintext_backup` "cannot be disabled" once set (Vault Transit API docs); OpenBao is a fork with the same API. The "signing resumes when the flags clear" branch cannot happen on a real key (only the in-memory double clears flags, `checkpoint.test.ts:86-92`). No replacement path: the config pins the key name as a literal (`schema.ts:90,102`); `audit_checkpoint` stores only `key_version` with no key name or fingerprint (`0001_audit_store.ts:126-135`); `audit-verify` refuses to verify at all when the key is flagged (`main.ts:185-197`). One flag flip permanently stops checkpointing and makes every past checkpoint unverifiable. | Confirmed | Medium | as cited | (a) Integration test confirming the flag cannot be cleared on OpenBao; remove or document the "restored" branch as reachable only after key recreation (SEC-F002-37); unit test asserts a violation is terminal. (b) Recovery by key epoch: `checkpoint_key` matching `^ralysa-audit-checkpoint(-[0-9]{1,4})?$`; a new audit migration adds `key_id` (RFC 7638 JWK thumbprint) or `key_name` to `audit_checkpoint`, bound into a new checkpoint payload version; `AuditVerifyConfig.retired_checkpoint_keys: [{ name, pinned_jwk_thumbprints[], compromised_at? }]`. (c) When flagged, `audit-verify` still recomputes the chain and reports `key_custody_violated` instead of stopping; checkpoints before `compromised_at` count only with matching off-host log lines, later ones are invalid. (d) Runbook "checkpoint key compromised". Before F-011 WORM, or ADR-level if it changes ADR-0021. |
+| SEC-F002-36 | **audit-verify's trust anchor is the live OpenBao key** (read at run time, nothing pinned). An OpenBao admin who is also audit owner/superuser can rewrite, recompute and re-sign; detection then depends only on the checkpoint log. | Confirmed (design residual) | Medium | `main.ts:185-188`; `audit-verify.ts:104-133` | Log each key version's JWK thumbprint at sealer start and in each `audit_checkpoint` line; `audit-verify` takes pinned thumbprints and flags mismatches; F-011 WORM stores thumbprints; in non-dev, separate OpenBao admin from DB superuser/audit owner and enable the OpenBao audit device (SEC-F002-11). |
+| SEC-F002-37 | **Key recreated under the same name → signing resumes silently** (info log only, new material from version 1). | Suspected | Low | `checkpoint.ts:76-83` | Remember each version's thumbprint from first `describe`; a changed thumbprint or decreasing `latest_version` counts as a custody violation. |
+| SEC-F002-38 | **Without the log, tail truncation is invisible; the log is not off-host yet.** | Confirmed (design residual) | Low (Phase 0) | `audit-verify.ts:170-185`; design §4.7, §4.5 | `audit-verify` prints `anchor: none` with a distinct exit code when run without the log and requires the flag outside dev/test; evidence packs (REQ-070) include the shipped log; note in the runbook that forged log lines only cause false `checkpoint_missing`. |
+| SEC-F002-39 | **Custody event written once, never retried** (`violation` set before `report()`, which swallows failures; no spool on the sealer's writer). | Confirmed | Low | `checkpoint.ts:94-97,65-70`; `main.ts:140` | Track `recorded` separately and retry every poll until recorded (safe with §B7). |
+| SEC-F002-40 | **Only one flag recorded** when both are set; a later second flag writes nothing. | Confirmed | Low | `checkpoint.ts:93-97` | Record both booleans (§B2/B5); dedupe on the flag pair. |
+| SEC-F002-41 | `0001` SECURITY DEFINER functions use `search_path = pg_catalog, audit` without trailing `pg_temp`; all references schema-qualified, so not exploitable. | Confirmed (no issue) | Info | `0001_audit_store.ts:153,166,192` | New functions use `pg_catalog, pg_temp`. |
+
+**The audit-verify design itself is sound (Confirmed).** It compares checkpoints with the chain recomputed from events, not the stored seals (T16-3), catching an owner who rewrites an event and recomputes later seals at the first covering checkpoint (`audit-verify.ts:93-139`; TC-F-002-29). The payload binds org, shard, seq, hash and ts; `checkpoint_ts` is signed. Residual trust assumptions: SEC-F002-36 and -38.
+
+### D. Compliance controls touched
+
+| Area | Findings | ISO/IEC 27001:2022 Annex A | SOC 2 | Gulf (to verify) |
+|---|---|---|---|---|
+| Segregation of duties / privileged access | -34, -36 | 5.3, 8.2, 8.3 | CC6.1, CC6.3 | NCA ECC 2-2; SAMA CSF 3.3.5 |
+| Audit integrity and completeness | -34, -38, -39, -40 | 8.15, 5.28, 5.33 | CC7.2, CC7.3, CC4.1 | NCA ECC 2-12; SAMA CSF 3.3.14; Qatar NIA Logging & Security Monitoring |
+| Cryptographic key management | -35, -36, -37 | 8.24 | CC6.1, CC6.7 | NCA ECC 2-8; SAMA CSF 3.3.9; QCB Cloud Regulation (KMS logs) |
+| Secure development / change | -34 (audit/0002), -41 | 8.25, 8.28, 8.32 | CC8.1 | SAMA CSF 3.3.7 |
+
+### E. What each gate needs
+
+- **Now (Phase 0, dev only):** conditions A1–A4.
+- **Before the F-002 G6 security test:** SEC-F002-34 remediated per §B with tests T1–T11 green; SEC-F002-39 and -40 fixed; SEC-F002-35 (a) done; SEC-F002-35 (b)–(d) and SEC-F002-36 either done or accepted in writing by a named human owner as an F-011 prerequisite.
+- **Before any non-dev deployment:** all of the above; SEC-F002-38 (require `--log-checkpoints` outside dev and ship the log off-host); OpenBao audit device enabled (SEC-F002-11).
+
+Reviewer: security-reviewer agent, 2026-09-25. Agent review only; the G4–G8 approval rows are not changed by this section.
+
+Source: Vault Transit API — `exportable` and `allow_plaintext_backup` "cannot be disabled" once set: https://developer.hashicorp.com/vault/api-docs/secret/transit

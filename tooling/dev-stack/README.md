@@ -26,7 +26,7 @@ node tooling/dev-stack/src/cli.ts bootstrap [--env-file <file>]
     and `ralysa-svc-<service>` (`ecdsa-p256`, `exportable=false`, `allow_plaintext_backup=false`,
     checked after creation); random DB role passwords at `kv/ralysa/control-plane/db/<role>` and
     the audit HMAC key; one ACL policy per entry point (`ralysa-cp-serve`, `-sealer`, `-migrate`,
-    `-migrate-audit`, `-verify`; the sealer also reads the insert-only `audit_writer`), per service (`ralysa-svc-<service>`) and `ralysa-operator`, each
+    `-migrate-audit`, `-verify`), per service (`ralysa-svc-<service>`) and `ralysa-operator`, each
     with the explicit custody denies; a dev AppRole per non-operator policy (single-use
     `secret_id`, short TTLs, bound CIDRs).
   - Postgres: checks the UTF-8 server encoding and creates the login roles

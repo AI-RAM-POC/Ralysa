@@ -97,6 +97,7 @@ describe.skipIf(stack === undefined)('audit core (F-002-T06)', () => {
       );
       expect(rows.map((r) => `${r.set}/${r.migration}`)).toEqual([
         'audit/0001_audit_store',
+        'audit/0002_custody_violation_fn',
         'cp/0001_schemas_and_rls_helpers',
         'cp/0002_cp_identity',
         'cp/0003_cp_sessions_and_tokens',

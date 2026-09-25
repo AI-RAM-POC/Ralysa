@@ -438,8 +438,8 @@ Branch `feat/F-002-checkpoints` (on `main` after #21).
 
 | # | Type | What | Why |
 |---|---|---|---|
-| T16-1 | **Design gap, filled** | The sealer writes `secret.custody_violation` through the insert-only **`ralysa_audit_writer`** credential. Its config and OpenBao policy gain `db/audit_writer`, and `ralysa_audit_sealer` keeps SELECT on events only. | §3.5 has the sealer write that event, but §4.1 gives the sealer role no INSERT on events, and `audit/0001` is released (immutable). The writer role is the least privilege that works: it can only insert writer columns, like the migrate jobs' use of it. |
-| T16-2 | Interpretation | During a custody violation the sealer **keeps sealing** and only stops checkpoint signing. | §3.2.4 says "stops signing". The hash chain uses no key, and stopping it would add a second gap. `audit-verify` reports the missing checkpoints as `checkpoint_gap`. The sealer has no HTTP `/readyz`, so the "unready" signal is the `secret_custody_violation` gauge plus an error log (the alert input). |
+| T16-1 | **Deviation (self-decided under the standing authorization), now remediated** | *Remediated 2026-09-25, see "T16-1 remediation" below.* Originally: the sealer wrote `secret.custody_violation` through the insert-only **`ralysa_audit_writer`** credential. Its config and OpenBao policy gain `db/audit_writer`, and `ralysa_audit_sealer` keeps SELECT on events only. | §3.5 has the sealer write that event, but §4.1 gives the sealer role no INSERT on events, and `audit/0001` is released (immutable). The writer role is the least privilege that works: it can only insert writer columns, like the migrate jobs' use of it. |
+| T16-2 | Interpretation (amended by SEC-F002-35 a) | During a custody violation the sealer **keeps sealing** and only stops checkpoint signing, and the stop is terminal (flags can't be cleared). | §3.2.4 says "stops signing". The hash chain uses no key, and stopping it would add a second gap. `audit-verify` reports the missing checkpoints as `checkpoint_gap`. The sealer has no HTTP `/readyz`, so the "unready" signal is the `secret_custody_violation` gauge plus an error log (the alert input). |
 | T16-3 | Implementation choice | `audit-verify` compares checkpoints with the chain **recomputed from events**, not with the stored seals. The stored seals are also checked separately (`chain_broken`). | An owner who rewrites an event and recomputes every later seal leaves stored seals that are self-consistent (`verifyChain` passes: tested), so only the recompute from events against the signed hash catches it (§4.5 residual, SEC-F002-01 c). |
 | T16-4 | Implementation choice | The cadence check uses each seal's `sealed_at` for the "newest seal older than 120 s" rule. `now` is injectable. | The design's rule is about sealed data not covered by a checkpoint. Injecting `now` lets the test assert the gap without waiting 2 minutes. |
 | T16-5 | Implementation choice | A checkpoint-key custody violation makes `audit-verify` fail (exit 1) without verifying. | `describe()` refuses such a key, and signatures made with a key that may have been exported can't vouch for the chain. |
@@ -463,3 +463,66 @@ Branch `feat/F-002-checkpoints` (on `main` after #21).
   - **flipping `exportable` on the checkpoint key at runtime**: `poll()` returns false, no checkpoint is signed, and one `secret.custody_violation` (`actor.service=sealer`, `flag=exportable`) is in the store.
   - 3 consecutive full runs: 46/46.
 - **Manual (dev stack):** `start:sealer:dev` wrote a checkpoint and its log line. `audit-verify:dev --shard control-plane --log-checkpoints sealer.log` checked 66 seals and 1 checkpoint: ok, 0 findings, exit 0.
+
+## T16-1 remediation (security review, SEC-F002-34; branch `fix/F-002-sealer-custody-fn`)
+
+The security review of deviation T16-1 is appended verbatim to security.md: **ACCEPT-WITH-CONDITIONS**, with the remediation required before G6. This change implements §B and the fixes that came with it.
+
+### What changed
+
+- **`audit/0002_custody_violation_fn`** (B1–B8): `audit.record_custody_violation(p_key, p_exportable, p_allow_plaintext_backup) RETURNS boolean`.
+  - It is SECURITY DEFINER, owned by `ralysa_audit_owner`, with `search_path = pg_catalog, pg_temp`, every object schema-qualified, and no dynamic SQL.
+  - It accepts only the key `ralysa-audit-checkpoint`, and at least one flag must be true; anything else raises `22023`.
+  - Every field is fixed by the function, and the org comes from `audit.current_org()`.
+  - An advisory lock plus a 5-minute dedupe per (org, key, flag pair) means repeated calls never duplicate an event.
+  - EXECUTE is granted to `ralysa_audit_sealer` only.
+  - The migration is in `migrations.lock.json` and the generated checksums.
+- **The sealer no longer holds a writer credential** (B9):
+  - `SealerConfig.db_credentials` is `audit_sealer` only (a writer path is refused);
+  - `main.ts` has no writer pool and records through `dbCustodyRecorder` on the sealer pool;
+  - the `ralysa-cp-sealer` policy no longer reads `db/audit_writer`, and the dev YAML is updated;
+  - design §4.1, §4.6 and §6.5 now say the deviation was remediated.
+- **SEC-F002-39:** the signer tracks what it has recorded separately from the violation and retries on every poll until the database confirms it.
+- **SEC-F002-40:** both flags are recorded, and a second flag appearing later is a new pair.
+- **SEC-F002-35 (a):** a violation is **terminal**. The "restored" branch is gone: a flagged key that later reads clean can only mean it was recreated (SEC-F002-37), so it is logged as `checkpoint_key_clean_after_violation` and signing stays stopped.
+  - The integration test shows that **OpenBao 2.6.2 answers 200 to a request clearing either flag and leaves the flag set**, so the request succeeds but nothing is cleared.
+  - The README has a runbook covering irreversibility and recovery.
+- **#23 review nits:**
+  - an integration case for `allow_plaintext_backup` alone;
+  - `audit-verify`'s cadence check now uses the **database** clock (`clock_timestamp()` over the reader connection);
+  - every `audit-verify` read runs in a **READ ONLY** transaction (`withOrg(…, { readOnly: true })`);
+  - the runbook note.
+- The recorder records the **logical** key name (`ralysa-audit-checkpoint`, the config literal), independently of the Transit key the custody monitor describes. In production they are the same. The integration tests use throwaway Transit keys, because a flag flip can't be undone.
+
+### Tests
+
+- **Unit:**
+  - the violation is recorded with both flags for each of the three flag combinations;
+  - it is terminal (the key reading clean again doesn't resume signing);
+  - recording is retried until confirmed (two failures, then success, then no further calls);
+  - a second flag is recorded as a new pair;
+  - **T9:** a sealer config naming `audit_writer` or `migrator` is refused.
+- **Integration** (`custody-fn.int.ts`):
+  - **T1**: all the fixed fields, attributed to the org;
+  - **T2**: 7 invalid inputs each give `22023` and no row;
+  - **T3**: dedupe, a new pair and two concurrent sessions give exactly one row;
+  - **T4**: writer, reader, app and migrator roles get `42501`, and PUBLIC can't execute it;
+  - **T5**: without `app.org_id` it fails;
+  - **T6**: `pg_proc` shows definer, search_path and owner;
+  - **T7**: the sealer still can't insert events directly;
+  - **T11**: one `audit.schema_changed` for the CREATE FUNCTION.
+- **Integration** (`checkpoint.int.ts`): **T10**, flipping `exportable` records one event (`via: audit.record_custody_violation`, both flags); the flag can't be cleared; `allow_plaintext_backup` alone is recorded with that pair.
+- **Integration** (policies): **T8**, the sealer is DENIED on `db/audit_writer`.
+- control-plane integration passed 62/62 twice.
+
+### Conditions and open items (security review §E)
+
+| # | Item | Blocks |
+|---|---|---|
+| SEC-F002-34 | Remediated here (§B, T1–T11). Conditions A1–A4 are met: the writer credential is gone, so A1's production refusal and A3's narrowness test no longer apply. | — |
+| SEC-F002-35 (b) | Recovery by key epoch: `checkpoint_key` matching `^ralysa-audit-checkpoint(-[0-9]{1,4})?$`, a new audit migration adding the key id or thumbprint to `audit_checkpoint` and binding it into a payload v2, and `retired_checkpoint_keys` in `AuditVerifyConfig`. | **G6**, unless a named human owner accepts it in writing as an F-011 prerequisite |
+| SEC-F002-35 (c) | With a flagged key, `audit-verify` still recomputes the chain and reports `key_custody_violated` (checkpoints before `compromised_at` count only with matching log lines). | G6 (same) |
+| SEC-F002-35 (d) | A full "checkpoint key compromised" runbook (the README has the interim version). | G6 (same) |
+| SEC-F002-36 | Pin the trust anchor: log each key version's JWK thumbprint at sealer start and in each checkpoint line; `audit-verify` takes pinned thumbprints. Separate the OpenBao admin from the DB superuser. | G6 (same) |
+| SEC-F002-37 | A key recreated under the same name: the signer already stays stopped (terminal). Thumbprint tracking makes it detectable outside the process's lifetime. | G6 (with -36) |
+| SEC-F002-38 | Without the log, tail truncation is invisible: `audit-verify` should report `anchor: none` with a distinct exit code and require `--log-checkpoints` outside dev and test, with the log shipped off-host. | **Any non-dev deployment** |
