@@ -14,7 +14,7 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readdirSync, readFileSync } from 'node:fs';
-import { isAbsolute, join, relative } from 'node:path';
+import { isAbsolute, join, relative, resolve } from 'node:path';
 import { type Finding, isRecord, listWorkspaceDirs, readJson } from './lib/core.ts';
 
 export const REPO_CONFIG = '.gitleaks.toml';
@@ -154,7 +154,11 @@ function emptyDir(reportDir: string): string {
 }
 
 export function runGitleaks(options: RunOptions): ScanResult {
-  const { binary, mode, target, config, reportDir } = options;
+  // Absolute: gitleaks runs with cwd = target.
+  const { binary, mode } = options;
+  const target = resolve(options.target);
+  const config = resolve(options.config);
+  const reportDir = resolve(options.reportDir);
   if (!existsSync(config)) throw new SecretScanError(`config not found: ${config}`);
   if (!existsSync(target)) throw new SecretScanError(`scan target not found: ${target}`);
   if (existsSync(join(target, '.gitleaksignore'))) {
@@ -167,7 +171,9 @@ export function runGitleaks(options: RunOptions): ScanResult {
   const reportPath = join(reportDir, `gitleaks-${slug}.json`);
   const args = [
     mode,
-    ...(mode === 'dir' ? [target] : []),
+    // dir mode scans "." from inside the target, so reported paths (and any anchored `^...`
+    // path allow-list entry) are relative to it: repo-relative for the tree scan.
+    ...(mode === 'dir' ? ['.'] : []),
     '--config',
     config,
     ...FIXED_FLAGS,
@@ -178,7 +184,7 @@ export function runGitleaks(options: RunOptions): ScanResult {
     ...(options.logOpts === undefined ? [] : [`--log-opts=${options.logOpts}`]),
   ];
   const result = spawnSync(binary, args, {
-    cwd: mode === 'git' ? target : undefined,
+    cwd: target,
     encoding: 'utf8',
     env: { ...process.env, GITLEAKS_CONFIG: '', GITLEAKS_CONFIG_TOML: '' },
   });

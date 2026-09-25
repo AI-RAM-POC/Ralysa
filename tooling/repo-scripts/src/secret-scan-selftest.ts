@@ -81,6 +81,27 @@ export function syntheticSet(): Plant[] {
   ];
 }
 
+/**
+ * Artefact paths that gitleaks 8.30.1's default global allow-list skips (an image extension, a
+ * vendor-named bundle, node_modules, a font extension, a path containing "gitleaks.toml"). The
+ * artefact config has no [extend], so none of them may be skipped (T05-1).
+ */
+export const ARTEFACT_SKIP_SHAPES = [
+  'assets/logo-abc123.svg',
+  'assets/swagger-ui-abc123.js',
+  'node_modules/vendored-lib/index.js',
+  'assets/inter-abc123.woff2',
+  `assets/${frag('gitleaks', '.toml')}.js`,
+] as const;
+
+/** A copied default rule (GitHub PAT) and a custom one (canary), one per line. */
+function shapePlants(): Plant[] {
+  return [
+    { rule: 'github-pat', line: `<!-- ${frag('gh', 'p_')}${randomFrom(ALNUM, 36)} -->` },
+    { rule: 'ralysa-selftest-canary', line: `<text>${canary()}</text>` },
+  ];
+}
+
 export function canary(): string {
   return `${frag('RALYSA_SELFTEST', '_CANARY_')}${randomFrom(UPPER + DIGITS, 24)}`;
 }
@@ -109,7 +130,7 @@ function expectPlants(
   if (result.exitCode !== 1) problems.push(`expected exit 1, got ${String(result.exitCode)}`);
   for (const [index, plant] of plants.entries()) {
     const hit = result.findings.some(
-      (f) => f.rule === plant.rule && f.file.endsWith(file) && f.line === index + 1,
+      (f) => f.rule === plant.rule && f.file === file && f.line === index + 1,
     );
     if (!hit) problems.push(`${plant.rule} not reported at ${file}:${String(index + 1)}`);
   }
@@ -207,14 +228,15 @@ export function runSelftests(options: SelftestOptions): CaseResult[] {
     });
   });
 
-  // artefact: a synthetic key under a dist/ path, with the artefact config (SEC-F001-05).
+  // artefact: with the artefact config (SEC-F001-05, T05-1), the whole synthetic set under a
+  // dist/ path (so the copied default rules fire, not only ours), plus one planted file for each
+  // shape gitleaks' default global allow-list used to skip. Each must be found.
   run('artefact', () => {
     const dist = join(base, 'selftest', 'apps', 'web', 'dist');
-    const all = syntheticSet();
-    const plants = all.filter((p) =>
-      ['ralysa-selftest-canary', 'anthropic-api-key', 'groq-api-key'].includes(p.rule),
-    );
-    plantFile(dist, 'assets/index-abc123.js', plants);
+    const bundle = syntheticSet();
+    plantFile(dist, 'assets/index-abc123.js', bundle);
+    const shapes = ARTEFACT_SKIP_SHAPES.map((file) => ({ file, plants: shapePlants() }));
+    for (const shape of shapes) plantFile(dist, shape.file, shape.plants);
     const result = runGitleaks({
       binary: options.binary,
       label: 'selftest-artefact',
@@ -223,7 +245,13 @@ export function runSelftests(options: SelftestOptions): CaseResult[] {
       config: artefactConfig,
       reportDir: options.reportDir,
     });
-    return expectPlants('artefact', result, 'assets/index-abc123.js', plants);
+    const problems = [
+      ...expectPlants('artefact', result, 'assets/index-abc123.js', bundle).problems,
+      ...shapes.flatMap(
+        (shape) => expectPlants('artefact', result, shape.file, shape.plants).problems,
+      ),
+    ];
+    return { name: 'artefact', ok: problems.length === 0, problems: [...new Set(problems)] };
   });
 
   // canary: the canary rule fires under both configs, so each file (not gitleaks' built-in

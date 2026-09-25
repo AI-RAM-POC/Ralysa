@@ -1,11 +1,17 @@
 # gitleaks config for shipped-artefact scans in the `quality` job (F-001 design §6.2.2;
-# SEC-F001-05). It has NO allow-list, ever, and it does not [extend] the repository config, so
-# it can never inherit one. check-gitleaks-config fails on any [allowlist]/[[allowlists]] here,
-# on an [extend] path or disabledRules, and on custom rules that differ from .gitleaks.toml.
-title = "Ralysa: shipped-artefact scans"
-
-[extend]
-useDefault = true
+# SEC-F001-05; decision on T05-1, 2026-09-25).
+#
+# It has NO allow-list of any kind, and NO [extend]: gitleaks' built-in default config carries a
+# global allow-list (node_modules, images, fonts, swagger-ui/jquery-named bundles, any path
+# containing "gitleaks.toml", ...) that [extend] useDefault would inherit. Instead this file holds:
+#   1. our custom rules, identical to .gitleaks.toml;
+#   2. a verbatim copy of the high-value rules of gitleaks 8.30.1's default config, WITHOUT
+#      their rule-level allow-lists. id, regex, path, secretGroup, entropy and keywords must match
+#      tooling/repo-scripts/vendor/gitleaks-8.30.1-default.toml exactly (check-gitleaks-config and
+#      its test enforce it), so a gitleaks upgrade shows up as drift.
+# generic-api-key is deliberately not copied: without its stopword allow-list it reported 1,174
+# false positives over 58 real library bundles (implementation-notes T05-1).
+title = "Ralysa: shipped-artefact scans (no inherited allow-list)"
 
 # --- Custom rules (T05, SEC-F001-24). Keep in sync with .gitleaks.artefacts.toml. -------------
 
@@ -48,3 +54,176 @@ regex = '''\b(RALYSA_SELFTEST_CANARY_[A-Z0-9]{24})\b'''
 secretGroup = 1
 entropy = 3.0
 keywords = ["ralysa_selftest_canary_"]
+
+# --- Copied from gitleaks 8.30.1 config/gitleaks.toml (vendored; do not edit by hand) ---------
+
+[[rules]]
+id = "aws-access-token"
+description = "Identified a pattern that may indicate AWS credentials, risking unauthorized cloud resource access and data breaches on AWS platforms."
+regex = '''\b((?:A3T[A-Z0-9]|AKIA|ASIA|ABIA|ACCA)[A-Z2-7]{16})\b'''
+entropy = 3.0
+keywords = ['a3t', 'akia', 'asia', 'abia', 'acca']
+
+[[rules]]
+id = "gcp-api-key"
+description = "Uncovered a GCP API key, which could lead to unauthorized access to Google Cloud services and data breaches."
+regex = '''\b(AIza[\w-]{35})(?:[\x60'"\s;]|\\[nr]|$)'''
+entropy = 4.0
+keywords = ['aiza']
+
+[[rules]]
+id = "azure-ad-client-secret"
+description = "Azure AD Client Secret"
+regex = '''(?:^|[\\'"\x60\s>=:(,)])([a-zA-Z0-9_~.]{3}\dQ~[a-zA-Z0-9_~.-]{31,34})(?:$|[\\'"\x60\s<),])'''
+entropy = 3.0
+keywords = ['q~']
+
+[[rules]]
+id = "anthropic-api-key"
+description = "Identified an Anthropic API Key, which may compromise AI assistant integrations and expose sensitive data to unauthorized access."
+regex = '''\b(sk-ant-api03-[a-zA-Z0-9_\-]{93}AA)(?:[\x60'"\s;]|\\[nr]|$)'''
+keywords = ['sk-ant-api03']
+
+[[rules]]
+id = "anthropic-admin-api-key"
+description = "Detected an Anthropic Admin API Key, risking unauthorized access to administrative functions and sensitive AI model configurations."
+regex = '''\b(sk-ant-admin01-[a-zA-Z0-9_\-]{93}AA)(?:[\x60'"\s;]|\\[nr]|$)'''
+keywords = ['sk-ant-admin01']
+
+[[rules]]
+id = "openai-api-key"
+description = "Found an OpenAI API Key, posing a risk of unauthorized access to AI services and data manipulation."
+regex = '''\b(sk-(?:proj|svcacct|admin)-(?:[A-Za-z0-9_-]{74}|[A-Za-z0-9_-]{58})T3BlbkFJ(?:[A-Za-z0-9_-]{74}|[A-Za-z0-9_-]{58})\b|sk-[a-zA-Z0-9]{20}T3BlbkFJ[a-zA-Z0-9]{20})(?:[\x60'"\s;]|\\[nr]|$)'''
+entropy = 3.0
+keywords = ['t3blbkfj']
+
+[[rules]]
+id = "github-pat"
+description = "Uncovered a GitHub Personal Access Token, potentially leading to unauthorized repository access and sensitive content exposure."
+regex = '''ghp_[0-9a-zA-Z]{36}'''
+entropy = 3.0
+keywords = ['ghp_']
+
+[[rules]]
+id = "github-fine-grained-pat"
+description = "Found a GitHub Fine-Grained Personal Access Token, risking unauthorized repository access and code manipulation."
+regex = '''github_pat_\w{82}'''
+entropy = 3.0
+keywords = ['github_pat_']
+
+[[rules]]
+id = "github-oauth"
+description = "Discovered a GitHub OAuth Access Token, posing a risk of compromised GitHub account integrations and data leaks."
+regex = '''gho_[0-9a-zA-Z]{36}'''
+entropy = 3.0
+keywords = ['gho_']
+
+[[rules]]
+id = "github-app-token"
+description = "Identified a GitHub App Token, which may compromise GitHub application integrations and source code security."
+regex = '''(?:ghu|ghs)_[0-9a-zA-Z]{36}'''
+entropy = 3.0
+keywords = ['ghu_', 'ghs_']
+
+[[rules]]
+id = "github-refresh-token"
+description = "Detected a GitHub Refresh Token, which could allow prolonged unauthorized access to GitHub services."
+regex = '''ghr_[0-9a-zA-Z]{36}'''
+entropy = 3.0
+keywords = ['ghr_']
+
+[[rules]]
+id = "gitlab-pat"
+description = "Identified a GitLab Personal Access Token, risking unauthorized access to GitLab repositories and codebase exposure."
+regex = '''glpat-[\w-]{20}'''
+entropy = 3.0
+keywords = ['glpat-']
+
+[[rules]]
+id = "gitlab-pat-routable"
+description = "Identified a GitLab Personal Access Token (routable), risking unauthorized access to GitLab repositories and codebase exposure."
+regex = '''\bglpat-[0-9a-zA-Z_-]{27,300}\.[0-9a-z]{2}[0-9a-z]{7}\b'''
+entropy = 4.0
+keywords = ['glpat-']
+
+[[rules]]
+id = "slack-bot-token"
+description = "Identified a Slack Bot token, which may compromise bot integrations and communication channel security."
+regex = '''xoxb-[0-9]{10,13}-[0-9]{10,13}[a-zA-Z0-9-]*'''
+entropy = 3.0
+keywords = ['xoxb']
+
+[[rules]]
+id = "slack-user-token"
+description = "Found a Slack User token, posing a risk of unauthorized user impersonation and data access within Slack workspaces."
+regex = '''xox[pe](?:-[0-9]{10,13}){3}-[a-zA-Z0-9-]{28,34}'''
+entropy = 2.0
+keywords = ['xoxp-', 'xoxe-']
+
+[[rules]]
+id = "slack-app-token"
+description = "Detected a Slack App-level token, risking unauthorized access to Slack applications and workspace data."
+regex = '''(?i)xapp-\d-[A-Z0-9]+-\d+-[a-z0-9]+'''
+entropy = 2.0
+keywords = ['xapp']
+
+[[rules]]
+id = "slack-config-access-token"
+description = "Found a Slack Configuration access token, posing a risk to workspace configuration and sensitive data access."
+regex = '''(?i)xoxe.xox[bp]-\d-[A-Z0-9]{163,166}'''
+entropy = 2.0
+keywords = ['xoxe.xoxb-', 'xoxe.xoxp-']
+
+[[rules]]
+id = "slack-config-refresh-token"
+description = "Discovered a Slack Configuration refresh token, potentially allowing prolonged unauthorized access to configuration settings."
+regex = '''(?i)xoxe-\d-[A-Z0-9]{146}'''
+entropy = 2.0
+keywords = ['xoxe-']
+
+[[rules]]
+id = "slack-legacy-bot-token"
+description = "Uncovered a Slack Legacy bot token, which could lead to compromised legacy bot operations and data exposure."
+regex = '''xoxb-[0-9]{8,14}-[a-zA-Z0-9]{18,26}'''
+entropy = 2.0
+keywords = ['xoxb']
+
+[[rules]]
+id = "slack-legacy-token"
+description = "Detected a Slack Legacy token, risking unauthorized access to older Slack integrations and user data."
+regex = '''xox[os]-\d+-\d+-\d+-[a-fA-F\d]+'''
+entropy = 2.0
+keywords = ['xoxo', 'xoxs']
+
+[[rules]]
+id = "slack-legacy-workspace-token"
+description = "Identified a Slack Legacy Workspace token, potentially compromising access to workspace data and legacy features."
+regex = '''xox[ar]-(?:\d-)?[0-9a-zA-Z]{8,48}'''
+entropy = 2.0
+keywords = ['xoxa', 'xoxr']
+
+[[rules]]
+id = "slack-webhook-url"
+description = "Discovered a Slack Webhook, which could lead to unauthorized message posting and data leakage in Slack channels."
+regex = '''(?:https?://)?hooks.slack.com/(?:services|workflows|triggers)/[A-Za-z0-9+/]{43,56}'''
+keywords = ['hooks.slack.com']
+
+[[rules]]
+id = "stripe-access-token"
+description = "Found a Stripe Access Token, posing a risk to payment processing services and sensitive financial data."
+regex = '''\b((?:sk|rk)_(?:test|live|prod)_[a-zA-Z0-9]{10,99})(?:[\x60'"\s;]|\\[nr]|$)'''
+entropy = 2.0
+keywords = ['sk_test', 'sk_live', 'sk_prod', 'rk_test', 'rk_live', 'rk_prod']
+
+[[rules]]
+id = "private-key"
+description = "Identified a Private Key, which may compromise cryptographic security and sensitive data encryption."
+regex = '''(?i)-----BEGIN[ A-Z0-9_-]{0,100}PRIVATE KEY(?: BLOCK)?-----[\s\S-]{64,}?KEY(?: BLOCK)?-----'''
+keywords = ['-----begin']
+
+[[rules]]
+id = "jwt"
+description = "Uncovered a JSON Web Token, which may lead to unauthorized access to web applications and sensitive user data."
+regex = '''\b(ey[a-zA-Z0-9]{17,}\.ey[a-zA-Z0-9\/\\_-]{17,}\.(?:[a-zA-Z0-9\/\\_-]{10,}={0,2})?)(?:[\x60'"\s;]|\\[nr]|$)'''
+entropy = 3.0
+keywords = ['ey']

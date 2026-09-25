@@ -279,7 +279,9 @@ Branch `feat/F-001-boundaries-secrets` (T04, T05 and T16 together, one commit pe
 
 - **`tooling/repo-scripts/bin/tool-hashes.txt`** pins gitleaks **8.30.1** for `linux_x64`, `darwin_arm64` and `darwin_x64`. Each line holds the URL, the archive SHA-256 and the extracted-binary SHA-256.
 - **`bin/install-tool.sh`** (POSIX sh) checks the archive, extracts only the binary and checks it too, then moves it into `.tools/gitleaks/8.30.1/`. It never reads a downloaded checksums file. An existing binary is re-verified, and a mismatch fails and is not replaced. `--verify` only verifies.
-- **`.gitleaks.toml`** and **`.gitleaks.artefacts.toml`**: `[extend] useDefault = true`, no allow-lists, and the same five custom rules (`azure-openai-key`, `litellm-key`, `mistral-api-key`, `groq-api-key`, `ralysa-selftest-canary`), each with keywords and an entropy floor.
+- **`.gitleaks.toml`** and **`.gitleaks.artefacts.toml`** share the same five custom rules (`azure-openai-key`, `litellm-key`, `mistral-api-key`, `groq-api-key`, `ralysa-selftest-canary`), each with keywords and an entropy floor.
+  - The repo config uses `[extend] useDefault = true`.
+  - The artefact config has **no `[extend]` and no allow-list**. It carries 25 rules copied from the gitleaks default instead (see T05-1, decided).
 - **`src/secret-scan.ts`**, **`src/secret-scan-selftest.ts`** and **`src/secret-scan-cli.ts`** (`pnpm secret-scan pr|tree|history|artefacts|selftest`). They are dependency-free, so the `secret-scan` job has no install. Every call re-hashes the binary, uses explicit `--config` and the fixed flags, and treats exit codes as 0 = pass, 1 = findings, anything else = scanner error. It also treats exit 1 with an empty report, and exit 0 with findings, as scanner errors. The PR scan asserts a non-empty `base..head`, and a missing artefact path fails.
 - **`check-gitleaks-config`** and **`check-ci-invariants`**, both in `repo-check`.
 - **CI:**
@@ -305,7 +307,7 @@ Branch `feat/F-001-boundaries-secrets` (T04, T05 and T16 together, one commit pe
 
 | # | Type | What | Why |
 |---|---|---|---|
-| T05-1 | **Design gap (not redesigned; needs a decision)** | `[extend] useDefault = true` makes both configs inherit **gitleaks' default global allow-list**, so the artefact config is not allow-list-free, as §6.2.2 ("None, ever") and SEC-F001-05 intend. From the v8.30.1 `config/gitleaks.toml`, it skips any path matching, among others: `gitleaks\.toml` (unanchored, so any file whose path contains it); image and font extensions (`.svg`, `.png`, `.woff2` …); `(?:^\|/)node_modules(?:/.*)?$`; lockfiles; and `(?:^\|/)(?:angular\|bootstrap\|jquery(?:-?ui)?\|plotly\|swagger-?ui)[a-zA-Z0-9.-]*(?:\.min)?\.js(?:\.map)?$`. It also has content regexes (`true\|false\|null`, `${VAR}` shapes) and stopwords. So a Vite chunk named `swagger-ui-<hash>.js`, or a secret inside an `.svg` in `dist/`, would not be reported. gitleaks has no option to extend the default rules without their global allow-list. `check-gitleaks-config` can't see it, because it is inside the binary's default, not in our file. | The design mandates both `useDefault = true` and an allow-list-free artefact config, and in gitleaks 8.30.1 the two conflict. The self-test's `dist/assets/index-abc123.js` path is not affected, so TC-F-001-38 passes as specified. **Options for the security reviewer:** (a) accept the residual risk and record it; (b) in the artefact config, vendor the default rules without `[extend]` (about 3,200 lines to keep in sync on every gitleaks upgrade; `check-gitleaks-config` could diff them against the pinned release); (c) add artefact self-test cases for the skipped shapes so the gap is visible. I haven't picked one. |
+| T05-1 | **Design gap: decided 2026-09-25** (coordinator, under standing authorization; implemented in the follow-up commit "artefact scan without inherited allow-list"; see "T05-1 decision" below) | *As found:* `[extend] useDefault = true` made both configs inherit **gitleaks' default global allow-list**, so the artefact config is not allow-list-free, as §6.2.2 ("None, ever") and SEC-F001-05 intend. From the v8.30.1 `config/gitleaks.toml`, it skips any path matching, among others: `gitleaks\.toml` (unanchored, so any file whose path contains it); image and font extensions (`.svg`, `.png`, `.woff2` …); `(?:^\|/)node_modules(?:/.*)?$`; lockfiles; and `(?:^\|/)(?:angular\|bootstrap\|jquery(?:-?ui)?\|plotly\|swagger-?ui)[a-zA-Z0-9.-]*(?:\.min)?\.js(?:\.map)?$`. It also has content regexes (`true\|false\|null`, `${VAR}` shapes) and stopwords. So a Vite chunk named `swagger-ui-<hash>.js`, or a secret inside an `.svg` in `dist/`, would not be reported. gitleaks has no option to extend the default rules without their global allow-list. `check-gitleaks-config` can't see it, because it is inside the binary's default, not in our file. | The design mandates both `useDefault = true` and an allow-list-free artefact config, and in gitleaks 8.30.1 the two conflict. The self-test's `dist/assets/index-abc123.js` path is not affected, so TC-F-001-38 passes as specified. **Options for the security reviewer:** (a) accept the residual risk and record it; (b) in the artefact config, vendor the default rules without `[extend]` (about 3,200 lines to keep in sync on every gitleaks upgrade; `check-gitleaks-config` could diff them against the pinned release); (c) add artefact self-test cases for the skipped shapes so the gap is visible. **Decision:** (b) with a curated rule set, plus (c). |
 | T05-2 | Hardening within the design's intent | **`.gitleaksignore` is neutralised.** The wrapper passes `--gitleaks-ignore-path <empty folder>` and **refuses a target that holds a `.gitleaksignore`**. `check-gitleaks-config` fails on any tracked `.gitleaksignore`. | Checked with 8.30.1: a `.gitleaksignore` in the scanned directory's root suppressed a matching finding **even with `-i` pointing at an empty folder** (a nested one doesn't). That is a second allow-list outside the configs, which §6.2.2 rules out ("the configs are the only allow-list"). A `public/.gitleaksignore` would be copied into `dist/` by Vite. |
 | T05-3 | Open (design allows) | `azure-openai-key` covers the **32-hex format only**. | §6.2.2 asks to add the newer long Azure key format "if T05 confirms it". I couldn't confirm it from an authoritative source (web search; the GitGuardian detector page publishes no format). Add it when Microsoft or GitHub secret-scanning documentation gives the pattern. |
 | T05-4 | Implementation choice | `check-gitleaks-config` also fails on `[extend] path`/`url` (either config), `[extend] disabledRules` (artefact config), content allow-lists (`regexes`, `stopwords`, `commits`) in the repo config, and a custom rule with no keywords or an entropy floor below 3. | Each enforces a sentence of §6.2.2: the artefact config "can never inherit an allow-list", there are "no content allow-list entries", and each rule has "keyword context and an entropy floor". |
@@ -335,6 +337,51 @@ Branch `feat/F-001-boundaries-secrets` (T04, T05 and T16 together, one commit pe
 - `test/check-gitleaks-config.test.ts` (16), **TC-F-001-38 config part:** the real files pass. It fails on an artefact `[allowlist]`, `[[allowlists]]`, an empty `[allowlist]`, a rule-level allow-list, and `disabledRules`; on an unanchored repo path (an anchored one passes); on content allow-lists; on diverging rules; on a missing rule; on a weak entropy floor; on `useDefault = false` or `[extend] path`; and on a tracked `.gitleaksignore`.
 - `test/check-ci-invariants.test.ts` (22), **TC-F-001-44:** five bad `packageManager` values; a missing `fetch-depth: 0`; four gitleaks calls without `--config` (in a workflow and in a hook), while five `--config`/`-c`/comment/wrapper forms pass; an unconditional `cancel-in-progress` at the top level and in a job; an install in `secret-scan`; and Playwright digests (same passes, different fails, tag-only fails).
 - `test/install-tool.test.ts` (8), **TC-F-001-44 (install-tool part):** install and print the path; re-verify instead of downloading; `--verify` and install both fail on a tampered cached binary and leave it untouched; `--verify` fails when the binary is missing; an archive or binary hash mismatch installs nothing; an unknown tool or bad option fails; the real register pins 8.30.1 × 3 GitHub URLs.
+
+### T05-1 decision: artefact scan without an inherited allow-list (2026-09-25)
+
+**Decision** (coordinator, under the standing authorization): `.gitleaks.artefacts.toml` must not use `[extend]`, so it inherits no built-in global allow-list. It carries our custom rules plus a copy of the high-value default rules, and has no allow-list of any kind. This departs from design §6.2.2 ("Both use `[extend] useDefault = true`") in favour of the same section's "None, ever" for the artefact config.
+
+**What changed**
+
+- **`tooling/repo-scripts/vendor/gitleaks-8.30.1-default.toml`**: gitleaks' own `config/gitleaks.toml` at tag `v8.30.1`, byte for byte.
+  - Its git blob `256f64790ea6d954f0041024be2938089ae1e7a7` equals the GitHub contents API's value for that path at the tag.
+  - sha256 `e163e53b9e7e8a8511e77271e2b323ed057759542a6d988258afe3a1fa329caf` is recorded in `vendor/SHA256SUMS` and in `VENDORED_DEFAULT_SHA256`.
+- **`.gitleaks.artefacts.toml`** has no `[extend]` and no global or rule-level allow-list. It holds:
+  - the 5 custom rules, identical to `.gitleaks.toml`;
+  - **25 copied default rules**: `aws-access-token`, `gcp-api-key`, `azure-ad-client-secret` (the only Azure rule in the default), `anthropic-api-key`, `anthropic-admin-api-key`, `openai-api-key`, `github-pat`, `github-fine-grained-pat`, `github-oauth`, `github-app-token`, `github-refresh-token`, `gitlab-pat`, `gitlab-pat-routable`, the 9 `slack-*` token and webhook rules, `stripe-access-token`, `private-key` and `jwt`.
+  - Each copied rule's `id`, `regex`, `path`, `secretGroup`, `entropy` and `keywords` are taken verbatim; its rule-level allow-lists are dropped.
+- **`check-gitleaks-config`** now fails when:
+  - the artefact config has any `[extend]` or any allow-list;
+  - a copied rule drifts from the vendored default;
+  - a required copied rule is missing, or a rule is neither custom nor in the default;
+  - the repo config holds non-custom rules;
+  - the vendored file isn't the pinned one.
+- **Anchored entry in `.gitleaks.toml`.** The vendored default's own text matches the `aws-amazon-bedrock-api-key-short-lived` rule, and the tree scan reported it. `.gitleaks.toml` therefore gets one exact, anchored path entry: `^tooling/repo-scripts/vendor/gitleaks-8\.30\.1-default\.toml$`. §6.2.2 allows root-anchored path entries, and the sha256 pin means the file's content can't change under the entry. The artefact config still has none.
+- **Wrapper change.** For anchors to work, `dir` scans now run gitleaks with `cwd` = target and scan `.`, so reported paths are relative to the target. The target, config and report paths are resolved to absolute paths first.
+
+**Not copied, and why**
+
+- **`generic-api-key`.** It is not low-noise without its stopword allow-list. On a corpus of `apps/web/dist` plus 58 real production packages from our store (React DOM, Vite, TypeScript, Babel, ESLint, zod and others), it reported **1,174 false positives**, for example `exports.getEnv = …`. With it excluded, the same corpus gave 2 findings, both `jwt` on example JWTs in zod's **test sources**, which are never bundled.
+- **A GCP service-account rule.** gitleaks 8.30.1 has none. A service-account key is JSON around a PEM `private_key`, which `private-key` covers.
+
+**Self-tests.** The artefact case now plants the full synthetic set in `assets/index-abc123.js`, so the copied AWS, GitHub, Anthropic and PEM rules fire, not only the custom ones. It also plants a GitHub PAT and the canary in each shape the old allow-list skipped: `assets/logo-abc123.svg`, `assets/swagger-ui-abc123.js`, `node_modules/vendored-lib/index.js`, `assets/inter-abc123.woff2` (text content) and a path containing `gitleaks.toml`. All are found. **Control test:** the same shapes scanned with `.gitleaks.toml` (`useDefault`) are all skipped, which proves the self-test would catch a regression back to `[extend]`.
+
+**Tests**
+
+- `test/gitleaks-default-sync.test.ts` (28): the vendored file matches its sha256 and `SHA256SUMS`, and the pinned binary is 8.30.1. Each of the 25 copied rules equals the default in `id`, `regex`, `keywords`, `entropy`, `path` and `secretGroup`, and has no allow-list. The config holds exactly custom plus copied, with no `[extend]` or global allow-list. `generic-api-key` exists in the default but isn't copied.
+- `test/check-gitleaks-config.test.ts` (25) fails on:
+  - `[extend] useDefault`, `[extend] path` or an empty `[extend]` in the artefact config;
+  - a global `[allowlist]` with paths, `[[allowlists]]`, an empty `[allowlist]` or a rule-level allow-list;
+  - a copied rule's changed regex, entropy or keywords;
+  - a removed `private-key`, or an unknown rule;
+  - an edited vendored file.
+  Together with the earlier cases.
+- `test/secret-scan-selftest.test.ts` (26): the five shapes are found with the artefact config and skipped in the control.
+
+**Results:**
+- `secret-scan artefacts` on `apps/web/dist`: **0 findings**.
+- `tree`, `history` and `selftest` (dir, git, artefact, canary): pass.
 
 ## T16: provider-hostname check
 

@@ -11,6 +11,14 @@ title = "Ralysa: repository scans"
 [extend]
 useDefault = true
 
+# The vendored gitleaks 8.30.1 default config is rule regexes, not secrets, and its own text
+# matches some of them. One exact, anchored path; the file is pinned by sha256
+# (check-gitleaks-config), so its content can't change under this entry. The artefact config
+# never gets an allow-list.
+[[allowlists]]
+description = "vendored gitleaks default config (sha256-pinned)"
+paths = ['''^tooling/repo-scripts/vendor/gitleaks-8\.30\.1-default\.toml$''']
+
 # --- Custom rules (T05, SEC-F001-24). Keep in sync with .gitleaks.artefacts.toml. -------------
 
 [[rules]]

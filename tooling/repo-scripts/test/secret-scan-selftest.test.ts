@@ -14,7 +14,14 @@ import {
   sha256File,
   verifiedGitleaks,
 } from '../src/secret-scan.ts';
-import { canary, runSelftests, syntheticSet } from '../src/secret-scan-selftest.ts';
+import {
+  ARTEFACT_SKIP_SHAPES,
+  canary,
+  frag,
+  randomFrom,
+  runSelftests,
+  syntheticSet,
+} from '../src/secret-scan-selftest.ts';
 import { ARTEFACT_CONFIG_PATH, REPO_CONFIG_PATH, gitleaks, writeFile } from './gitleaks-bin.ts';
 import { REAL_ROOT, cleanEnv } from './repo-copy.ts';
 import { makeTempDir } from './temp.ts';
@@ -241,6 +248,46 @@ describe('binary re-verification (SEC-F001-20)', () => {
   it('refuses an unsupported platform', () => {
     expect(() => currentPlatform('win32', 'x64')).toThrow(/unsupported platform/);
     expect(currentPlatform('linux', 'x64')).toBe('linux_x64');
+  });
+});
+
+describe('T05-1: the artefact config inherits no default allow-list', () => {
+  const ALNUM = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+
+  function plantShapes(): string {
+    const dist = makeTempDir('ralysa-shapes-');
+    for (const file of ARTEFACT_SKIP_SHAPES) {
+      const pat = `${frag('gh', 'p_')}${randomFrom(ALNUM, 36)}`;
+      writeFile(dist, file, `<!-- ${pat} -->\n<text>${canary()}</text>\n`);
+    }
+    return dist;
+  }
+
+  const scan = (dist: string, config: string) =>
+    runGitleaks({
+      binary: gitleaks(),
+      label: 'shapes',
+      mode: 'dir',
+      target: dist,
+      config,
+      reportDir: reportDir(),
+    });
+
+  it.each([...ARTEFACT_SKIP_SHAPES])('%s is scanned with .gitleaks.artefacts.toml', (file) => {
+    const result = scan(plantShapes(), ARTEFACT_CONFIG_PATH);
+    const rules = result.findings
+      .filter((f) => f.file === file)
+      .map((f) => f.rule)
+      .sort();
+    expect(rules).toEqual(['github-pat', 'ralysa-selftest-canary']);
+  });
+
+  it('control: with [extend] useDefault (as in the repo config) the same shapes are skipped', () => {
+    // Proves these really are the shapes the inherited global allow-list skips, so the test
+    // above would catch a regression back to [extend].
+    const shapes: readonly string[] = ARTEFACT_SKIP_SHAPES;
+    const result = scan(plantShapes(), REPO_CONFIG_PATH);
+    expect(result.findings.filter((f) => shapes.includes(f.file))).toEqual([]);
   });
 });
 
