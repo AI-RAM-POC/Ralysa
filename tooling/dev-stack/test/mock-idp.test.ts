@@ -4,7 +4,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { createRemoteJWKSet, decodeProtectedHeader, jwtVerify, type JWTPayload } from 'jose';
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import {
   ACCESS_GROUP_NAME,
   FATIMA_NAME,
@@ -60,6 +60,9 @@ async function control(method: string, path: string, body?: unknown, token = idp
   return { status: response.status, body: (text === '' ? {} : JSON.parse(text)) as Json };
 }
 
+const decodeJwtPayload = (jwt: string): Json =>
+  JSON.parse(Buffer.from(jwt.split('.')[1] ?? '', 'base64url').toString('utf8')) as Json;
+
 async function verify(token: string, audience: string): Promise<JWTPayload> {
   const jwks = createRemoteJWKSet(new URL(idp.endpoints.jwks));
   const { payload } = await jwtVerify(token, jwks, {
@@ -90,6 +93,25 @@ async function deviceSignIn(username: string): Promise<Json> {
   return token.body;
 }
 
+/** Flow B end to end for `username`: the token response. */
+async function codeSignIn(username: string, nonce: string): Promise<Json> {
+  const { verifier, challenge } = pkcePair();
+  const redirect = await signInAtAuthorize({
+    authorizationUrl: authorizeUrl(challenge, undefined, undefined, nonce),
+    username,
+  });
+  const token = await postForm(idp.endpoints.token, {
+    grant_type: 'authorization_code',
+    client_id: idp.rtsClientId,
+    client_secret: idp.clientSecret,
+    code: String(redirect.searchParams.get('code')),
+    redirect_uri: REDIRECT_URI,
+    code_verifier: verifier,
+  });
+  expect(token.status).toBe(200);
+  return token.body;
+}
+
 const pkcePair = () => {
   const verifier = randomBytes(32).toString('base64url');
   return { verifier, challenge: createHash('sha256').update(verifier).digest('base64url') };
@@ -98,14 +120,16 @@ const pkcePair = () => {
 function authorizeUrl(
   challenge: string | undefined,
   state = randomBytes(8).toString('hex'),
+  scope = `openid profile email ${idp.signinScope}`,
+  nonce = randomBytes(8).toString('hex'),
 ): string {
   const url = new URL(idp.endpoints.authorization);
   url.searchParams.set('client_id', idp.rtsClientId);
   url.searchParams.set('response_type', 'code');
   url.searchParams.set('redirect_uri', REDIRECT_URI);
-  url.searchParams.set('scope', `openid profile email ${idp.signinScope}`);
+  url.searchParams.set('scope', scope);
   url.searchParams.set('state', state);
-  url.searchParams.set('nonce', randomBytes(8).toString('hex'));
+  url.searchParams.set('nonce', nonce);
   if (challenge !== undefined) {
     url.searchParams.set('code_challenge', challenge);
     url.searchParams.set('code_challenge_method', 'S256');
@@ -202,6 +226,7 @@ describe('device flow (flow A)', () => {
       tid: idp.tenantId,
       oid: alice.oid,
       azp: idp.cliClientId,
+      azpacr: '0',
       scp: 'Ralysa.SignIn',
       name: 'Alice',
       preferred_username: 'alice@contoso.example',
@@ -246,7 +271,9 @@ describe('device flow (flow A)', () => {
         client_id: short.cliClientId,
         scope: short.signinScope,
       });
-      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      // Step the clock past the lifetime instead of sleeping (oidc-provider reads Date.now()).
+      vi.useFakeTimers({ toFake: ['Date'], now: Date.now() });
+      vi.setSystemTime(Date.now() + 1_500);
       const poll = await postForm(short.endpoints.token, {
         grant_type: DEVICE_GRANT,
         client_id: short.cliClientId,
@@ -254,6 +281,7 @@ describe('device flow (flow A)', () => {
       });
       expect(poll.body.error).toBe('expired_token');
     } finally {
+      vi.useRealTimers();
       await short.close();
     }
   });
@@ -309,11 +337,73 @@ describe('authorization code + PKCE (flow B)', () => {
     });
     expect(token.status).toBe(200);
     const access = await verify(String(token.body.access_token), idp.rtsClientId);
-    expect(access).toMatchObject({ oid: idp.user('fatima').oid, azp: idp.rtsClientId });
+    expect(access).toMatchObject({
+      oid: idp.user('fatima').oid,
+      azp: idp.rtsClientId,
+      azpacr: '1',
+    });
     // Arabic display name with harakat, byte for byte.
     expect(access.name).toBe(FATIMA_NAME);
     const id = await verify(String(token.body.id_token), idp.rtsClientId);
     expect(id).toMatchObject({ oid: idp.user('fatima').oid, tid: idp.tenantId, name: FATIMA_NAME });
+  });
+
+  it('issues an Entra v2-shaped ID token: typ JWT, pairwise sub, uti, ver, amr/acrs, ipaddr', async () => {
+    const nonce = randomBytes(8).toString('hex');
+    const body = await codeSignIn('erin', nonce);
+    const idToken = String(body.id_token);
+    const header = decodeProtectedHeader(idToken);
+    expect(header).toMatchObject({ alg: 'RS256', typ: 'JWT' });
+    expect(typeof header.kid).toBe('string');
+    const claims = await verify(idToken, idp.rtsClientId);
+    const erin = idp.user('erin');
+    expect(claims).toMatchObject({
+      ver: '2.0',
+      tid: idp.tenantId,
+      oid: erin.oid,
+      amr: ['fido'],
+      acrs: ['c1'],
+      ipaddr: '127.0.0.1',
+      nonce,
+      groups: [idp.accessGroupId, idp.adminGroupId],
+    });
+    expect(claims.sub).not.toBe(erin.oid);
+    expect(claims.uti).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    // The access token of the same response uses another uti.
+    const access = await verify(String(body.access_token), idp.rtsClientId);
+    expect(access.uti).not.toBe(claims.uti);
+    // An MFA user: amr pwd+mfa, no acrs.
+    const alice = await verify(
+      String((await codeSignIn('alice', nonce)).id_token),
+      idp.rtsClientId,
+    );
+    expect(alice.amr).toEqual(['pwd', 'mfa']);
+    expect(alice).not.toHaveProperty('acrs');
+  });
+
+  it('refuses scopes for two resources (RTS API and Graph) in one request', async () => {
+    const result = await signInAtAuthorize({
+      authorizationUrl: authorizeUrl(
+        pkcePair().challenge,
+        undefined,
+        `openid ${idp.signinScope} ${GRAPH_RESOURCE}/.default`,
+      ),
+      username: 'alice',
+    }).catch((error: unknown) => error);
+    const refused =
+      result instanceof URL
+        ? result.searchParams.get('error')
+        : (result as MockBrowserError).pageError;
+    expect(refused).toBe('invalid_scope');
+  });
+
+  it('refuses a device-flow request for Graph (no delegated Graph tokens)', async () => {
+    const start = await postForm(idp.endpoints.deviceAuthorization, {
+      client_id: idp.cliClientId,
+      scope: `${GRAPH_RESOURCE}/.default`,
+    });
+    expect(start.status).toBe(400);
+    expect(start.body.error).toBe('invalid_target');
   });
 
   it('requires PKCE', async () => {
@@ -392,6 +482,28 @@ describe('client secrets', () => {
     idp.state.secrets.add(idp.clientSecret);
     expect((await control('DELETE', '/client-secrets', { secret: second })).status).toBe(200);
     expect((await control('DELETE', '/client-secrets', { secret: second })).status).toBe(404);
+  });
+
+  it('client credentials: only Graph, only with /.default; the token is Entra v1 (sts.windows.net)', async () => {
+    const graphTokenBody = (await graphToken()).body;
+    const claims = decodeJwtPayload(String(graphTokenBody.access_token));
+    expect(claims).toMatchObject({
+      aud: GRAPH_RESOURCE,
+      iss: `https://sts.windows.net/${idp.tenantId}/`,
+      ver: '1.0',
+      idtyp: 'app',
+      appid: idp.rtsClientId,
+    });
+    for (const scope of [idp.signinScope, `${GRAPH_RESOURCE}/User.Read.All`]) {
+      const refused = await postForm(idp.endpoints.token, {
+        grant_type: 'client_credentials',
+        client_id: idp.rtsClientId,
+        client_secret: idp.clientSecret,
+        scope,
+      });
+      expect(refused.status, scope).toBe(400);
+      expect(refused.body.error, scope).toBe('invalid_scope');
+    }
   });
 
   it('refuses a wrong secret', async () => {

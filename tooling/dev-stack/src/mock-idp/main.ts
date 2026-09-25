@@ -10,7 +10,7 @@
 // per-run bearer is written to a mode-0600 file, never logged [SEC-F002-13 e]. Inside the
 // container, use `docker compose … exec mock-idp node tooling/dev-stack/dist/mock-idp/main.js
 // control GET /users`.
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, lstatSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -30,7 +30,8 @@ export const DEV_IDS = {
 
 const LOOPBACK = new Set(['127.0.0.1', 'localhost', '::1', '[::1]']);
 
-const Port = z.coerce.number().int().min(1).max(65_535);
+/** 0 picks a free port (tests); manual runs keep the fixed defaults. */
+const Port = z.coerce.number().int().min(0).max(65_535);
 
 export const MainEnv = z
   .object({
@@ -42,31 +43,65 @@ export const MainEnv = z
     MOCK_IDP_CONTROL_TOKEN_FILE: z
       .string()
       .default(join(tmpdir(), 'ralysa-mock-idp', 'control-token')),
-    /** Set by the compose service only: lets the IdP listener bind the container's 0.0.0.0. */
+    /** Set by the compose service: lets the IdP listener bind the container's 0.0.0.0. */
     MOCK_IDP_IN_CONTAINER: z.enum(['0', '1']).default('0'),
   })
-  .superRefine((env, ctx) => {
-    // The mock is for this machine only: its issuer is a loopback URL, and it binds loopback
-    // unless it runs in the dev container (whose published port is 127.0.0.1 only).
-    if (!LOOPBACK.has(new URL(env.MOCK_IDP_PUBLIC_BASE_URL).hostname)) {
-      ctx.addIssue({ code: 'custom', message: 'MOCK_IDP_PUBLIC_BASE_URL must be a loopback URL' });
-    }
-    if (!LOOPBACK.has(env.MOCK_IDP_HOST) && env.MOCK_IDP_IN_CONTAINER !== '1') {
-      ctx.addIssue({
-        code: 'custom',
-        message: 'MOCK_IDP_HOST must be loopback outside the container',
-      });
-    }
+  .refine((env) => LOOPBACK.has(new URL(env.MOCK_IDP_PUBLIC_BASE_URL).hostname), {
+    message: 'MOCK_IDP_PUBLIC_BASE_URL must be a loopback URL',
   });
 export type MainEnv = z.infer<typeof MainEnv>;
 
+/** Docker creates /.dockerenv in every container; the host never has it. */
+export const runningInContainer = (): boolean => existsSync('/.dockerenv');
+
+/**
+ * The environment, validated. The mock is for this machine only: its issuer is a loopback URL,
+ * and it binds loopback unless it runs in the dev container (whose published port is 127.0.0.1
+ * only). `MOCK_IDP_IN_CONTAINER=1` alone is not enough: the container must be real.
+ */
+export function parseMainEnv(raw: unknown, inContainer = runningInContainer()): MainEnv {
+  const env = MainEnv.parse(raw);
+  if (!LOOPBACK.has(env.MOCK_IDP_HOST) && !(env.MOCK_IDP_IN_CONTAINER === '1' && inContainer)) {
+    throw new Error(
+      'MOCK_IDP_HOST must be loopback, except in the dev container (MOCK_IDP_IN_CONTAINER=1 and /.dockerenv)',
+    );
+  }
+  return env;
+}
+
+/**
+ * The bearer's directory must be ours alone: created 0700, or already a real directory (not a
+ * symlink) owned by this uid with mode 0700. A shared /tmp on Linux could otherwise let another
+ * user pre-create it.
+ */
+export function ensurePrivateDir(dir: string): void {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const stat = lstatSync(dir);
+  const uid = process.getuid?.();
+  if (
+    !stat.isDirectory() ||
+    stat.isSymbolicLink() ||
+    (uid !== undefined && stat.uid !== uid) ||
+    (stat.mode & 0o777) !== 0o700
+  ) {
+    throw new Error(`${dir} must be a directory owned by this user with mode 0700`);
+  }
+}
+
 function writeToken(file: string, token: string): void {
-  mkdirSync(dirname(file), { recursive: true, mode: 0o700 });
+  ensurePrivateDir(dirname(file));
   rmSync(file, { force: true });
+  // `wx`: O_EXCL, so a file (or symlink) planted after the rm is refused, not followed.
   writeFileSync(file, token, { mode: 0o600, flag: 'wx' });
 }
 
-export async function runMockIdp(env: MainEnv): Promise<() => Promise<void>> {
+export interface RunningMockIdp {
+  /** The test-control port actually bound (differs from the env when it asked for 0). */
+  controlPort: number;
+  stop: () => Promise<void>;
+}
+
+export async function runMockIdp(env: MainEnv): Promise<RunningMockIdp> {
   const idp = await startMockIdp({
     ...DEV_IDS,
     rtsRedirectUris: [DEV_IDS.rtsRedirectUri],
@@ -85,9 +120,12 @@ export async function runMockIdp(env: MainEnv): Promise<() => Promise<void>> {
   console.log(
     'mock-idp: the RTS client secret is per run; get one with `control POST /client-secrets` and store it at kv/ralysa/control-plane/idp-client-secret',
   );
-  return async () => {
-    rmSync(env.MOCK_IDP_CONTROL_TOKEN_FILE, { force: true });
-    await idp.close();
+  return {
+    controlPort: Number(new URL(idp.control.url).port),
+    stop: async () => {
+      rmSync(env.MOCK_IDP_CONTROL_TOKEN_FILE, { force: true });
+      await idp.close();
+    },
   };
 }
 
@@ -111,12 +149,12 @@ export async function controlCommand(env: MainEnv, args: string[]): Promise<numb
 }
 
 export async function main(argv: string[]): Promise<void> {
-  const env = MainEnv.parse(process.env);
+  const env = parseMainEnv(process.env);
   if (argv[0] === 'control') {
     process.exitCode = await controlCommand(env, argv.slice(1));
     return;
   }
-  const stop = await runMockIdp(env);
+  const { stop } = await runMockIdp(env);
   const shutdown = () => {
     stop().then(
       () => process.exit(0),

@@ -10,7 +10,7 @@
 // Access tokens are JWTs signed RS256 with a per-run key, header {typ: JWT, alg, kid}, and an
 // Entra-shaped payload (claims.ts). The sign-in page asks for a fixture username only: there is
 // no password field, and MFA is implied by the fixture's `amr`.
-import { randomBytes } from 'node:crypto';
+import { createPrivateKey, randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import Provider, {
   type Configuration,
@@ -23,7 +23,9 @@ import {
   appAccessClaims,
   groupClaims,
   pairwiseSub,
+  signJwt,
   userAccessClaims,
+  userIdClaims,
 } from './claims.ts';
 import { type MockIdpState, secretMatches, userByName, userByOid } from './state.ts';
 
@@ -61,6 +63,8 @@ export function createProvider(setup: ProviderSetup): Provider {
   const { state, tenantId, rtsClientId, issuer, graphBaseUrl } = setup;
   const { resource: rtsResource, scp } = splitScope(setup.signinScope);
   const graphScope = `${GRAPH_RESOURCE}/.default`;
+  const signingKey = createPrivateKey({ key: setup.signingJwk as never, format: 'jwk' });
+  const kid = setup.signingJwk.kid;
 
   const configuration: Configuration = {
     clients: [
@@ -135,15 +139,39 @@ export function createProvider(setup: ProviderSetup): Provider {
       },
       resourceIndicators: {
         enabled: true,
+        // Like Entra (AADSTS28000), one request gets tokens for one resource: asking for the RTS
+        // API and Graph together is invalid_scope.
         defaultResource: (ctx) => {
           const scope = ctx.oidc.params?.scope;
-          const requested = typeof scope === 'string' ? scope : '';
-          if (requested.split(' ').includes(graphScope)) return GRAPH_RESOURCE;
-          if (requested.split(' ').includes(setup.signinScope)) return rtsResource;
+          const requested = typeof scope === 'string' ? scope.split(' ') : [];
+          const graph = requested.some((s) => s.startsWith(`${GRAPH_RESOURCE}/`));
+          const rts = requested.some((s) => s.startsWith(`${rtsResource}/`));
+          if (graph && rts) {
+            throw new errors.InvalidScope(
+              'scopes for more than one resource were requested',
+              requested.join(' '),
+            );
+          }
+          if (graph) return GRAPH_RESOURCE;
+          if (rts) return rtsResource;
           return undefined;
         },
         useGrantedResource: () => true,
-        getResourceServerInfo: (_ctx, indicator, client) => {
+        getResourceServerInfo: (ctx, indicator, client) => {
+          // client_credentials is for Graph only, and only with `<resource>/.default` (Entra
+          // refuses any other scope value for app-only tokens, AADSTS1002012).
+          if (ctx.oidc.params?.grant_type === 'client_credentials') {
+            const requested = ctx.oidc.params.scope;
+            if (indicator !== GRAPH_RESOURCE || requested !== graphScope) {
+              throw new errors.InvalidScope(
+                `client_credentials needs scope ${graphScope}`,
+                typeof requested === 'string' ? requested : '',
+              );
+            }
+          } else if (indicator !== rtsResource) {
+            // Delegated Graph tokens are not part of what the mock (or Ralysa) uses.
+            throw new errors.InvalidTarget();
+          }
           if (indicator === rtsResource) {
             return {
               scope: setup.signinScope,
@@ -183,24 +211,28 @@ export function createProvider(setup: ProviderSetup): Provider {
         jwt: (_ctx, token, parts) => {
           const { iat, exp } = parts.payload as { iat: number; exp: number };
           const accountId = 'accountId' in token ? token.accountId : undefined;
+          // `aud` comes from the resource the token was issued for, never from the grant type.
+          const audience = token.resourceServer?.audience;
           if (typeof accountId === 'string') {
+            if (audience !== rtsClientId) throw new errors.InvalidTarget();
             const user = userByOid(state, accountId);
             if (user === undefined) throw new Error('mock IdP: token for an unknown account');
             parts.payload = userAccessClaims(user, {
               issuer,
               tenantId,
-              audience: rtsClientId,
+              audience,
               azp: token.clientId ?? '',
+              azpacr: token.clientId === rtsClientId ? '1' : '0',
               scp,
               iat,
               exp,
               graphBaseUrl,
             });
           } else {
+            if (audience !== GRAPH_RESOURCE) throw new errors.InvalidTarget();
             parts.payload = appAccessClaims({
-              issuer,
               tenantId,
-              audience: GRAPH_RESOURCE,
+              audience,
               clientId: token.clientId ?? '',
               iat,
               exp,
@@ -230,6 +262,33 @@ export function createProvider(setup: ProviderSetup): Provider {
     clientBasedCORS: () => false,
   };
 
+  /**
+   * oidc-provider signs its ID token with `sub` = the account id (the object id) and no `typ`,
+   * and drops the sign-in's `amr`. Entra's v2 ID token has a pairwise `sub`, header `typ: JWT`,
+   * and `oid`, `tid`, `uti`, `ver`. The token response's ID token is re-issued in that shape with
+   * the same per-run key; the protocol bindings (`nonce`, `sid`, `at_hash`, …) are kept.
+   */
+  const entraIdToken = (body: Record<string, unknown>): Record<string, unknown> => {
+    if (typeof body.id_token !== 'string') return body;
+    const original = JSON.parse(
+      Buffer.from(body.id_token.split('.')[1] ?? '', 'base64url').toString('utf8'),
+    ) as Record<string, unknown>;
+    const user = typeof original.sub === 'string' ? userByOid(state, original.sub) : undefined;
+    if (user === undefined || typeof original.aud !== 'string') {
+      throw new Error('mock IdP: ID token for an unknown account');
+    }
+    const payload = userIdClaims(user, {
+      issuer,
+      tenantId,
+      clientId: original.aud,
+      iat: Number(original.iat),
+      exp: Number(original.exp),
+      graphBaseUrl,
+      original,
+    });
+    return { ...body, id_token: signJwt({ alg: 'RS256', typ: 'JWT', kid }, payload, signingKey) };
+  };
+
   const provider = new Provider(issuer, configuration);
   // Entra's device authorization response: `interval` and `message`, and no
   // `verification_uri_complete` (RFC 8628 §3.2 makes it optional; Entra never sends it, so a
@@ -237,6 +296,10 @@ export function createProvider(setup: ProviderSetup): Provider {
   provider.use(async (ctx, next) => {
     await next();
     const oidc = (ctx as Partial<KoaContextWithOIDC>).oidc;
+    if (oidc?.route === 'token' && ctx.status === 200) {
+      ctx.body = entraIdToken(ctx.body as Record<string, unknown>);
+      return;
+    }
     if (oidc?.route !== 'device_authorization' || ctx.status !== 200) return;
     const body = { ...(ctx.body as Record<string, unknown>) };
     delete body.verification_uri_complete;

@@ -7,19 +7,17 @@
 // fresh RTS client secret, and a fresh bearer for the test-control API, which listens on
 // 127.0.0.1 only (SEC-F002-13 e).
 import {
-  type KeyObject,
   createPrivateKey,
   createPublicKey,
   generateKeyPairSync,
   randomBytes,
   randomUUID,
-  sign as signBytes,
 } from 'node:crypto';
 import { type IncomingMessage, type Server, type ServerResponse, createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { jwtVerify } from 'jose';
 import type { JWK } from 'oidc-provider';
-import { GRAPH_RESOURCE, userAccessClaims } from './claims.ts';
+import { GRAPH_RESOURCE, appTokenIssuer, signJwt, userAccessClaims } from './claims.ts';
 import { handleControl } from './control.ts';
 import type { MockUser } from './fixtures.ts';
 import { handleGraph } from './graph.ts';
@@ -121,17 +119,6 @@ const listen = (server: Server, host: string, port: number): Promise<number> =>
     });
   });
 
-const b64u = (value: string | Buffer): string => Buffer.from(value).toString('base64url');
-
-function signRs256(
-  header: Record<string, unknown>,
-  payload: Record<string, unknown>,
-  key: KeyObject,
-): string {
-  const input = `${b64u(JSON.stringify(header))}.${b64u(JSON.stringify(payload))}`;
-  return `${input}.${b64u(signBytes('sha256', Buffer.from(input), key))}`;
-}
-
 export async function startMockIdp(options: MockIdpOptions = {}): Promise<MockIdp> {
   const tenantId = options.tenantId ?? randomUUID();
   const rtsClientId = options.rtsClientId ?? randomUUID();
@@ -185,7 +172,7 @@ export async function startMockIdp(options: MockIdpOptions = {}): Promise<MockId
     verifyAppToken: async (token: string) => {
       try {
         await jwtVerify(token, publicKey, {
-          issuer,
+          issuer: appTokenIssuer(tenantId),
           audience: GRAPH_RESOURCE,
           algorithms: ['RS256'],
         });
@@ -257,6 +244,7 @@ export async function startMockIdp(options: MockIdpOptions = {}): Promise<MockId
           tenantId,
           audience: rtsClientId,
           azp: cliClientId,
+          azpacr: '0',
           scp: splitScope(signinScope).scp,
           iat,
           exp: iat + (mint.expiresInSeconds ?? 3600),
@@ -265,7 +253,7 @@ export async function startMockIdp(options: MockIdpOptions = {}): Promise<MockId
         ...mint.claims,
       };
       const header = { alg: 'RS256', typ: 'JWT', kid, ...mint.header };
-      return signRs256(
+      return signJwt(
         header,
         payload,
         mint.signWith === 'foreign'

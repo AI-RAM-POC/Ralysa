@@ -2,10 +2,25 @@
 // follow the Entra access-token claims reference: `oid` is the immutable object id, `sub` is
 // pairwise per application, `tid` the tenant, `uti` a unique token id, `ver` "2.0". Groups are
 // object ids, on-prem-style names for a synced fixture, or overage markers past 200.
-import { createHash, randomBytes } from 'node:crypto';
+import { type KeyObject, createHash, randomBytes, sign as signBytes } from 'node:crypto';
 import { type MockUser, OVERAGE_THRESHOLD } from './fixtures.ts';
 
 export const GRAPH_RESOURCE = 'https://graph.microsoft.com';
+
+/** Entra's v1 token issuer, which Graph app tokens carry (not the v2 issuer). */
+export const appTokenIssuer = (tenantId: string): string => `https://sts.windows.net/${tenantId}/`;
+
+const b64u = (value: string | Buffer): string => Buffer.from(value).toString('base64url');
+
+/** A compact JWS, RS256. Header fields are taken as given (Entra's: alg, typ JWT, kid). */
+export function signJwt(
+  header: Record<string, unknown>,
+  payload: Record<string, unknown>,
+  key: KeyObject,
+): string {
+  const input = `${b64u(JSON.stringify(header))}.${b64u(JSON.stringify(payload))}`;
+  return `${input}.${b64u(signBytes('sha256', Buffer.from(input), key))}`;
+}
 
 /** Entra's pairwise `sub`: stable per (user, application), never the object id. */
 export const pairwiseSub = (oid: string, applicationId: string): string =>
@@ -35,6 +50,8 @@ export interface AccessClaimInput {
   /** The requesting client's id. */
   azp: string;
   scp: string;
+  /** `azpacr`: "0" for a public client (the CLI), "1" for a client secret (RTS). */
+  azpacr: '0' | '1';
   iat: number;
   exp: number;
   graphBaseUrl: string;
@@ -50,7 +67,7 @@ export function userAccessClaims(user: MockUser, input: AccessClaimInput): Recor
     exp: input.exp,
     aio: newTokenId(),
     azp: input.azp,
-    azpacr: '0',
+    azpacr: input.azpacr,
     name: user.displayName,
     oid: user.oid,
     preferred_username: user.upn,
@@ -66,9 +83,55 @@ export function userAccessClaims(user: MockUser, input: AccessClaimInput): Recor
   };
 }
 
-/** An app-only (client credentials) token for Graph. */
+/** Claims carried over from oidc-provider's ID token (protocol bindings, not identity). */
+const ID_TOKEN_PASSTHROUGH = ['nonce', 'sid', 'auth_time', 'at_hash', 'c_hash', 's_hash'] as const;
+
+/**
+ * A flow-B ID token's payload, shaped like Entra v2: pairwise `sub` (never the object id), `oid`,
+ * `tid`, `uti`, `ver`, the sign-in's `amr`/`acrs`/`ipaddr`, and the group claims.
+ */
+export function userIdClaims(
+  user: MockUser,
+  input: {
+    issuer: string;
+    tenantId: string;
+    clientId: string;
+    iat: number;
+    exp: number;
+    graphBaseUrl: string;
+    /** oidc-provider's own ID token payload: the protocol bindings are copied from it. */
+    original: Record<string, unknown>;
+  },
+): Record<string, unknown> {
+  const bindings: Record<string, unknown> = {};
+  for (const name of ID_TOKEN_PASSTHROUGH) {
+    if (input.original[name] !== undefined) bindings[name] = input.original[name];
+  }
+  return {
+    aud: input.clientId,
+    iss: input.issuer,
+    iat: input.iat,
+    nbf: input.iat,
+    exp: input.exp,
+    aio: newTokenId(),
+    email: user.upn,
+    name: user.displayName,
+    oid: user.oid,
+    preferred_username: user.upn,
+    sub: pairwiseSub(user.oid, input.clientId),
+    tid: input.tenantId,
+    uti: newTokenId(),
+    ver: '2.0',
+    ipaddr: user.ipaddr ?? user.lastLoginIp ?? '127.0.0.1',
+    amr: [...user.amr],
+    ...(user.acrs === undefined ? {} : { acrs: [...user.acrs] }),
+    ...groupClaims(user, input.graphBaseUrl),
+    ...bindings,
+  };
+}
+
+/** An app-only (client credentials) token for Graph: Entra's v1 shape and v1 issuer. */
 export function appAccessClaims(input: {
-  issuer: string;
   tenantId: string;
   audience: string;
   clientId: string;
@@ -85,12 +148,12 @@ export function appAccessClaims(input: {
   ].join('-');
   return {
     aud: input.audience,
-    iss: input.issuer,
+    iss: appTokenIssuer(input.tenantId),
     iat: input.iat,
     nbf: input.iat,
     exp: input.exp,
     appid: input.clientId,
-    azp: input.clientId,
+    appidacr: '1',
     idtyp: 'app',
     oid,
     sub: oid,

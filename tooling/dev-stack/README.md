@@ -73,7 +73,14 @@ const idp = await startMockIdp({ deviceCodeTtlSeconds: 10, accessGroupId, adminG
 - **Tokens**: RS256, header `typ: JWT`, Entra v2 claims (`ver`, `tid`, `oid`, pairwise `sub`,
   `azp`, `scp`, `uti`, `ipaddr`, `amr`, `acrs`, `name`, `preferred_username`, `groups`). Past 200
   groups the token carries `_claim_names`/`_claim_sources` instead. Graph app tokens are Entra v1
-  app tokens (`idtyp: app`, `roles`).
+  app tokens (issuer `https://sts.windows.net/<tenant>/`, `idtyp: app`, `roles`). `azpacr` is `0`
+  for the CLI and `1` for RTS.
+- **ID tokens** (flow B) are re-issued in Entra's v2 shape: header `typ: JWT`, pairwise `sub`
+  (never the object id), `oid`, `tid`, `uti`, `ver`, and the sign-in's `amr`/`acrs`/`ipaddr`;
+  `nonce` is kept.
+- **One resource per request**, as Entra: asking for the RTS API and Graph together is
+  `invalid_scope`; client credentials accept only `https://graph.microsoft.com/.default`; there
+  are no delegated Graph tokens (`invalid_target`). `aud` comes from the resource.
 - **Device authorization response** as Entra's: `interval` (default 5) and `message`, and no
   `verification_uri_complete`.
 - **Sign-in** asks for a fixture username only. There is no password field; MFA is implied by the
@@ -118,13 +125,13 @@ The RTS client secret is per run: get one with `control POST /client-secrets` an
 
 | Variable (mock IdP process only) | Default | Effect |
 |---|---|---|
-| `MOCK_IDP_HOST` | `127.0.0.1` | IdP and Graph listener. Must be loopback unless `MOCK_IDP_IN_CONTAINER=1` |
+| `MOCK_IDP_HOST` | `127.0.0.1` | IdP and Graph listener. Must be loopback unless `MOCK_IDP_IN_CONTAINER=1` **and** `/.dockerenv` exists |
 | `MOCK_IDP_IN_CONTAINER` | `0` | Set by the compose service so the listener can bind the container's `0.0.0.0` |
-| `MOCK_IDP_PORT` | `59400` | IdP and Graph port |
-| `MOCK_IDP_CONTROL_PORT` | `59401` | Test-control port (always bound to 127.0.0.1) |
+| `MOCK_IDP_PORT` | `59400` | IdP and Graph port (`0`: any free port) |
+| `MOCK_IDP_CONTROL_PORT` | `59401` | Test-control port, always bound to 127.0.0.1 (`0`: any free port; the `control` subcommand then can't find it) |
 | `MOCK_IDP_PUBLIC_BASE_URL` | `http://127.0.0.1:59400` | Issuer base; must be a loopback URL |
 | `MOCK_IDP_DEVICE_CODE_TTL_S` | `900` | Device-code lifetime |
-| `MOCK_IDP_CONTROL_TOKEN_FILE` | `<tmpdir>/ralysa-mock-idp/control-token` | Where the per-run bearer is written (mode 0600; never logged) |
+| `MOCK_IDP_CONTROL_TOKEN_FILE` | `<tmpdir>/ralysa-mock-idp/control-token` | Where the per-run bearer is written (mode 0600; never logged). Its directory must be owned by the current user with mode 0700, or it is refused |
 
 ## Harness for `test:integration`
 
