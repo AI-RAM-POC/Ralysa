@@ -1,7 +1,7 @@
 // Builds throw-away repositories for the check tests. Nothing here touches the real repo.
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { makeTempDir } from './temp.ts';
 
 export interface FixtureWorkspace {
   dir: string;
@@ -51,9 +51,10 @@ export function makeFixtureRepo(
     workspaceYaml?: string;
     lifecycleEntries?: unknown[];
     allowBuildsEntries?: unknown[];
+    pnpmfileEntries?: unknown[];
   } = {},
 ): FixtureRepo {
-  const root = mkdtempSync(join(tmpdir(), 'ralysa-fixture-'));
+  const root = makeTempDir('ralysa-fixture-');
   const write = (path: string, content: string): void => {
     const full = join(root, path);
     mkdirSync(dirname(full), { recursive: true });
@@ -73,6 +74,9 @@ export function makeFixtureRepo(
   });
   writeJson('tooling/repo-scripts/allow-builds.json', {
     entries: options.allowBuildsEntries ?? [],
+  });
+  writeJson('tooling/repo-scripts/pnpmfile-allowlist.json', {
+    entries: options.pnpmfileEntries ?? [],
   });
   writeJson('tooling/repo-scripts/package.json', {
     ...validWorkspacePackage('@ralysa/repo-scripts'),

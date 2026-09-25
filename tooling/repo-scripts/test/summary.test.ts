@@ -60,7 +60,7 @@ describe('summary (AC-1: the run log lists each workspace)', () => {
     );
     expect(markdown.indexOf('apps/web')).toBeLessThan(markdown.indexOf('services/agent-host'));
     expect(markdown).toContain(
-      '2 workspaces, 8 tasks attempted, 7 succeeded (1 from the local cache), 1 failed.',
+      '2 workspaces, 8 tasks, 6 succeeded (1 from the local cache), 1 failed, 1 not run.',
     );
   });
 
@@ -79,5 +79,24 @@ describe('summary (AC-1: the run log lists each workspace)', () => {
       REQUIRED_SCRIPTS,
     );
     expect(markdown).not.toContain('someone@example.invalid');
+  });
+});
+
+describe('summary: a fully cached run (code review nit)', () => {
+  it('reports every task as succeeded and cached, although Turbo says success: 0', () => {
+    const tasks = allTasks('@ralysa/web', 'apps/web', {
+      lint: [0, 'HIT'],
+      typecheck: [0, 'HIT'],
+      test: [0, 'HIT'],
+      build: [0, 'HIT'],
+    });
+    const cachedRun = parseSummary({
+      execution: { command: 'turbo run build', success: 0, failed: 0, cached: 4, attempted: 4 },
+      tasks,
+    });
+    const { markdown } = renderSummary(cachedRun, REQUIRED_SCRIPTS);
+    expect(markdown).toContain(
+      '1 workspaces, 4 tasks, 4 succeeded (4 from the local cache), 0 failed, 0 not run.',
+    );
   });
 });

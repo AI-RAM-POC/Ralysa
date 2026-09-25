@@ -81,12 +81,16 @@ Each package's `tsconfig.json` is a no-emit project over `src/`, `test/` and `*.
   - `blockExoticSubdeps`: transitive dependencies come from the registry only.
   - `strictDepBuilds`: install fails if a dependency wants to run a build script that isn't reviewed.
 - **Dependency build scripts:** an `allowBuilds` entry defaults to `false`. Setting one to `true` needs a matching entry in `tooling/repo-scripts/allow-builds.json` (package, reason, reviewer, date). `dangerouslyAllowAllBuilds` and `enablePrePostScripts` are never allowed.
-- **Our own lifecycle scripts** (`preinstall`, `install`, `postinstall`, `prepare`, `prepack`, `postpack`, `prepublish`, `prepublishOnly`, `publish`, `postpublish`) are banned in the root and every workspace. The exception is an entry in `tooling/repo-scripts/lifecycle-allowlist.json` with the exact command, an owner and a reason. These would otherwise run on every `pnpm install`.
+- **Our own lifecycle scripts** (pnpm's root `pnpm:devPreinstall`, `preinstall`, `install`, `postinstall`, `prepare`, `prepack`, `postpack`, `prepublish`, `prepublishOnly`, `publish`, `postpublish`) are banned in the root and every workspace. The exception is an entry in `tooling/repo-scripts/lifecycle-allowlist.json` with the exact command, an owner and a reason. These would otherwise run on every `pnpm install`.
+- **pnpmfiles.** pnpm loads a root `.pnpmfile.cjs`/`.pnpmfile.mjs` (or the file the `pnpmfile` setting names) on every install, and its hooks can rewrite any manifest. Any pnpmfile needs an entry in `tooling/repo-scripts/pnpmfile-allowlist.json` with the SHA-256 of the reviewed content; `globalPnpmfile` is never allowed.
+- **Catalogs and overrides** in `pnpm-workspace.yaml` follow the same specifier rules as `package.json`: a `catalog:` reference is only as safe as the catalog value behind it.
+- **Workspace globs** may only cover folders directly under `apps/`, `packages/`, `services/` and `tooling/`; `check-workspaces` flags anything else pnpm would pick up.
 - **No Python yet.** `*.py`, `pyproject.toml`, `requirements*.txt`, `Pipfile`, `setup.cfg` and `uv.lock` fail `check-workspaces` outside `docs/` and `requirements/`, until the F-004 design lands the Python lint, test and SR-03 import ban (RC-7).
 
 ## Turbo
 
 - Tasks: `build`, `typecheck`, `lint`, `test` (all depend on `^build`), `test:integration`, `check:generated` and `e2e` (all uncached).
+- A package may add a `turbo.json` (`extends: ["//"]`) to adjust its tasks, but a check, scan, `check:generated` or `test:integration` task must still resolve to `cache: false`, and root-only keys are not allowed there.
 - `globalDependencies` lists the root configs and `tooling/**`. Changing any lint, type or boundary config therefore invalidates every cached result, so a cache replay can't stand in for a gate. `check-turbo-config` enforces this.
 - Generated files: a workspace that commits generated files defines `check:generated`, which regenerates them in place. CI then fails on any `git status --porcelain` output.
 

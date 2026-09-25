@@ -3,17 +3,18 @@
 // imports node:fs fails lint and one that touches `document` fails typecheck.
 //
 // The copy gets no `pnpm install` (that would need registry metadata, so the test wouldn't be
-// hermetic). Each scaffolded package's node_modules is a symlink to a real workspace with the same
-// dependency set instead: apps/web (created from the app template) for the React kinds and
-// tooling/repo-scripts for the Node kinds. Scripts run directly with that .bin on PATH.
+// hermetic). Instead each scaffolded package's node_modules holds only the dependencies its
+// template declares, linked to the real repo's installed copies (test/link-deps.ts), so a template
+// that forgets one fails here. Scripts run directly with that .bin on PATH.
 import { execSync } from 'node:child_process';
-import { existsSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { checkWorkspaces } from '../src/check-workspaces.ts';
 import { listWorkspaceDirs, readJson } from '../src/lib/repo.ts';
 import { formatRootTsconfig, type ScaffoldKind, scaffold } from '../src/scaffold.ts';
 import { makeFixtureRepo, validWorkspacePackage } from './fixture-repo.ts';
+import { linkDeclaredDependencies } from './link-deps.ts';
 import { cleanEnv, copyRepo, REAL_ROOT } from './repo-copy.ts';
 
 const placeholder = (name: string) =>
@@ -103,12 +104,12 @@ describe('scaffold: target and kind validation', () => {
   });
 });
 
-const KINDS: { kind: ScaffoldKind; target: string; modules: string }[] = [
-  { kind: 'library', target: 'packages/demo-lib', modules: 'apps/web' },
-  { kind: 'library-isomorphic', target: 'packages/demo-iso', modules: 'tooling/repo-scripts' },
-  { kind: 'service', target: 'services/demo-svc', modules: 'tooling/repo-scripts' },
-  { kind: 'app', target: 'apps/demo-app', modules: 'apps/web' },
-  { kind: 'cli', target: 'apps/demo-cli', modules: 'tooling/repo-scripts' },
+const KINDS: { kind: ScaffoldKind; target: string }[] = [
+  { kind: 'library', target: 'packages/demo-lib' },
+  { kind: 'library-isomorphic', target: 'packages/demo-iso' },
+  { kind: 'service', target: 'services/demo-svc' },
+  { kind: 'app', target: 'apps/demo-app' },
+  { kind: 'cli', target: 'apps/demo-cli' },
 ];
 
 function runScript(root: string, target: string, script: string): { ok: boolean; output: string } {
@@ -132,13 +133,9 @@ function runScript(root: string, target: string, script: string): { ok: boolean;
 
 describe('scaffold templates pass every gate on creation (TC-F-001-46)', () => {
   const root = copyRepo('ralysa-scaffold-');
-  for (const { kind, target, modules } of KINDS) {
+  for (const { kind, target } of KINDS) {
     scaffold({ root, target, kind, repoFiles: [] });
-    symlinkSync(
-      join(REAL_ROOT, modules, 'node_modules'),
-      join(root, target, 'node_modules'),
-      'dir',
-    );
+    linkDeclaredDependencies(join(root, target));
   }
 
   it('check-workspaces accepts all five new packages', () => {

@@ -98,12 +98,17 @@ export function renderSummary(
     }
   }
 
+  // Counted from the task states rather than execution.success, which Turbo reports as 0 when
+  // every task is replayed from the cache.
   const { execution } = summary;
+  const states = summary.tasks.filter((t) => t.package !== '//').map(stateOf);
+  const count = (...wanted: TaskState[]): number => states.filter((s) => wanted.includes(s)).length;
   const lines = [
     '## Workspace results',
     '',
-    `\`${execution.command}\`: ${String(rows.size)} workspaces, ${String(execution.attempted)} tasks attempted, ` +
-      `${String(execution.success)} succeeded (${String(execution.cached)} from the local cache), ${String(execution.failed)} failed.`,
+    `\`${execution.command}\`: ${String(rows.size)} workspaces, ${String(states.length)} tasks, ` +
+      `${String(count('pass', 'cached'))} succeeded (${String(count('cached'))} from the local cache), ` +
+      `${String(count('failed'))} failed, ${String(count('not run'))} not run.`,
     '',
     `| Workspace | Directory | ${taskNames.join(' | ')} |`,
     `|---|---|${taskNames.map(() => '---').join('|')}|`,

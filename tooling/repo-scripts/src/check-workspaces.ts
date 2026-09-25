@@ -3,7 +3,8 @@
 // a package.json breaks the workspace contract, when a lifecycle script or an unreviewed
 // dependency build appears, when a dependency specifier could pull code from outside the
 // registry (or from packs/), or when Python files appear before the F-004 toolchain exists.
-import { existsSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, globSync, readFileSync } from 'node:fs';
 import { basename, join, posix } from 'node:path';
 import type { z } from 'zod';
 import { SPECIFIER_ALLOWLIST } from '@ralysa/eslint-config/boundaries';
@@ -11,6 +12,7 @@ import {
   AllowBuildsRegister,
   LIFECYCLE_SCRIPTS,
   LifecycleAllowlist,
+  PnpmfileRegister,
   REQUIRED_SCRIPTS,
   WorkspacePackageJson,
 } from './contracts/workspace.ts';
@@ -87,6 +89,44 @@ function resolvesUnderPacks(workspaceDir: string, specifier: string): boolean {
   return resolved === 'packs' || resolved.startsWith('packs/');
 }
 
+/**
+ * Checks one specifier value against the packs/ and exotic-specifier rules. `workspace` is the
+ * allow-list key ("." for the root, "pnpm-workspace.yaml" for catalogs and overrides there) and
+ * `baseDir` the folder a relative path resolves from. Returns true when a finding was added.
+ */
+function checkSpecifierValue(
+  location: { file: string; workspace: string; baseDir: string },
+  field: string,
+  name: string,
+  specifier: string,
+  allowlist: SpecifierException[],
+  findings: Finding[],
+): boolean {
+  if (resolvesUnderPacks(location.baseDir, specifier)) {
+    findings.push({
+      rule: 'deps/packs',
+      path: location.file,
+      message: `${field}.${name} = "${specifier}" resolves under packs/; packs are never part of the build graph (RF-7, SEC-F001-26)`,
+    });
+    return true;
+  }
+  const kind = exoticSpecifierKind(specifier);
+  if (kind === undefined) return false;
+  const excepted = allowlist.some(
+    (entry) =>
+      entry.workspace === location.workspace &&
+      entry.dependency === name &&
+      entry.specifier === specifier,
+  );
+  if (excepted) return false;
+  findings.push({
+    rule: 'deps/exotic-specifier',
+    path: location.file,
+    message: `${field}.${name} = "${specifier}" uses a ${kind} specifier; only registry versions, "catalog:" and "workspace:*" are allowed unless boundaries.js SPECIFIER_ALLOWLIST lists it with a reason (SEC-F001-09 a)`,
+  });
+  return true;
+}
+
 function checkSpecifiers(
   where: string,
   pkg: Record<string, unknown>,
@@ -95,6 +135,7 @@ function checkSpecifiers(
   findings: Finding[],
 ): void {
   const manifest = where === '' ? 'package.json' : `${where}/package.json`;
+  const location = { file: manifest, workspace: where === '' ? '.' : where, baseDir: where };
   const groups: [string, unknown][] = DEPENDENCY_FIELDS.map((field) => [field, pkg[field]]);
   const pnpmField = pkg.pnpm;
   if (isRecord(pnpmField)) groups.push(['pnpm.overrides', pnpmField.overrides]);
@@ -106,11 +147,7 @@ function checkSpecifiers(
       if (typeof raw !== 'string') continue;
       const specifier = raw;
       if (resolvesUnderPacks(where, specifier)) {
-        findings.push({
-          rule: 'deps/packs',
-          path: manifest,
-          message: `${field}.${name} = "${specifier}" resolves under packs/; packs are never part of the build graph (RF-7, SEC-F001-26)`,
-        });
+        checkSpecifierValue(location, field, name, specifier, allowlist, findings);
         continue;
       }
       if (name.startsWith('@ralysa/') && field !== 'peerDependencies') {
@@ -131,21 +168,125 @@ function checkSpecifiers(
         }
         continue;
       }
-      const kind = exoticSpecifierKind(specifier);
-      if (kind === undefined) continue;
-      const excepted = allowlist.some(
-        (entry) =>
-          entry.workspace === (where === '' ? '.' : where) &&
-          entry.dependency === name &&
-          entry.specifier === specifier,
-      );
-      if (!excepted) {
+      checkSpecifierValue(location, field, name, specifier, allowlist, findings);
+    }
+  }
+}
+
+/**
+ * pnpm-workspace.yaml can also define where packages come from: `catalog`, the named
+ * `catalogs.<name>` and `overrides`. A "catalog:" reference in a package.json is only as safe as
+ * the catalog value behind it, and pnpm 11 resolves npm:, git and tarball values there (code
+ * review M1), so every value goes through the same rules as a package.json specifier.
+ */
+function checkWorkspaceSpecifiers(
+  settings: Record<string, unknown>,
+  allowlist: SpecifierException[],
+  findings: Finding[],
+): void {
+  const location = { file: 'pnpm-workspace.yaml', workspace: 'pnpm-workspace.yaml', baseDir: '' };
+  const groups: [string, unknown][] = [
+    ['catalog', settings.catalog],
+    ['overrides', settings.overrides],
+  ];
+  if (isRecord(settings.catalogs)) {
+    for (const [catalog, entries] of Object.entries(settings.catalogs)) {
+      groups.push([`catalogs.${catalog}`, entries]);
+    }
+  } else if (settings.catalogs !== undefined) {
+    findings.push({
+      rule: 'pnpm/settings',
+      path: 'pnpm-workspace.yaml',
+      message: 'catalogs must be a mapping of catalog name to entries',
+    });
+  }
+  for (const [field, entries] of groups) {
+    if (entries === undefined || entries === null) continue;
+    if (!isRecord(entries)) {
+      findings.push({
+        rule: 'pnpm/settings',
+        path: 'pnpm-workspace.yaml',
+        message: `${field} must be a mapping`,
+      });
+      continue;
+    }
+    for (const [name, value] of Object.entries(entries)) {
+      const specifier = typeof value === 'string' ? value : String(value);
+      checkSpecifierValue(location, field, name, specifier, allowlist, findings);
+    }
+  }
+}
+
+const PNPMFILE = /(^|\/)\.?pnpmfile\.(c|m)?js$/;
+
+/**
+ * pnpm loads the root `.pnpmfile.cjs`/`.pnpmfile.mjs` (or whatever the `pnpmfile` setting names)
+ * on every install and runs its hooks, which can rewrite any manifest. Each one needs a reviewed
+ * entry, pinned to its content hash, in pnpmfile-allowlist.json (code review M2).
+ */
+function checkPnpmfiles(
+  root: string,
+  settings: Record<string, unknown>,
+  repoFiles: string[],
+  register: PnpmfileRegisterType,
+  findings: Finding[],
+): void {
+  const candidates = new Set(repoFiles.filter((file) => PNPMFILE.test(file)));
+  const named: [string, unknown][] = [
+    ['pnpmfile', settings.pnpmfile],
+    ['globalPnpmfile', settings.globalPnpmfile],
+  ];
+  const npmrc = join(root, '.npmrc');
+  if (existsSync(npmrc)) {
+    for (const match of readFileSync(npmrc, 'utf8').matchAll(
+      /^\s*(global-pnpmfile|pnpmfile)\s*=\s*(.+?)\s*$/gim,
+    )) {
+      named.push([`.npmrc ${match[1] ?? 'pnpmfile'}`, match[2]]);
+    }
+  }
+  for (const [setting, value] of named) {
+    if (value === undefined || value === null) continue;
+    if (setting.toLowerCase().includes('global')) {
+      findings.push({
+        rule: 'pnpm/pnpmfile',
+        path: setting.startsWith('.npmrc') ? '.npmrc' : 'pnpm-workspace.yaml',
+        message: `${setting} must not be set: a pnpmfile outside the repo can't be reviewed`,
+      });
+      continue;
+    }
+    for (const path of [value].flat()) {
+      if (typeof path !== 'string') continue;
+      const rel = posix.normalize(toPosix(path)).replace(/^\.\//, '');
+      if (rel.startsWith('/') || rel.startsWith('..')) {
         findings.push({
-          rule: 'deps/exotic-specifier',
-          path: manifest,
-          message: `${field}.${name} = "${specifier}" uses a ${kind} specifier; only registry versions, "catalog:" and "workspace:*" are allowed unless boundaries.js SPECIFIER_ALLOWLIST lists it with a reason (SEC-F001-09 a)`,
+          rule: 'pnpm/pnpmfile',
+          path: 'pnpm-workspace.yaml',
+          message: `${setting} points outside the repository (${path}); it can't be reviewed`,
         });
+      } else {
+        candidates.add(rel);
       }
+    }
+  }
+  for (const file of [...candidates].sort()) {
+    const full = join(root, file);
+    const entry = register.entries.find((e) => e.path === file);
+    const hash = existsSync(full)
+      ? createHash('sha256').update(readFileSync(full)).digest('hex')
+      : undefined;
+    if (entry === undefined) {
+      findings.push({
+        rule: 'pnpm/pnpmfile',
+        path: file,
+        message:
+          'pnpm runs this pnpmfile on every install; it needs a reviewed entry in tooling/repo-scripts/pnpmfile-allowlist.json',
+      });
+    } else if (hash !== entry.sha256) {
+      findings.push({
+        rule: 'pnpm/pnpmfile',
+        path: file,
+        message: `content changed since review (sha256 ${hash ?? 'missing file'} ≠ ${entry.sha256}); review it again and update pnpmfile-allowlist.json`,
+      });
     }
   }
 }
@@ -176,6 +317,7 @@ function checkLifecycleScripts(
 }
 
 type LifecycleRegister = z.infer<typeof LifecycleAllowlist>;
+type PnpmfileRegisterType = z.infer<typeof PnpmfileRegister>;
 
 function loadRegister<T>(
   file: string,
@@ -194,18 +336,52 @@ function loadRegister<T>(
   }
 }
 
-function checkPnpmSettings(root: string, allowBuilds: string[], findings: Finding[]): void {
-  const workspaceFile = join(root, 'pnpm-workspace.yaml');
-  const settings = readYaml(workspaceFile);
-  if (!isRecord(settings)) {
-    findings.push({
-      rule: 'pnpm/settings',
-      path: 'pnpm-workspace.yaml',
-      message: 'not a YAML mapping',
-    });
-    return;
-  }
+function readWorkspaceSettings(root: string, findings: Finding[]): Record<string, unknown> {
+  const settings = readYaml(join(root, 'pnpm-workspace.yaml'));
+  if (isRecord(settings)) return settings;
+  findings.push({
+    rule: 'pnpm/settings',
+    path: 'pnpm-workspace.yaml',
+    message: 'not a YAML mapping',
+  });
+  return {};
+}
 
+/**
+ * Resolves the `packages` globs of pnpm-workspace.yaml to workspace folders (those with a
+ * package.json) without asking pnpm, so a widened glob is caught even when pnpm isn't run.
+ */
+export function resolveWorkspaceGlobs(root: string, settings: Record<string, unknown>): string[] {
+  const globs = Array.isArray(settings.packages)
+    ? settings.packages.filter((g): g is string => typeof g === 'string')
+    : [];
+  const include = globs.filter((g) => !g.startsWith('!')).map((g) => g.replace(/^\.\//, ''));
+  const exclude = globs
+    .filter((g) => g.startsWith('!'))
+    .map((g) => g.slice(1).replace(/^\.\//, ''));
+  const found = globSync(
+    include.map((g) => `${g.replace(/\/+$/, '')}/package.json`),
+    {
+      cwd: root,
+      exclude: (path: string) => /(^|\/)node_modules(\/|$)/.test(toPosix(path)),
+    },
+  )
+    .map((file) => posix.dirname(toPosix(file)))
+    .filter((dir) => dir !== '.');
+  const excluded = new Set(
+    exclude.length === 0
+      ? []
+      : globSync(exclude, { cwd: root }).map((dir) => toPosix(dir).replace(/\/+$/, '')),
+  );
+  return [...new Set(found)].filter((dir) => !excluded.has(dir)).sort();
+}
+
+function checkPnpmSettings(
+  root: string,
+  settings: Record<string, unknown>,
+  allowBuilds: string[],
+  findings: Finding[],
+): void {
   const packages = Array.isArray(settings.packages) ? settings.packages : [];
   if (packages.some((glob) => typeof glob === 'string' && /^(\.\/)?packs(\/|$)/.test(glob))) {
     findings.push({
@@ -310,9 +486,31 @@ export function checkWorkspaces(options: CheckWorkspacesOptions): Finding[] {
     entries: [],
   };
 
+  const pnpmfiles = loadRegister(
+    join(registersDir, 'pnpmfile-allowlist.json'),
+    PnpmfileRegister,
+    findings,
+  ) ?? { entries: [] };
+
+  const settings = readWorkspaceSettings(root, findings);
   const dirs = listWorkspaceDirs(root);
   const pnpmWorkspaces = new Set(options.pnpmWorkspaces ?? listPnpmWorkspaces(root));
   const packages = new Map<string, Record<string, unknown>>();
+
+  // Every workspace pnpm would use must sit directly under apps/, packages/, services/ or
+  // tooling/: widened globs (`*/*`, `deploy/*`, `packs/**`) are caught whichever way they're
+  // written, from pnpm's own list and from resolving the globs here (code review m1).
+  const inRoots = new Set(dirs);
+  const resolved = new Set([...pnpmWorkspaces, ...resolveWorkspaceGlobs(root, settings)]);
+  for (const dir of [...resolved].sort()) {
+    if (inRoots.has(dir)) continue;
+    findings.push({
+      rule: 'workspace/outside-roots',
+      path: dir,
+      message:
+        'pnpm-workspace.yaml makes this a workspace, but workspaces may only be folders directly under apps/, packages/, services/ or tooling/ (packs/ never; RF-7)',
+    });
+  }
 
   for (const dir of dirs) {
     const manifest = join(root, dir, 'package.json');
@@ -392,10 +590,14 @@ export function checkWorkspaces(options: CheckWorkspacesOptions): Finding[] {
 
   checkPnpmSettings(
     root,
+    settings,
     allowBuilds.entries.map((entry) => entry.package),
     findings,
   );
-  checkPython((options.repoFiles ?? listRepoFiles(root)).map(toPosix), findings);
+  checkWorkspaceSpecifiers(settings, allowlist, findings);
+  const repoFiles = (options.repoFiles ?? listRepoFiles(root)).map(toPosix);
+  checkPnpmfiles(root, settings, repoFiles, pnpmfiles, findings);
+  checkPython(repoFiles, findings);
 
   return findings;
 }

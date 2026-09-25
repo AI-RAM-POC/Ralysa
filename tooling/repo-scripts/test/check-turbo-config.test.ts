@@ -8,6 +8,7 @@ import {
   checkTurboConfig,
   checkTurboConfigFile,
 } from '../src/check-turbo-config.ts';
+import { makeFixtureRepo, validWorkspacePackage } from './fixture-repo.ts';
 import { cleanEnv, copyRepo, REAL_ROOT } from './repo-copy.ts';
 
 const valid = () => ({
@@ -86,5 +87,41 @@ describe('globalDependencies invalidate every lint hash (TC-F-001-45, SEC-F001-2
       expect(afterCruiser.get(task), task).not.toBe(hash);
       expect(afterTooling.get(task), task).not.toBe(afterCruiser.get(task));
     }
+  });
+});
+
+describe('check-turbo-config: package-level turbo.json (code review m2)', () => {
+  function repoWith(packageTurbo: unknown) {
+    const fixture = makeFixtureRepo({
+      workspaces: [{ dir: 'packages/ui', pkg: validWorkspacePackage('@ralysa/ui') }],
+    });
+    fixture.writeJson('turbo.json', valid());
+    fixture.writeJson('packages/ui/turbo.json', packageTurbo);
+    return fixture.root;
+  }
+
+  it('fails when a package sets check:generated to cache: true', () => {
+    const root = repoWith({ extends: ['//'], tasks: { 'check:generated': { cache: true } } });
+    expect(checkTurboConfigFile(root)).toContainEqual(
+      expect.objectContaining({ rule: 'turbo/cached-check', path: 'packages/ui/turbo.json' }),
+    );
+  });
+
+  it('fails when a package defines a new check task without cache: false', () => {
+    const root = repoWith({ extends: ['//'], tasks: { 'check:contrast': { outputs: [] } } });
+    expect(checkTurboConfigFile(root).map((f) => f.rule)).toContain('turbo/cached-check');
+  });
+
+  it('passes a package override that inherits the root cache: false', () => {
+    const root = repoWith({
+      extends: ['//'],
+      tasks: { 'check:generated': { inputs: ['tokens/**'] } },
+    });
+    expect(checkTurboConfigFile(root)).toEqual([]);
+  });
+
+  it('fails when a package turbo.json carries a root-only key', () => {
+    const root = repoWith({ extends: ['//'], remoteCache: { enabled: true } });
+    expect(checkTurboConfigFile(root).map((f) => f.rule)).toContain('turbo/package-root-key');
   });
 });

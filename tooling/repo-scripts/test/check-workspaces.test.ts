@@ -1,4 +1,5 @@
 // TC-F-001-01 (unit part), TC-F-001-43, and the lifecycle/specifier parts of TC-F-001-42.
+import { createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -325,5 +326,212 @@ describe('check-workspaces: register files', () => {
       specifierAllowlist: [],
     });
     expect(findings.filter((f) => f.rule.startsWith('registers/'))).toEqual([]);
+  });
+});
+
+describe('check-workspaces: pnpm-workspace.yaml catalogs and overrides (code review M1)', () => {
+  const base = 'packages:\n  - "apps/*"\n  - "tooling/*"\n';
+
+  it.each([
+    ['catalog', 'catalog:\n  zod: "npm:openai@4.0.0"\n', 'deps/exotic-specifier'],
+    ['catalog', 'catalog:\n  zod: "github:o/r"\n', 'deps/exotic-specifier'],
+    ['catalog', 'catalog:\n  zod: "https://example.com/zod.tgz"\n', 'deps/exotic-specifier'],
+    ['catalog', 'catalog:\n  zod: "git+https://github.com/o/r.git"\n', 'deps/exotic-specifier'],
+    ['catalog', 'catalog:\n  finance: "file:packs/finance"\n', 'deps/packs'],
+    ['catalogs.*', 'catalogs:\n  react18:\n    react: "npm:preact@10"\n', 'deps/exotic-specifier'],
+    ['catalogs.*', 'catalogs:\n  local:\n    hr: "link:./packs/hr"\n', 'deps/packs'],
+    ['overrides', 'overrides:\n  zod: "github:o/r"\n', 'deps/exotic-specifier'],
+    ['overrides', 'overrides:\n  "a>b": "npm:evil@1"\n', 'deps/exotic-specifier'],
+    ['overrides', 'overrides:\n  soc: "portal:packs/soc"\n', 'deps/packs'],
+  ])('flags an exotic %s value: %j', (_field, yaml, rule) => {
+    const findings = run({ workspaceYaml: base + yaml });
+    expect(findings).toContainEqual(expect.objectContaining({ rule, path: 'pnpm-workspace.yaml' }));
+  });
+
+  it('accepts registry versions in catalog, catalogs and overrides', () => {
+    const yaml =
+      base +
+      'catalog:\n  zod: 4.6.5\n  react: ^19.3.0\ncatalogs:\n  legacy:\n    react: 18.3.1\noverrides:\n  semver: ">=7.5.2"\n  "foo>bar": "-"\n';
+    expect(run({ workspaceYaml: yaml })).toEqual([]);
+  });
+
+  it('allows a catalog value only when boundaries.js lists it, and never into packs/', () => {
+    const fixture = makeFixtureRepo({
+      workspaceYaml: `${base}catalog:\n  x: "github:o/r"\n  p: "file:packs/legal"\n`,
+    });
+    const findings = checkWorkspaces({
+      root: fixture.root,
+      pnpmWorkspaces: [TOOLING],
+      repoFiles: [],
+      specifierAllowlist: [
+        {
+          workspace: 'pnpm-workspace.yaml',
+          dependency: 'x',
+          specifier: 'github:o/r',
+          reason: 'fork',
+        },
+        {
+          workspace: 'pnpm-workspace.yaml',
+          dependency: 'p',
+          specifier: 'file:packs/legal',
+          reason: 'no',
+        },
+      ],
+    });
+    expect(rules(findings)).toEqual(['deps/packs']);
+  });
+});
+
+describe('check-workspaces: install-time hooks (code review M2)', () => {
+  it('fails on a root pnpm:devPreinstall script unless allow-listed', () => {
+    const rootPkg = {
+      name: 'ralysa',
+      private: true,
+      scripts: { 'pnpm:devPreinstall': 'node x.js' },
+    };
+    expect(run({ rootPkg })).toContainEqual(
+      expect.objectContaining({
+        rule: 'lifecycle/script',
+        message: expect.stringContaining('pnpm:devPreinstall') as string,
+      }),
+    );
+    const entry = {
+      package: 'ralysa',
+      script: 'pnpm:devPreinstall',
+      command: 'node x.js',
+      owner: 'o',
+      reason: 'r',
+    };
+    expect(run({ rootPkg, lifecycleEntries: [entry] })).toEqual([]);
+  });
+
+  it.each(['.pnpmfile.cjs', '.pnpmfile.mjs', 'pnpmfile.js', 'tools/.pnpmfile.cjs'])(
+    'fails on an unreviewed %s',
+    (file) => {
+      const findings = run(
+        {},
+        {
+          repoFiles: [file],
+          setup: (f) => {
+            f.write(file, 'module.exports = { hooks: {} };\n');
+          },
+        },
+      );
+      expect(findings).toContainEqual(
+        expect.objectContaining({ rule: 'pnpm/pnpmfile', path: file }),
+      );
+    },
+  );
+
+  it('fails on a pnpmfile setting pointing at an unreviewed file, outside the repo, or a global pnpmfile', () => {
+    const yaml = (extra: string) => `packages:\n  - "tooling/*"\n${extra}`;
+    const named = run(
+      { workspaceYaml: yaml('pnpmfile: hooks/install.cjs\n') },
+      {
+        setup: (f) => {
+          f.write('hooks/install.cjs', 'module.exports = {};\n');
+        },
+      },
+    );
+    expect(named).toContainEqual(
+      expect.objectContaining({ rule: 'pnpm/pnpmfile', path: 'hooks/install.cjs' }),
+    );
+    expect(rules(run({ workspaceYaml: yaml('pnpmfile: ../outside.cjs\n') }))).toContain(
+      'pnpm/pnpmfile',
+    );
+    expect(rules(run({ workspaceYaml: yaml('globalPnpmfile: /etc/hooks.cjs\n') }))).toContain(
+      'pnpm/pnpmfile',
+    );
+    const npmrc = run(
+      {},
+      {
+        setup: (f) => {
+          f.write('.npmrc', 'global-pnpmfile=/tmp/x.cjs\n');
+        },
+      },
+    );
+    expect(rules(npmrc)).toContain('pnpm/pnpmfile');
+  });
+
+  it('passes a reviewed pnpmfile only while its content hash matches', () => {
+    const content = 'module.exports = { hooks: {} };\n';
+    const sha256 = createHash('sha256').update(content).digest('hex');
+    const entry = { path: '.pnpmfile.cjs', sha256, owner: 'o', reason: 'r', date: '2026-09-25' };
+    const reviewed = run(
+      { pnpmfileEntries: [entry] },
+      {
+        repoFiles: ['.pnpmfile.cjs'],
+        setup: (f) => {
+          f.write('.pnpmfile.cjs', content);
+        },
+      },
+    );
+    expect(reviewed).toEqual([]);
+    const edited = run(
+      { pnpmfileEntries: [entry] },
+      {
+        repoFiles: ['.pnpmfile.cjs'],
+        setup: (f) => {
+          f.write('.pnpmfile.cjs', `${content}// changed\n`);
+        },
+      },
+    );
+    expect(edited).toContainEqual(
+      expect.objectContaining({
+        rule: 'pnpm/pnpmfile',
+        message: expect.stringContaining('content changed') as string,
+      }),
+    );
+  });
+});
+
+describe('check-workspaces: workspaces outside the four roots (code review m1)', () => {
+  it('flags a workspace pnpm lists outside apps/, packages/, services/ and tooling/', () => {
+    const fixture = makeFixtureRepo();
+    const findings = checkWorkspaces({
+      root: fixture.root,
+      pnpmWorkspaces: [TOOLING, 'deploy/docker'],
+      repoFiles: [],
+      specifierAllowlist: [],
+    });
+    expect(findings).toContainEqual(
+      expect.objectContaining({ rule: 'workspace/outside-roots', path: 'deploy/docker' }),
+    );
+  });
+
+  it.each([
+    ['*/*', ['deploy/docker', 'packs/finance']],
+    ['deploy/*', ['deploy/docker']],
+    ['**', ['deploy/docker', 'packs/finance']],
+    ['./packs/**', ['packs/finance']],
+  ])('resolves the glob %s itself and flags %j even when pnpm is not asked', (glob, expected) => {
+    const fixture = makeFixtureRepo({
+      workspaceYaml: `packages:\n  - "tooling/*"\n  - "${glob}"\n`,
+    });
+    fixture.writeJson('deploy/docker/package.json', { name: 'docker' });
+    fixture.writeJson('packs/finance/package.json', { name: 'finance' });
+    fixture.writeJson('deploy/docker/node_modules/x/package.json', { name: 'x' });
+    const findings = checkWorkspaces({
+      root: fixture.root,
+      pnpmWorkspaces: [TOOLING],
+      repoFiles: [],
+      specifierAllowlist: [],
+    });
+    const outside = findings.filter((f) => f.rule === 'workspace/outside-roots').map((f) => f.path);
+    expect(outside).toEqual(expected);
+  });
+
+  it('honours negated globs', () => {
+    const fixture = makeFixtureRepo({
+      workspaceYaml: 'packages:\n  - "tooling/*"\n  - "deploy/*"\n  - "!deploy/docker"\n',
+    });
+    fixture.writeJson('deploy/docker/package.json', { name: 'docker' });
+    const findings = checkWorkspaces({
+      root: fixture.root,
+      pnpmWorkspaces: [TOOLING],
+      repoFiles: [],
+      specifierAllowlist: [],
+    });
+    expect(rules(findings)).not.toContain('workspace/outside-roots');
   });
 });

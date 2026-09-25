@@ -4,7 +4,10 @@ import { z } from 'zod';
 
 export const REQUIRED_SCRIPTS = ['lint', 'typecheck', 'test', 'build'] as const;
 
+// Scripts a package manager runs by itself during install or publish. `pnpm:devPreinstall` is
+// pnpm's root-only hook, run before every install of the workspace (code review M2).
 export const LIFECYCLE_SCRIPTS = [
+  'pnpm:devPreinstall',
   'preinstall',
   'install',
   'postinstall',
@@ -97,6 +100,21 @@ export const AllowBuildsRegister = z.strictObject({
       package: z.string().min(1),
       reason: z.string().min(1),
       reviewer: z.string().min(1),
+      date: z.iso.date(),
+    }),
+  ),
+});
+
+export const PnpmfileRegister = z.strictObject({
+  $comment: z.string().optional(),
+  entries: z.array(
+    z.strictObject({
+      // Repo-relative path of the reviewed pnpmfile.
+      path: z.string().min(1),
+      // SHA-256 of the reviewed content: any edit needs a new review.
+      sha256: z.string().regex(/^[0-9a-f]{64}$/),
+      owner: z.string().min(1),
+      reason: z.string().min(1),
       date: z.iso.date(),
     }),
   ),

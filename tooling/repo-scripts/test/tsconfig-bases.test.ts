@@ -1,12 +1,12 @@
 // The @ralysa/tsconfig bases compile a small fixture under the pinned TypeScript with no
 // diagnostics at all, so no base uses an option TypeScript 6.0 deprecates (AR-4 c). The
 // isomorphic base has neither DOM nor Node types (design §2.1).
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import ts from 'typescript';
 import { describe, expect, it } from 'vitest';
 import { findRepoRoot } from '../src/lib/repo.ts';
+import { makeTempDir } from './temp.ts';
 
 const basesDir = join(findRepoRoot(), 'tooling', 'tsconfig');
 
@@ -15,7 +15,7 @@ function compile(
   source: string,
   extraOptions: Record<string, unknown> = {},
 ): string[] {
-  const dir = mkdtempSync(join(tmpdir(), 'ralysa-tsbase-'));
+  const dir = makeTempDir('ralysa-tsbase-');
   mkdirSync(join(dir, 'src'));
   // Every Ralysa workspace is ESM; under NodeNext a folder without this is CommonJS.
   writeFileSync(join(dir, 'package.json'), '{ "type": "module" }');

@@ -94,6 +94,7 @@ jobs:
   pr-traceability:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - name: PR must reference a feature (F-nnn) or be labelled chore/docs
         env:
