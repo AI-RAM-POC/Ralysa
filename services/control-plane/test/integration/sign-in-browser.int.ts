@@ -149,7 +149,7 @@ describe.skipIf(stack === undefined)('IdP sign-in, flow B (F-002-T10)', () => {
     );
     const start = await leg(target, `${authorizeUrl.pathname}${authorizeUrl.search}`);
     expect(start.status).toBe(302);
-    expect(start.cookie?.startsWith(`${BINDING_COOKIE_DEV}=`)).toBe(true);
+    expect(start.cookie?.startsWith(`${BINDING_COOKIE_DEV}_`)).toBe(true);
     const atIdp = await signInAtAuthorize({ authorizationUrl: start.location ?? '', username });
     expect(atIdp.origin + atIdp.pathname).toBe(idpCallbackUrl(config));
     const cookie = options.cookie === undefined ? start.cookie : options.cookie(start.cookie ?? '');
@@ -309,6 +309,7 @@ describe.skipIf(stack === undefined)('IdP sign-in, flow B (F-002-T10)', () => {
         flow: 'loopback_pkce',
         client_ip: '127.0.0.1',
         callback_ip: '127.0.0.1',
+        authorize_ip: '127.0.0.1',
         ip_mismatch: false,
         roles: ['user'],
         amr: ['pwd', 'mfa'],
@@ -375,12 +376,16 @@ describe.skipIf(stack === undefined)('IdP sign-in, flow B (F-002-T10)', () => {
     const missing = await browserSignIn('alice', { cookie: () => undefined });
     expect(missing.callback.status).toBe(400);
     expect(missing.loopback).toBeUndefined();
-    const wrong = await browserSignIn('alice', { cookie: () => `${BINDING_COOKIE_DEV}=attacker` });
+    const wrong = await browserSignIn('alice', {
+      cookie: (real) => `${real.split('=')[0] ?? ''}=attacker`,
+    });
     expect(wrong.callback.status).toBe(400);
     const recorded = await signIns(undefined, since);
-    expect(recorded.map((e) => [e.outcome, e.reason_code, e.details.check])).toEqual([
-      ['failure', 'browser_binding_failed', 'cookie_missing'],
-      ['failure', 'browser_binding_failed', 'cookie_mismatch'],
+    expect(
+      recorded.map((e) => [e.outcome, e.reason_code, e.details.check, e.details.authorize_ip]),
+    ).toEqual([
+      ['failure', 'browser_binding_failed', 'cookie_missing', '127.0.0.1'],
+      ['failure', 'browser_binding_failed', 'cookie_mismatch', '127.0.0.1'],
     ]);
   });
 
@@ -401,7 +406,12 @@ describe.skipIf(stack === undefined)('IdP sign-in, flow B (F-002-T10)', () => {
     expect(recorded[0]).toMatchObject({
       outcome: 'denied',
       reason_code: 'loopback_ip_mismatch',
-      details: { ip_mismatch: true, callback_ip: '127.0.0.1', client_ip: '203.0.113.9' },
+      details: {
+        ip_mismatch: true,
+        authorize_ip: '127.0.0.1',
+        callback_ip: '127.0.0.1',
+        client_ip: '203.0.113.9',
+      },
     });
     expect(
       (await events({ action: 'auth.session.revoked', subject: oid })).at(-1)?.details,
@@ -469,6 +479,72 @@ describe.skipIf(stack === undefined)('IdP sign-in, flow B (F-002-T10)', () => {
     const recorded = await signIns(oid, since);
     expect(recorded).toHaveLength(1);
     expect(recorded[0]).toMatchObject({ outcome: 'failure', reason_code: 'code_not_redeemed' });
+    expect((await sessionsOf(oid)).at(-1)?.status).toBe('revoked');
+  });
+
+  it('two concurrent flows in one browser each keep their own binding cookie (review of #30)', async () => {
+    const start = async () => {
+      const { verifier, challenge } = await createPkcePair();
+      const state = createState();
+      const url = new URL(buildAuthorizeUrl(cfg, { redirectUri: LOOPBACK, challenge, state }).href);
+      const authorize = await leg(app, `${url.pathname}${url.search}`);
+      return { verifier, state, authorize };
+    };
+    const first = await start();
+    const second = await start();
+    const jar = [first.authorize.cookie, second.authorize.cookie].join('; ');
+    expect(first.authorize.cookie?.split('=')[0]).not.toBe(second.authorize.cookie?.split('=')[0]);
+    // The browser finishes the second flow first, then the first; it sends both cookies each time.
+    for (const flow of [second, first]) {
+      const atIdp = await signInAtAuthorize({
+        authorizationUrl: flow.authorize.location ?? '',
+        username: 'alice',
+      });
+      const callback = await app.inject({
+        url: `${atIdp.pathname}${atIdp.search}`,
+        headers: { cookie: jar },
+      });
+      expect(callback.statusCode).toBe(302);
+      // Only this flow's cookie is cleared.
+      expect(String(callback.headers['set-cookie'])).toBe(
+        `${flow.authorize.cookie?.split('=')[0] ?? ''}=; Max-Age=0; Path=/; HttpOnly; SameSite=Lax`,
+      );
+      const loopback = new URL(callback.headers.location as string);
+      const code = readAuthorizationCallback(Object.fromEntries(loopback.searchParams), flow.state);
+      expect((await redeem(code, flow.verifier)).statusCode).toBe(200);
+    }
+  });
+
+  it('a redeemed code whose session never activated is recorded by cleanup (review of #30)', async () => {
+    const oid = idp.user('fatima').oid;
+    const since = await dbNow();
+    const { loopback } = await browserSignIn('fatima');
+    expect(loopback?.searchParams.get('code')).toMatch(/^rly_ac_/);
+    // RTS consumed the code and stopped before activating the session.
+    await t().superuser.query(
+      `UPDATE cp.authorization_code
+          SET used_at = clock_timestamp() - interval '7 minutes',
+              expires_at = clock_timestamp() - interval '6 minutes'
+        WHERE used_at IS NULL AND session_id IN
+          (SELECT s.id FROM cp.auth_session s JOIN cp.app_user u ON u.id = s.user_id
+            WHERE u.idp_subject = $1 AND s.status = 'pending')`,
+      [oid],
+    );
+    const deps = {
+      db: cpDb,
+      orgId: config.org.id,
+      writer,
+      policyVersion: policyVersion(config.access),
+    };
+    expect((await runCleanup(deps)).redemptionsIncomplete).toBe(1);
+    expect((await runCleanup(deps)).redemptionsIncomplete).toBe(0);
+    const recorded = await signIns(oid, since);
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]).toMatchObject({
+      outcome: 'error',
+      reason_code: 'internal_error',
+      details: { cause: 'redemption_incomplete', recorded_by: 'cleanup' },
+    });
     expect((await sessionsOf(oid)).at(-1)?.status).toBe('revoked');
   });
 

@@ -8,7 +8,7 @@ import type { StoredEventInput } from '../src/audit/columns.js';
 import { AuditUnavailableError, type AuditWriter } from '../src/audit/writer.js';
 import type { DirectoryCheck } from '../src/auth/directory-port.js';
 import { createHash } from 'node:crypto';
-import { type FlowBEnv, completeCallback, s256 } from '../src/auth/flow-b.js';
+import { type FlowBEnv, bindingCookie, completeCallback, s256 } from '../src/auth/flow-b.js';
 import { authorizationCodeGrant } from '../src/auth/grants/authorization-code.js';
 import { type ExchangeEnv, tokenExchangeGrant } from '../src/auth/grants/token-exchange.js';
 import type { RedeemResult } from '../src/auth/idp/oidc-client.js';
@@ -635,6 +635,7 @@ const okRedemption: CodeRedemption = {
   codeChallenge: s256(VERIFIER),
   callbackIp: '127.0.0.1',
   signIn: {
+    authorize_ip: '127.0.0.9',
     amr: ['pwd', 'mfa'],
     acr: [],
     idp_ipaddr: '127.0.0.1',
@@ -683,6 +684,12 @@ const REDEEM_SCENARIOS: RedeemScenario[] = [
       access: { access_group_id: ACCESS, admin_group_id: ADMIN, loopback_ip_mismatch: 'alert' },
     },
     expect: { outcome: 'success', ipMismatch: true },
+  },
+  {
+    name: 'stored callback facts malformed (review of #30): internal_error, nothing guessed',
+    redemption: { ...okRedemption, signIn: { roles: 'everything' } },
+    expect: { outcome: 'error', reason: 'internal_error' },
+    error: { status: 503, error: 'temporarily_unavailable' },
   },
   {
     name: 'session no longer pending',
@@ -756,7 +763,7 @@ describe('flow B: the callback records a refusal once, or nothing until redempti
                   clientRedirectUri: REDIRECT,
                   clientState: 'client-state-0123456789',
                   clientCodeChallenge: s256(VERIFIER),
-                  authorizeIp: '127.0.0.1',
+                  authorizeIp: '127.0.0.9',
                   idpCodeVerifier: 'idp-verifier',
                   idpNonce: 'idp-nonce',
                   live: scenario.requestLive ?? true,
@@ -799,15 +806,26 @@ describe('flow B: the callback records a refusal once, or nothing until redempti
           clientIp: '127.0.0.1',
           traceId: '0af7651916cd43dd8448eb211c80319c',
           userAgent: 'Mozilla/5.0',
-          binding: 'binding' in scenario ? scenario.binding : BINDING,
+          cookie: (name) =>
+            name === bindingCookie(flowB.config, 'rts-state').name
+              ? 'binding' in scenario
+                ? scenario.binding
+                : BINDING
+              : undefined,
           rawQuery: '?state=rts-state&code=idp-code',
         },
       );
       const signIns = written.filter((e) => e.action === 'auth.sign_in');
+      // The cookie is cleared only when the request was found (another flow's survives).
+      expect(outcome.clearCookie).toBe(
+        scenario.requestFound === false ? undefined : bindingCookie(flowB.config, 'rts-state').name,
+      );
       if (scenario.callbackEvent === undefined) {
         expect(signIns).toHaveLength(0);
       } else {
         expect(signIns).toHaveLength(1);
+        // The authorize IP travels with the attempt (R30-2).
+        expect(signIns[0]?.details).toMatchObject({ authorize_ip: '127.0.0.9' });
         expect(signIns[0]).toMatchObject({
           outcome: scenario.callbackEvent.outcome,
           reason_code: scenario.callbackEvent.reason,
@@ -832,6 +850,7 @@ describe('flow B: the callback records a refusal once, or nothing until redempti
             codeChallenge: s256(VERIFIER),
             callbackIp: '127.0.0.1',
             ttlSeconds: 60,
+            signIn: expect.objectContaining({ authorize_ip: '127.0.0.9' }) as unknown,
           });
         }
       }
@@ -886,7 +905,11 @@ describe('flow B: code redemption writes exactly one auth.sign_in (AC-4)', () =>
           outcome: scenario.expect.outcome,
           reason_code: scenario.expect.reason ?? null,
           session_id: SID,
-          details: { flow: 'loopback_pkce', callback_ip: '127.0.0.1' },
+          details: {
+            flow: 'loopback_pkce',
+            callback_ip: '127.0.0.1',
+            ...(scenario.redemption?.kind === 'ok' ? {} : { authorize_ip: '127.0.0.9' }),
+          },
         });
         if (scenario.expect.ipMismatch !== undefined) {
           expect(signIns[0]?.details.ip_mismatch).toBe(scenario.expect.ipMismatch);

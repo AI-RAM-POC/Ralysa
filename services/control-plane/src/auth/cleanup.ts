@@ -5,6 +5,10 @@
 // 1. Unredeemed authorization codes: a code that expired unused leaves its PENDING session. The
 //    session is revoked (UPDATE … WHERE status = 'pending' RETURNING, so only one replica wins)
 //    and `auth.sign_in failure code_not_redeemed` is written for it (D-38).
+// 1b. A code that WAS redeemed but whose session is still pending well after the code expired
+//    (RTS stopped between consuming the code and activating the session): the attempt never got
+//    its event. The session is revoked and `auth.sign_in error internal_error` is written once,
+//    with `details.cause = redemption_incomplete` (review of #30).
 // 2. Expired rows are deleted: client-assertion and IdP-token replay keys at expiry,
 //    idp_auth_request and authorization-code tombstones one hour after expiry [SEC-F002-20].
 // 3. Ended sessions are purged 30 days after they end (revoked_at; else the earlier of the last
@@ -25,6 +29,8 @@ import { bumpEpoch, limitRevocationTransaction } from './sessions.js';
 export const CLEANUP_INTERVAL_MS = 60_000;
 export const CLEANUP_BATCH = 500;
 export const SESSION_RETENTION_DAYS = 30;
+/** How long past a redeemed code's expiry a still-pending session counts as abandoned. */
+export const REDEMPTION_GRACE_S = 300;
 
 export interface CleanupDeps {
   db: Kysely<Database>;
@@ -35,6 +41,7 @@ export interface CleanupDeps {
 
 export interface CleanupResult {
   codesNotRedeemed: number;
+  redemptionsIncomplete: number;
   assertionReplays: number;
   idpTokenReplays: number;
   authRequests: number;
@@ -98,6 +105,60 @@ export async function runCleanup(
           sessionId: row.sid,
           policyVersion: deps.policyVersion,
           details: { sid: row.sid, flow: row.flow, recorded_by: 'cleanup' },
+        }),
+      ),
+    );
+  }
+
+  // 1b. Redeemed codes whose session never became active.
+  const incomplete = await withOrg(db, orgId, async (trx) => {
+    await limitRevocationTransaction(trx);
+    const rows = await trx
+      .updateTable('cp.auth_session as s')
+      .set({
+        status: 'revoked',
+        revoked_at: sql<Date>`clock_timestamp()`,
+        revoked_reason: 'redemption_incomplete',
+      })
+      .from('cp.app_user as u')
+      .whereRef('u.id', '=', 's.user_id')
+      .where('s.status', '=', 'pending')
+      .where('s.id', 'in', (eb) =>
+        eb
+          .selectFrom('cp.authorization_code as c')
+          .innerJoin('cp.auth_session as p', 'p.id', 'c.session_id')
+          .select('c.session_id')
+          .where('c.used_at', 'is not', null)
+          .where('p.status', '=', 'pending')
+          .where(
+            sql<boolean>`c.expires_at + make_interval(secs => ${REDEMPTION_GRACE_S}) <= clock_timestamp()`,
+          )
+          .orderBy('c.expires_at')
+          .limit(batch),
+      )
+      .returning(['s.id as sid', 's.flow', 'u.id as userId', 'u.idp_subject as idpSubject'])
+      .execute();
+    if (rows.length > 0) await bumpEpoch(trx);
+    return rows;
+  });
+  if (incomplete.length > 0) {
+    await deps.writer.writeOrSpool(
+      orgId,
+      incomplete.map((row) =>
+        authEvent({
+          action: 'auth.sign_in',
+          outcome: 'error',
+          reasonCode: 'internal_error',
+          traceId: newTraceId(),
+          user: { id: row.userId, idpSubject: row.idpSubject },
+          sessionId: row.sid,
+          policyVersion: deps.policyVersion,
+          details: {
+            sid: row.sid,
+            flow: row.flow,
+            recorded_by: 'cleanup',
+            cause: 'redemption_incomplete',
+          },
         }),
       ),
     );
@@ -183,5 +244,10 @@ export async function runCleanup(
     return { sessions: count(sessions), refreshTokens: count(tokens) };
   });
 
-  return { codesNotRedeemed: abandoned.length, ...deleted, ...purged };
+  return {
+    codesNotRedeemed: abandoned.length,
+    redemptionsIncomplete: incomplete.length,
+    ...deleted,
+    ...purged,
+  };
 }

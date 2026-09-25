@@ -207,8 +207,9 @@ job exits non-zero, saying the migrations were applied but not recorded.
     `needs-native-review` in `src/i18n/review.json`). Other bad parameters go back to the
     loopback as `invalid_request`.
   - It stores the request for 10 minutes with the authorize IP, sets the browser-binding cookie
-    `__Host-rts_tx` (Secure, HttpOnly, SameSite=Lax, Path=/; `rts_tx` without Secure only outside
-    production on plain-http loopback), and redirects to the IdP with RTS's own state, nonce and
+    `__Host-rts_tx_<id>` (Secure, HttpOnly, SameSite=Lax, Path=/, 10 min; `<id>` is derived from
+    RTS's state, so concurrent flows in one browser don't collide; `rts_tx_<id>` without Secure
+    only outside production on plain-http loopback), and redirects to the IdP with RTS's own state, nonce and
     PKCE (scope `openid profile email`).
   - `/oauth2/idp/callback` consumes the request with one `DELETE … RETURNING` and requires the
     cookie (else `auth.sign_in failure browser_binding_failed` and a plain-text 400: this browser
@@ -226,7 +227,11 @@ job exits non-zero, saying the migrations were applied but not recorded.
     `auth.sign_in denied loopback_ip_mismatch` written; with `alert` the sign-in succeeds with
     `details.ip_mismatch: true`, `auth_loopback_ip_mismatch_total` and an
     `auth_loopback_ip_mismatch` log line. **`auth.sign_in success` is written here**, fail-closed,
-    not at the callback; a code never redeemed is recorded by cleanup as `code_not_redeemed`.
+    not at the callback; a code never redeemed is recorded by cleanup as `code_not_redeemed`, and
+    a redeemed code whose session is still pending 5 minutes after expiry (a crash mid-redemption)
+    as `error internal_error` (`redemption_incomplete`). Every flow-B event carries
+    `authorize_ip`, and redemption also `callback_ip` and `client_ip`. On dual-stack hosts,
+    `deny` can refuse a genuine sign-in reached over two IP families; `alert` is the fallback.
   - Flow B is a strong sign-in: members of the admin group get `platform_admin`.
 - **Org source** (SEC-F002-31): unauthenticated routes act in `config.org.id`. A header, host,
   path or body never selects the org.

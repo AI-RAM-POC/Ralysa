@@ -34,6 +34,7 @@ import type { EntraTokenValidator } from './idp/entra-token-validator.js';
 import type { OidcClient } from './idp/oidc-client.js';
 import { idpCallbackUrl } from './idp/oidc-client.js';
 import { SignInAttempt, type SignInEnv, USER_AGENT_MAX, authorizeAndProvision } from './sign-in.js';
+import type { AuthRequest } from './sign-in-store.js';
 import { newAuthorizationCode } from './tokens/opaque.js';
 
 export const AUTH_REQUEST_TTL_S = 600;
@@ -47,22 +48,36 @@ export interface FlowBEnv extends SignInEnv {
   oidc: OidcClient;
 }
 
+/** The browser-binding cookie to set (authorize) or clear (callback, when the request was found). */
+export interface CookieChange {
+  setCookie?: { name: string; value: string };
+  clearCookie?: string;
+}
+
 export type AuthorizeOutcome =
-  | { kind: 'redirect'; location: string; binding?: string }
+  | ({ kind: 'redirect'; location: string } & CookieChange)
   /** Not redirectable (bad client or redirect URI, unknown state): the plain-text en/ar error. */
-  | { kind: 'invalid' };
+  | ({ kind: 'invalid' } & CookieChange);
 
 const random = (): string => randomBytes(32).toString('base64url');
 const sha256 = (text: string): Buffer => createHash('sha256').update(text, 'utf8').digest();
 export const s256 = (verifier: string): string =>
   createHash('sha256').update(verifier, 'ascii').digest('base64url');
 
-/** The binding cookie's name and attributes (SEC-F002-04 b). */
-export function bindingCookie(config: SignInEnv['config']): { name: string; secure: boolean } {
+/**
+ * The binding cookie's name and attributes (SEC-F002-04 b). The name carries a short id derived
+ * from RTS's state toward the IdP, so two flows in one browser each keep their own cookie, and
+ * the callback (which gets that state back) knows which one to read and clear (review of #30).
+ */
+export function bindingCookie(
+  config: SignInEnv['config'],
+  rtsState: string,
+): { name: string; secure: boolean } {
+  const id = createHash('sha256').update(rtsState, 'utf8').digest('base64url').slice(0, 12);
   const insecureDev = config.env !== 'production' && config.public_base_url.startsWith('http://');
   return insecureDev
-    ? { name: BINDING_COOKIE_DEV, secure: false }
-    : { name: BINDING_COOKIE, secure: true };
+    ? { name: `${BINDING_COOKIE_DEV}_${id}`, secure: false }
+    : { name: `${BINDING_COOKIE}_${id}`, secure: true };
 }
 
 function withParams(base: string, params: Record<string, string | undefined>): string {
@@ -120,7 +135,11 @@ export async function startAuthorize(
     },
     AUTH_REQUEST_TTL_S,
   );
-  return { kind: 'redirect', location, binding };
+  return {
+    kind: 'redirect',
+    location,
+    setCookie: { name: bindingCookie(env.config, state).name, value: binding },
+  };
 }
 
 const bindingMatches = (presented: string | undefined, storedHash: Buffer): boolean =>
@@ -135,8 +154,8 @@ export async function completeCallback(
     clientIp: string;
     traceId: string;
     userAgent: string | undefined;
-    /** The binding cookie's value, if the browser sent one. */
-    binding: string | undefined;
+    /** Reads a cookie the browser sent. */
+    cookie: (name: string) => string | undefined;
     /** The raw query string, `?…` included, for openid-client's response checks. */
     rawQuery: string;
   },
@@ -144,7 +163,21 @@ export async function completeCallback(
   const state = typeof query.state === 'string' && query.state.length <= 512 ? query.state : '';
   if (state === '') return { kind: 'invalid' };
   const request = await env.store.consumeAuthRequest(sha256(state));
+  // An unknown state clears nothing: the cookie of another flow in this browser must survive.
   if (request === undefined) return { kind: 'invalid' };
+  const cookieName = bindingCookie(env.config, state).name;
+  const outcome = await continueCallback(env, query, ctx, state, request, ctx.cookie(cookieName));
+  return { ...outcome, clearCookie: cookieName };
+}
+
+async function continueCallback(
+  env: FlowBEnv,
+  query: Record<string, unknown>,
+  ctx: { clientIp: string; traceId: string; userAgent: string | undefined; rawQuery: string },
+  state: string,
+  request: AuthRequest & { live: boolean },
+  binding: string | undefined,
+): Promise<AuthorizeOutcome> {
   const back = (params: Record<string, string | undefined>): AuthorizeOutcome => ({
     kind: 'redirect',
     location: withParams(request.clientRedirectUri, { ...params, state: request.clientState }),
@@ -162,12 +195,13 @@ export async function completeCallback(
     clientIp: ctx.clientIp,
     userAgent: sanitizeDisplayText(ctx.userAgent, USER_AGENT_MAX),
     deviceLabel: undefined,
+    authorizeIp: request.authorizeIp,
   });
   let pendingSession: string | undefined;
   try {
-    if (!bindingMatches(ctx.binding, request.browserBindingHash)) {
+    if (!bindingMatches(binding, request.browserBindingHash)) {
       await attempt.refuse('browser_binding_failed', {
-        details: { check: ctx.binding === undefined ? 'cookie_missing' : 'cookie_mismatch' },
+        details: { check: binding === undefined ? 'cookie_missing' : 'cookie_mismatch' },
       });
       return { kind: 'invalid' };
     }
@@ -246,6 +280,7 @@ export async function completeCallback(
         roles: authorized.roles,
         admin_role_withheld: authorized.adminRoleWithheld,
         auth_time: Math.floor((env.now ?? Date.now)() / 1000),
+        ...(request.authorizeIp === null ? {} : { authorize_ip: request.authorizeIp }),
         ...(attempt.ctx.userAgent === undefined
           ? {}
           : { browser_user_agent: attempt.ctx.userAgent }),

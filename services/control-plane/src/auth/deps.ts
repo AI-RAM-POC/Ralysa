@@ -44,6 +44,8 @@ export interface RtsServices {
   idpMetadata?: IdpMetadataSource;
   /** Client-reported sign-in failures, aggregated (serve flushes it on a timer). */
   signInFailures?: SignInFailureAggregator;
+  /** Sign-in persistence (default: Postgres over `db`); hermetic route tests pass a fake. */
+  signInStore?: SignInStore;
   /** The OIDC relying party for flow B (default: openid-client toward `idp.issuer`). */
   oidc?: OidcClient;
   metrics?: Metrics;
@@ -99,7 +101,7 @@ export function assembleRtsDeps(
       keys: idpMetadata.keys,
       ...(services.now === undefined ? {} : { now: services.now }),
     }),
-    signInStore: createSignInStore(services.db, config.org.id),
+    signInStore: services.signInStore ?? createSignInStore(services.db, config.org.id),
     hmac: createIdentifierHmac(
       services.secrets ?? createInMemorySecretStore(),
       config.audit_hmac_path,

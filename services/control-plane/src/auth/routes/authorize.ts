@@ -70,18 +70,19 @@ const rawQuery = (request: FastifyRequest): string => {
 };
 
 export function registerAuthorizeRoutes(app: FastifyInstance, deps: RtsDeps, env: FlowBEnv): void {
-  const cookie = bindingCookie(deps.config);
-  const attributes = `Path=/; HttpOnly; SameSite=Lax${cookie.secure ? '; Secure' : ''}`;
+  // Secure depends only on the deployment (the name's id is per flow).
+  const secure = bindingCookie(deps.config, '').secure;
+  const attributes = `Path=/; HttpOnly; SameSite=Lax${secure ? '; Secure' : ''}`;
 
   app.get(ROUTES.authorize.url, async (request, reply) => {
     const outcome = await startAuthorize(env, request.query as Record<string, unknown>, {
       clientIp: request.ip,
     });
     if (outcome.kind === 'invalid') return plainError(reply);
-    if (outcome.binding !== undefined) {
+    if (outcome.setCookie !== undefined) {
       reply.header(
         'set-cookie',
-        `${cookie.name}=${outcome.binding}; Max-Age=${String(AUTH_REQUEST_TTL_S)}; ${attributes}`,
+        `${outcome.setCookie.name}=${outcome.setCookie.value}; Max-Age=${String(AUTH_REQUEST_TTL_S)}; ${attributes}`,
       );
     }
     return redirect(reply, outcome.location);
@@ -92,10 +93,12 @@ export function registerAuthorizeRoutes(app: FastifyInstance, deps: RtsDeps, env
       clientIp: request.ip,
       traceId: request.traceId,
       userAgent: request.headers['user-agent'],
-      binding: readCookie(request, cookie.name),
+      cookie: (name) => readCookie(request, name),
       rawQuery: rawQuery(request),
     });
-    reply.header('set-cookie', `${cookie.name}=; Max-Age=0; ${attributes}`);
+    if (outcome.clearCookie !== undefined) {
+      reply.header('set-cookie', `${outcome.clearCookie}=; Max-Age=0; ${attributes}`);
+    }
     if (outcome.kind === 'invalid') return plainError(reply);
     return redirect(reply, outcome.location);
   });

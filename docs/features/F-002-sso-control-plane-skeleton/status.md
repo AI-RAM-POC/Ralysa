@@ -17,6 +17,7 @@
 | TC-F-002-10's 20 stored `auth.token_rejected` events; the gateway-side aggregator in `packages/auth` or shared (§2.1 `verify/rejections.ts`); moving the control plane's own verifier onto `createAccessTokenVerifier` with a database `RevocationSource` | T12 | implementation-notes T11-2, T11-11 |
 | Metrics exporter: `serve` passes no exporter, so the counters (`auth_device_ip_mismatch_total`, `idp_group_claims_ignored_total`, `graph_failures_total`, `audit_write_failures_total`, …) go to `noopMetrics` (review of #29, R29-n5) | Observability (Prometheus endpoint or OTel metrics), F-011 / F-023 | Until then the alert rules key on the log lines (`auth_device_ip_mismatch`, `sign_in_audit_unavailable`). |
 | CLI message for the ~30 s `revoked_before` window after a revocation (T10 open item) | F-005 | [#31](https://github.com/AI-RAM-POC/Ralysa/issues/31) |
+| UAT note: on dual-stack hosts the browser and the CLI may reach RTS over different IP families, so `access.loopback_ip_mismatch: deny` (default) can refuse a genuine flow-B sign-in | UAT (F-002) | implementation-notes R30-n5; the fallback is the tenant setting `alert` |
 | SEC-F002-38: without the checkpoint log, tail truncation is invisible (`anchor: none` exit code; require `--log-checkpoints` outside dev; ship the log off-host) | **Blocks any non-dev deployment** | same |
 
 ## Gate log

@@ -17,6 +17,7 @@
 import { AuthorizationCodeRequest, CLI_CLIENT_ID } from '@ralysa/protocol/auth';
 import { z } from 'zod';
 import { OAuthProblem } from '../../http/errors.js';
+import { sameIp } from '../../http/ip.js';
 import { authEvent } from '../audit-events.js';
 import { sanitizeDisplayText } from '../display-text.js';
 import { codeReuseEvents, s256 } from '../flow-b.js';
@@ -39,10 +40,8 @@ const StoredSignIn = z.looseObject({
   admin_role_withheld: z.boolean().default(false),
   auth_time: z.int().optional(),
   browser_user_agent: z.string().max(USER_AGENT_MAX).optional(),
+  authorize_ip: z.string().max(64).optional(),
 });
-
-const norm = (ip: string): string =>
-  (ip.toLowerCase().startsWith('::ffff:') ? ip.slice(7) : ip).toLowerCase();
 
 export async function authorizationCodeGrant(
   env: SignInEnv,
@@ -81,20 +80,36 @@ export async function authorizationCodeGrant(
 
   const sid = redemption.sessionId;
   const stored = StoredSignIn.safeParse(redemption.signIn);
-  const signIn = stored.success ? stored.data : StoredSignIn.parse({});
   const attempt = new SignInAttempt(env, {
     flow: 'loopback_pkce',
     traceId: ctx.traceId,
     clientIp: ctx.clientIp,
     userAgent: sanitizeDisplayText(ctx.userAgent, USER_AGENT_MAX),
     deviceLabel: undefined,
+    ...(stored.success && stored.data.authorize_ip !== undefined
+      ? { authorizeIp: stored.data.authorize_ip }
+      : {}),
   });
+  if (!stored.success) {
+    // Our own row, but not what the callback writes: never guess the roles or amr (review of #30).
+    env.logger.error('auth_code_sign_in_invalid', { trace_id: ctx.traceId });
+    env.metrics.increment('auth_code_sign_in_invalid_total');
+    await env.store.revokeSession(sid, 'internal_error').catch(() => false);
+    throw await attempt.refuse('internal_error', {
+      sessionId: sid,
+      details: {
+        cause: 'stored_sign_in_invalid',
+        ...(redemption.callbackIp === null ? {} : { callback_ip: redemption.callbackIp }),
+      },
+    });
+  }
+  const signIn = stored.data;
   try {
     const owner = await env.store.sessionOwner(sid);
     if (owner === undefined) throw new Error('code without a session owner');
     const actor = { id: owner.userId, idpSubject: owner.idpSubject };
     const ipMismatch =
-      redemption.callbackIp !== null && norm(redemption.callbackIp) !== norm(ctx.clientIp);
+      redemption.callbackIp !== null && !sameIp(redemption.callbackIp, ctx.clientIp);
     const details: Record<string, unknown> = {
       amr: signIn.amr,
       acr: signIn.acr,

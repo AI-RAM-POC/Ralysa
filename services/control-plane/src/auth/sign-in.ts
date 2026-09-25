@@ -34,6 +34,7 @@ import type { StoredEventInput } from '../audit/columns.js';
 import type { AuditWriter } from '../audit/writer.js';
 import type { ServeConfig } from '../config/schema.js';
 import { OAuthProblem } from '../http/errors.js';
+import { sameIp } from '../http/ip.js';
 import type { Logger } from '../observability/logger.js';
 import type { Metrics } from '../observability/metrics.js';
 import { authEvent } from './audit-events.js';
@@ -67,6 +68,8 @@ export interface AttemptContext {
   userAgent: string | undefined;
   /** Sanitised (display-text.ts). */
   deviceLabel: string | undefined;
+  /** Flow B: the IP that called /oauth2/authorize (review of #30, R30-2). */
+  authorizeIp?: string | null;
 }
 
 export type Actor = { id: string | null; idpSubject: string | null };
@@ -129,6 +132,9 @@ export class SignInAttempt {
       reported_by: 'server',
       ...(this.ctx.userAgent === undefined ? {} : { user_agent: this.ctx.userAgent }),
       ...(this.ctx.deviceLabel === undefined ? {} : { device_label: this.ctx.deviceLabel }),
+      ...(this.ctx.authorizeIp === undefined || this.ctx.authorizeIp === null
+        ? {}
+        : { authorize_ip: this.ctx.authorizeIp }),
     };
   }
 
@@ -184,14 +190,12 @@ export class SignInAttempt {
 
 /** `amr`/`acrs`, the IdP's `ipaddr` and whether it differs from the client's (SEC-F002-05). */
 export function identityDetails(identity: IdpIdentity, clientIp: string): Record<string, unknown> {
-  const norm = (ip: string) =>
-    (ip.toLowerCase().startsWith('::ffff:') ? ip.slice(7) : ip).toLowerCase();
   return {
     amr: identity.amr,
     acr: identity.acrs,
     ...(identity.ipaddr === undefined
       ? {}
-      : { idp_ipaddr: identity.ipaddr, ip_mismatch: norm(identity.ipaddr) !== norm(clientIp) }),
+      : { idp_ipaddr: identity.ipaddr, ip_mismatch: !sameIp(identity.ipaddr, clientIp) }),
   };
 }
 
