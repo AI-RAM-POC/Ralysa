@@ -32,7 +32,8 @@
     },
     "test:integration": {
       "dependsOn": ["^build"],
-      "cache": false
+      "cache": false,
+      "passThroughEnv": ["RALYSA_REQUIRE_DEV_STACK"]
     },
     "check:generated": {
       "dependsOn": ["^build"],

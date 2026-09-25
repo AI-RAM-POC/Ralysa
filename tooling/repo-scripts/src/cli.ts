@@ -16,6 +16,8 @@
 //   ralysa-repo check-provider-hosts [--artefacts]   provider API hostnames in source (or shipped artefacts)
 //   ralysa-repo check-no-demo            demo sentinel and sample text in shipped builds (after a build)
 //   ralysa-repo check-integration-scope  *.int.ts read the dev stack only inside hooks and tests
+//   ralysa-repo check-migrations-immutable  released control-plane migrations never change
+//   ralysa-repo migrations-lock          record new migration hashes in migrations.lock.json
 // The secret scans themselves run through secret-scan-cli.ts (dependency-free).
 //   ralysa-repo placeholder-guard        run inside a placeholder package (its four scripts)
 //   ralysa-repo scaffold <path> --kind <kind>
@@ -28,6 +30,7 @@ import { checkI18n } from './check-i18n.ts';
 import { checkNoDemo } from './check-no-demo.ts';
 import { checkImports } from './check-imports.ts';
 import { checkIntegrationScope } from './check-integration-scope.ts';
+import { checkMigrationsImmutable, writeMigrationsLock } from './check-migrations-immutable.ts';
 import { checkProviderHosts, checkProviderHostsInArtefacts } from './check-provider-hosts.ts';
 import { checkUiLint } from './check-ui-lint.ts';
 import { checkTsrefs } from './check-tsrefs.ts';
@@ -55,6 +58,8 @@ const REPO_CHECKS: Record<string, Check> = {
   'check-provider-hosts': (root) => checkProviderHosts(root),
   'check-ui-lint': (root) => checkUiLint({ root }),
   'check-integration-scope': (root) => checkIntegrationScope({ root }),
+  'check-migrations-immutable': (root) =>
+    checkMigrationsImmutable({ root, ci: process.env.CI === '1' || process.env.CI === 'true' }),
   'check-i18n': (root) => {
     const { findings, warnings, needsReview } = checkI18n({ root });
     for (const warning of warnings)
@@ -116,6 +121,13 @@ async function main(argv: string[]): Promise<number> {
   const check = REPO_CHECKS[command];
   if (check !== undefined) return report(command, await check(root)) ? 0 : 1;
 
+  if (command === 'migrations-lock') {
+    const lock = writeMigrationsLock(root);
+    console.log(
+      `✓ migrations.lock.json: ${String(Object.keys(lock.migrations).length)} migrations`,
+    );
+    return report('check-migrations-immutable', checkMigrationsImmutable({ root })) ? 0 : 1;
+  }
   if (command === 'scaffold') {
     const [target] = args;
     const kind = flag(args, '--kind');

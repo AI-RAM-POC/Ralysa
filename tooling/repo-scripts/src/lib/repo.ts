@@ -1,7 +1,8 @@
 // Helpers for the post-install repo checks: they may use installed packages (typescript, yaml)
 // and git, but never pnpm. The dependency-free helpers live in core.ts and are re-exported here.
 import { execFileSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import ts from 'typescript';
 import { parse as parseYaml } from 'yaml';
 import { walkFiles } from './core.ts';
@@ -35,7 +36,8 @@ export function readYaml(file: string): unknown {
 }
 
 /**
- * Every file git would consider part of the tree: tracked plus untracked-but-not-ignored.
+ * Every file git would consider part of the tree that exists on disk: tracked plus
+ * untracked-but-not-ignored.
  * Falls back to a filesystem walk (skipping node_modules and dot-folders) outside a git checkout.
  */
 export function listRepoFiles(root: string): string[] {
@@ -49,7 +51,10 @@ export function listRepoFiles(root: string): string[] {
         stdio: ['ignore', 'pipe', 'ignore'],
       },
     );
-    return [...new Set(out.split('\0').filter((file) => file !== ''))].sort();
+    // --cached still lists a file deleted in the working tree until the deletion is staged.
+    return [...new Set(out.split('\0').filter((file) => file !== ''))]
+      .filter((file) => existsSync(join(root, file)))
+      .sort();
   } catch {
     return walkFiles(root);
   }

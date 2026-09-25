@@ -33,7 +33,13 @@ node tooling/dev-stack/src/cli.ts bootstrap [--env-file <file>]
     (`ralysa_migrator`, `ralysa_audit_migrator`, `ralysa_cp_app`, `ralysa_audit_writer`,
     `ralysa_audit_reader`, `ralysa_audit_sealer`) with no elevated attributes. Passwords go to
     `psql` over stdin as SCRAM verifiers, never on a command line and never in plaintext.
-  - Grants, ownership, `ralysa_audit_owner` and both migration sets are added by F-002-T05.
+  - Then `services/control-plane/src/db/sql/bootstrap-roles.sql` over the same stdin: the
+    NOLOGIN `ralysa_audit_owner` (reachable only by `SET ROLE` from `ralysa_audit_migrator`),
+    database grants, `public` locked, and the superuser-owned DDL event trigger on the audit
+    schemas.
+  - The migrations are not run here: bootstrap runs before any build, and the migrate commands
+    are the control plane's own (`pnpm --filter @ralysa/control-plane migrate:audit:dev`, then
+    `migrate:dev`). Integration tests migrate their own databases.
 
 `kubernetesAuthRoles()` in `src/bootstrap-vault.ts` renders the Kubernetes-auth role template for
 real deployments: one ServiceAccount, one namespace and an audience per role (SEC-F002-22). F-023
@@ -47,6 +53,9 @@ packages it.
   naming what to start, so the tests skip on a machine without Docker.
 - `roleBao(stack, role)` logs in through an entry point's or service's AppRole; `rootBao(stack)`
   is the dev root token (operator actions in tests only); `uniqueName()` gives per-test key names.
+- `roleCredentials(stack, role)` returns an AppRole's `role_id` and a fresh single-use `secret_id`
+  for adapters that log in themselves; `dbPassword(stack, key)` reads a DB role's password from
+  KV; `BOOTSTRAP_ROLES_SQL` is the path of the control plane's DBA script.
 
 | Variable | Effect |
 |---|---|

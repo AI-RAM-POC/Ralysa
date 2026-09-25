@@ -20,7 +20,7 @@ const valid = () => ({
     build: { outputs: ['dist/**'] },
     typecheck: { dependsOn: ['^build', TYPECHECK_DEPENDS_ON], outputs: [TYPECHECK_OUTPUT] },
     'check:generated': { cache: false },
-    'test:integration': { cache: false },
+    'test:integration': { cache: false, passThroughEnv: ['RALYSA_REQUIRE_DEV_STACK'] },
   },
 });
 
@@ -69,6 +69,17 @@ describe('check-turbo-config', () => {
     (config.tasks as Record<string, object>)[task] = {};
     expect(rules(config)).toContain('turbo/cached-check');
   });
+});
+
+describe('test:integration env (F-002-T05)', () => {
+  it.each([{ cache: false }, { cache: false, passThroughEnv: ['OTHER'] }])(
+    'fails when RALYSA_REQUIRE_DEV_STACK is not passed through: %o',
+    (task) => {
+      const config = valid();
+      (config.tasks as Record<string, object>)['test:integration'] = task;
+      expect(rules(config)).toContain('turbo/integration-require-env');
+    },
+  );
 });
 
 describe('globalDependencies invalidate every lint hash (TC-F-001-45, SEC-F001-23)', () => {

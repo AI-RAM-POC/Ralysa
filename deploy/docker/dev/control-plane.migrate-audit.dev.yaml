@@ -1,0 +1,24 @@
+# Dev-stack config for `control-plane migrate --audit` (F-002 design §3.8, §8.2).
+# Identifiers and vault paths only. The OpenBao token is read from the environment variable named
+# below (pnpm --filter @ralysa/control-plane migrate:audit:dev loads deploy/docker/dev/.env); token auth
+# is refused outside env dev/test.
+env: dev
+org:
+  id: 0192a0c0-0000-7000-8000-00000000d0e1
+  name: Ralysa Dev
+  residency: in_country
+  region: qa-doha
+  deployment_model: on_prem
+vault:
+  addr: http://127.0.0.1:58200
+  auth:
+    method: token
+    token_env: BAO_DEV_ROOT_TOKEN_ID
+db:
+  host: 127.0.0.1
+  port: 55432
+  database: ralysa
+  ssl: false
+db_credentials:
+  audit_migrator: kv/ralysa/control-plane/db/audit_migrator
+  audit_writer: kv/ralysa/control-plane/db/audit_writer

@@ -75,6 +75,12 @@ describe('check-integration-scope', () => {
     expect(isIntegrationTestFile('tooling/dev-stack/src/integration/x.int.ts')).toBe(false);
   });
 
+  it('skips a listed file that no longer exists (deleted but not yet staged)', () => {
+    expect(
+      checkIntegrationScope({ root: findRepoRoot(), files: ['x/test/integration/gone.int.ts'] }),
+    ).toEqual([]);
+  });
+
   it('the real repository is clean', () => {
     expect(checkIntegrationScope({ root: findRepoRoot() })).toEqual([]);
   });

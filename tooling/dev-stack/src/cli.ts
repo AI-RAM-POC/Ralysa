@@ -3,12 +3,19 @@
 //   node tooling/dev-stack/src/cli.ts env [--out <file>] [--force] [--github-mask]
 //   node tooling/dev-stack/src/cli.ts bootstrap [--env-file <file>]
 // `env` writes deploy/docker/dev/.env; `bootstrap` sets up OpenBao, then the Postgres roles.
+import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
 import { rolesScript, runPsql, verifiersFor } from './bootstrap-db.ts';
 import { bootstrapVault, markBootstrapped, readDbPassword } from './bootstrap-vault.ts';
 import { EnvFileError, readEnvFile, writeEnvFile } from './env.ts';
 import { baoClient } from './openbao.ts';
-import { COMPOSE_FILE, DB_ROLES, DEFAULT_ENV_FILE, OPENBAO_ADDR } from './stack.ts';
+import {
+  BOOTSTRAP_ROLES_SQL,
+  COMPOSE_FILE,
+  DB_ROLES,
+  DEFAULT_ENV_FILE,
+  OPENBAO_ADDR,
+} from './stack.ts';
 
 const USAGE = `usage:
   node tooling/dev-stack/src/cli.ts env [--out <file>] [--force] [--github-mask]
@@ -56,11 +63,13 @@ async function bootstrapCommand(args: string[]): Promise<void> {
   await runPsql({
     composeFile: COMPOSE_FILE,
     envFile,
-    script: rolesScript(verifiersFor(passwords)),
+    script: `${rolesScript(verifiersFor(passwords))}${readFileSync(BOOTSTRAP_ROLES_SQL, 'utf8')}`,
   });
   console.log(`postgres: UTF8 checked; login roles ${DB_ROLES.map((r) => r.role).join(', ')}`);
-  // Both migration sets join this command with F-002-T05, which adds them (design §8.2).
-  console.log('postgres: no migrations yet (F-002-T05 adds the cp and audit sets)');
+  console.log('postgres: bootstrap-roles.sql applied (audit owner, grants, DDL event trigger)');
+  console.log(
+    'postgres: migrate with `pnpm --filter @ralysa/control-plane migrate:audit:dev` then `migrate:dev` (after build)',
+  );
   // Last step: the harness treats the stack as ready only once this marker exists.
   await markBootstrapped(
     root,

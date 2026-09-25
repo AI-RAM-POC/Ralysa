@@ -151,6 +151,13 @@ describe.skipIf(stack === undefined)('OpenBao per-entry-point policies (SEC-F002
     }
   });
 
+  it.each(ROLES)('%s tokens carry the default policy and can call lookup-self', async (role) => {
+    const bao = await as(role);
+    const self = await bao('GET', 'auth/token/lookup-self');
+    expect(self.status).toBe(ALLOWED);
+    expect(dataOf(self.body ?? {}).policies).toEqual(expect.arrayContaining(['default', role]));
+  });
+
   it('a single-use secret_id can not log in twice', async () => {
     const root = rootBao(stack!);
     const role = 'ralysa-cp-serve';

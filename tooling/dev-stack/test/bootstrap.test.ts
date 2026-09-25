@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { passwordVariable, rolesScript, verifiersFor } from '../src/bootstrap-db.ts';
 import {
   DEFAULT_POLICY_CONTEXT,
+  DEV_APPROLE,
   ENTRY_POINT_POLICIES,
   OPERATOR_POLICY,
   denyRules,
@@ -136,6 +137,45 @@ describe('OpenBao policies (§6.5; SEC-F002-02, -11)', () => {
     }
   });
 
+  it('no allow pattern of any policy, the operator included, matches a denied custody path', () => {
+    // OpenBao glob semantics: `+` is exactly one path segment, a trailing `*` any suffix. An allow
+    // that matched one of these could outrank the explicit deny (see policies.int.ts, T02-3).
+    const segment = '[^/]+';
+    const matches = (pattern: string, path: string): boolean => {
+      const body = pattern.endsWith('*') ? pattern.slice(0, -1) : pattern;
+      const re = body
+        .split('+')
+        .map((part) => part.replace(/[.*?^${}()|[\]\\]/g, '\\$&'))
+        .join(segment);
+      return new RegExp(`^${re}${pattern.endsWith('*') ? '.*' : ''}$`).test(path);
+    };
+    expect(matches('transit/keys/+/rotate', 'transit/keys/x/rotate')).toBe(true);
+    expect(matches('transit/keys/*', 'transit/keys/x/config')).toBe(true);
+    const deniedSamples = [
+      'transit/keys/x/config',
+      'transit/keys/ralysa-rts-signing/config',
+      'transit/export/signing-key/x',
+      'transit/export/signing-key/ralysa-rts-signing/1',
+      'transit/backup/x',
+      'transit/restore',
+      'transit/restore/x',
+      'transit/keys/x/import',
+      'transit/keys/x/import_version',
+    ];
+    for (const [name, allow] of Object.entries(rules)) {
+      for (const rule of allow) {
+        for (const path of deniedSamples) {
+          expect({ name, pattern: rule.path, path, matches: matches(rule.path, path) }).toEqual({
+            name,
+            pattern: rule.path,
+            path,
+            matches: false,
+          });
+        }
+      }
+    }
+  });
+
   it('every policy carries the explicit custody denies; only the operator may rotate', () => {
     for (const name of Object.keys(rules)) {
       const text = renderPolicy(name);
@@ -237,5 +277,14 @@ describe('bootstrap completion marker', () => {
   ])('isBootstrapped with status %i is %s', async (status, expected) => {
     const bao: BaoRequest = () => Promise.resolve({ status, body: {} });
     expect(await isBootstrapped(bao)).toBe(expected);
+  });
+});
+
+describe('auth roles keep the default policy (lookup-self, review of PR #19)', () => {
+  it('dev AppRoles and every Kubernetes-auth role set token_no_default_policy: false', () => {
+    expect(DEV_APPROLE.token_no_default_policy).toBe(false);
+    for (const role of kubernetesAuthRoles({ namespace: 'ralysa', audience: 'openbao' })) {
+      expect(role.token_no_default_policy).toBe(false);
+    }
   });
 });

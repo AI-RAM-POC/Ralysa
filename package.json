@@ -12,6 +12,7 @@
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "lint": "turbo run lint",
+    "migrations:lock": "node tooling/repo-scripts/src/cli.ts migrations-lock",
     "repo:check": "node tooling/repo-scripts/src/cli.ts repo-check && prettier --check .",
     "scaffold": "node tooling/repo-scripts/src/cli.ts scaffold",
     "secret-scan": "node tooling/repo-scripts/src/secret-scan-cli.ts",

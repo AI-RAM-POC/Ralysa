@@ -28,9 +28,9 @@
     "@ralysa/tsconfig": "workspace:*",
     "@ralysa/vitest-config": "workspace:*",
     "@types/node": "catalog:",
-    "@types/pg": "8.23.1",
+    "@types/pg": "catalog:",
     "eslint": "catalog:",
-    "pg": "8.23.0",
+    "pg": "catalog:",
     "typescript": "catalog:",
     "vitest": "catalog:"
   },
