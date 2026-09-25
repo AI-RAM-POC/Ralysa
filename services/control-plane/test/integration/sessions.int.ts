@@ -640,11 +640,15 @@ describe.skipIf(stack === undefined)('sessions and grants (F-002-T08)', () => {
       password: 'p',
     });
     expect(password.json()).toEqual({ error: 'unsupported_grant_type' });
-    for (const grant of ['authorization_code', 'urn:ietf:params:oauth:grant-type:device_code']) {
+    for (const grant of ['urn:ietf:params:oauth:grant-type:device_code', 'implicit']) {
       expect((await form('/oauth2/token', { grant_type: grant })).json()).toEqual({
         error: 'unsupported_grant_type',
       });
     }
+    // Served grants (T10) refuse an incomplete request.
+    expect((await form('/oauth2/token', { grant_type: 'authorization_code' })).json()).toEqual({
+      error: 'invalid_request',
+    });
     const secret = await form('/oauth2/token', {
       grant_type: 'client_credentials',
       client_id: `svc:${svcA}`,

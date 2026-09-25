@@ -1,0 +1,6 @@
+{
+  "$description": "Native-speaker review status of the control plane's one server-rendered string (F-002 design §3.9, D-20; the F-001 OQ-D8 process). Use \"needs-native-review\" until a native speaker approves it, then { \"reviewer\": \"<name>\", \"date\": \"YYYY-MM-DD\" }.",
+  "ar": {
+    "auth.error.invalid_authorize_request": "needs-native-review"
+  }
+}

@@ -24,6 +24,9 @@
     },
     "cp/0005_governance_epoch.ts": {
       "sha256": "4c5a672a7c325cef1c4fb4151f1cdef84a12e5ddb371e0ee83dc421466c2fb58"
+    },
+    "cp/0006_authorization_code_sign_in.ts": {
+      "sha256": "79ba8a21faa716c5f14297c2b40c77feb2b32fc578c7d73cac03535f02f52b8b"
     }
   }
 }

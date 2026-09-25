@@ -1123,4 +1123,92 @@ Items marked **self-decided** were open questions decided under the standing aut
 ### Open items (T10 part 1)
 
 - **`revoked_before` and a quick re-sign-in.** Revoking a user sets `revoked_before` to the DB clock + 30 s (T08, SEC-F002-18 c). A user who is re-enabled, or whose Entra sessions were revoked, and who signs in again within those 30 s gets tokens that every verifier rejects (`user_revoked`) until the 30 s pass. This fails safe, but the CLI (F-005) should say "try again in a minute" rather than showing a generic error. Recorded here, not changed.
-- Part 2 (flow B) is on the stacked branch; TC-F-002-01, -30 and the flow-B halves of -07 and -08 land there.
+- Part 2 (flow B) is on the stacked branch; TC-F-002-01, -30 and the flow-B halves of -07 and -08 land there (see below).
+
+## T10: IdP sign-in, part 2 (flow B)
+
+Branch `feat/F-002-idp-sign-in-browser`, stacked on part 1 (`feat/F-002-idp-sign-in`).
+
+### What landed
+
+- `src/auth/idp/oidc-client.ts`: RTS as a confidential OIDC relying party toward the pinned tenant, on `openid-client`:
+  - discovery of `idp.issuer`, cached for an hour; plain `http` is allowed only outside production;
+  - the authorization URL with RTS's own state, nonce and PKCE S256;
+  - code redemption with the KV client secret (`client_secret_post`), re-read once on `invalid_client`, with 3 s timeouts;
+  - the result is `ok`, `unavailable` (network, 5xx) or `rejected` (a protocol or validation failure; the reason carries no token).
+- `entra-token-validator.ts` gains `validateIdToken()`: the same header, signature, issuer, tenant, freshness, `ver`, `oid` and `uti` rules, with `aud` = the RTS registration and no `azp`/`scp`.
+- `src/auth/flow-b.ts`:
+  - `startAuthorize()`: the RFC 6749 §4.1.2.1 split between redirectable and non-redirectable errors; state, nonce, verifier and the browser binding; the stored request.
+  - `completeCallback()`:
+    - consumes the request (`DELETE … RETURNING`) and checks the cookie;
+    - handles an IdP `error`, redeems the IdP code, applies the ID-token rules and MFA evidence;
+    - runs `authorizeAndProvision()` with a **pending** session and creates the bound code.
+    - It writes no success event (D-38).
+- `src/auth/grants/authorization-code.ts`:
+  - bound redemption: client, redirect URI and S256 verifier in one UPDATE;
+  - reuse: the session is revoked and `auth.token.reuse_detected` (`token_kind: authorization_code`) written;
+  - the redemption-IP check (`deny` / `alert`);
+  - activation with the first refresh token, minting, and `auth.sign_in success` fail-closed.
+- `src/auth/routes/authorize.ts`: the two browser routes (302 with `no-store` and `no-referrer`), the binding cookie, and the plain-text en/ar error from `src/i18n/{en,ar}.json`.
+- `sessions.ts`: `redeemAuthorizationCode()` takes an optional binding (a `mismatch` outcome); `createAuthorizationCode()`, `activatePendingSession()`. `sign-in-store.ts`: the flow-B persistence methods.
+- Migration `cp/0006_authorization_code_sign_in` (T10-22). The lock and the generated checksums are updated.
+- Route contracts for both browser legs; OpenAPI regenerated.
+
+### Versions
+
+| Item | Pinned | Evidence |
+|---|---|---|
+| `openid-client` | **6.8.8** (control-plane dependency) | Published 2026-09-05 (21 days old). MIT. No install scripts (`strictDepBuilds` passes). Depends on `jose` (the catalog's 6.2.12) and `oauth4webapi`. |
+| `oauth4webapi` | 3.8.8 (transitive) | Published 2026-09-05. MIT. No install scripts. |
+
+### Recorded decisions and deviations
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T10-21 | Implementation choice | `openid-client` handles discovery, the authorization URL, the code grant and the ID-token checks (signature, `iss`, `aud`, `exp`, nonce, state, PKCE, and `iss` in the response when advertised). RTS then applies its own pinned rules (`validateIdToken`). | §2.2 names `openid-client`. The RTS rules add what an OIDC library doesn't know: the tenant, `ver`, the header allow-list, `uti` and a GUID `oid`. |
+| T10-22 | Design gap, filled (**self-decided**); migration | `cp/0006` adds `authorization_code.sign_in jsonb` (an object, at most 4 KB). It carries the callback's facts to redemption: `amr`, `acr`, `idp_ipaddr`, roles, `admin_role_withheld`, `auth_time` and the browser's user agent. | D-38 writes `auth.sign_in success` at redemption, and that event (and the token's `amr`) needs what only the callback knew. §4.4 had no place for it. It holds display facts only, never a token, code or secret (TC-07 scans it). |
+| T10-23 | Interpretation | A missing or wrong browser-binding cookie at the callback is recorded (`failure browser_binding_failed`) and answered with the **plain-text 400**, not a redirect to the loopback. | §3.3 says "invalid_request"; it doesn't say where. This browser didn't start the flow, so a redirect would hand the victim's browser a redirect to a loopback port the attacker chose. |
+| T10-24 | Implementation choice | A redemption consumes the code only when the client, the exact redirect URI and S256(`code_verifier`) all match (one UPDATE). A live code presented with anything else is `invalid_grant`, is **not** consumed, and is not a sign-in attempt. A used code is reuse, as in T08. | RFC 7636 §4.6. An attacker guessing verifiers can't burn the owner's code, and the owner's attempt still ends in exactly one event (success, or `code_not_redeemed` from cleanup). |
+| T10-25 | Design gap, filled | If the pending session is no longer pending at redemption (revoked in the meantime, e.g. by the device-code switch, a disabled user or cleanup), the attempt is `failure expired` with `details.cause = session_not_pending`. | Every attempt needs one event. The code was valid, but what it would have activated is gone. |
+| T10-26 | Scope / residual | An unknown or expired callback `state` (the user took more than 10 minutes, or replayed the IdP's redirect) is not a sign-in attempt and writes no event. An authorize that is never followed by a callback writes none either. | Nothing identifies a user or an RTS-side attempt there. D-38 covers unredeemed codes, which is the only point where RTS has issued anything. AC-4's residual is the same as for a client that never reports a device-flow failure: no tokens were issued. |
+| T10-27 | Deviation from §2.1 (file layout) | The two browser routes share `routes/authorize.ts`, rather than being split into `authorize.ts` and `idp-callback.ts`. The logic is in `flow-b.ts`. | The routes share the cookie, redirect and plain-text helpers; each is about 15 lines. |
+| T10-28 | Deviation from §2.2 | No `@fastify/cookie`: the callback reads the one cookie it needs with a 10-line parser, and the routes write `Set-Cookie` directly. | The same reason as T08-11: one cookie, no signing, and one less dependency. |
+| T10-29 | Implementation choice | Flow B asks the IdP for `openid profile email` only. | RTS needs the ID token, not an access token for its own API. |
+| T10-30 | Interpretation | In flow B, `details.ip_mismatch` is the callback IP versus the redemption IP (§3.3). The IdP's `ipaddr` is recorded as `idp_ipaddr` for comparison, and `callback_ip` is recorded too. | In flow A, `ip_mismatch` is `ipaddr` versus the exchange IP (§3.2.5); in flow B the binding the design checks is the loopback host. |
+| T10-31 | Implementation choice | The server-rendered string is in `src/i18n/{en,ar}.json`, imported as JSON modules, with `src/i18n/review.json` marking the Arabic `needs-native-review` (F-001 OQ-D8). The control-plane `tsconfig.json` includes `src/i18n/*.json`, so `tsc` copies them into `dist`. | §3.9 names these files. `check-i18n` covers UI workspaces only, so the review file follows the same shape by hand. |
+| T10-32 | Implementation choice | `invalid_client` at the IdP's token endpoint re-reads the client secret once and retries the redemption. | A failed client authentication doesn't redeem the IdP's code, so a retry is safe. This keeps a secret rotation from failing flow B until T13's watcher lands. |
+| T10-33 | Implementation choice | At the callback, the `directory.*` events (provisioning and membership changes) are written with `writeOrSpool`. The success event, and with it the fail-closed write, comes at redemption. | Provisioning happens at the callback. It isn't a grant of access by itself: the session is pending until redemption. |
+
+### Tests (T10 part 2)
+
+- **Unit** (`sign-in-exits.test.ts`, 50 in total, 25 new):
+  - **Callback exits**:
+    - not attempts, no event: an unknown state, an expired request;
+    - one event each: the cookie missing, a wrong cookie, an IdP error, the IdP unreachable, the IdP response rejected, the ID token from another tenant, MFA missing, Graph unavailable, not in the access group, a code-creation fault (the pending session is revoked);
+    - allowed, a bound code and no event: an ordinary user, and an admin-only user (flow B is strong).
+  - **Redemption exits**:
+    - a malformed request, an unknown code and a wrong verifier or redirect URI write no event;
+    - reuse writes `reuse_detected` and `session.revoked`;
+    - an IP mismatch in deny mode is denied and revoked; in alert mode it is a success with `ip_mismatch`;
+    - a session that is no longer pending, a signing fault, and an audit fault (fail-closed, the success event spooled);
+    - success.
+  - A test checks that the flow-B-only reasons are all covered.
+- **Integration** (`test/integration/sign-in-browser.int.ts`, 11; the dev stack plus the mock IdP, with the CLI side on `@ralysa/auth`'s PKCE, state, authorize-URL and callback helpers):
+  - **TC-F-002-01**:
+    - flow B end to end; no sign-in event at the callback and a pending session;
+    - redemption activates the session and writes one success with the callback and redemption IPs and both user agents;
+    - `/v1/me` shows the oid, email, name, org and groups;
+    - after a group change, the stored membership follows and `directory.group_membership.changed` is written.
+  - **TC-F-002-08 (flow B)**: bob is redirected with `access_denied` / `not_in_access_group`; `readAuthorizationCallback` maps it to the i18n key; no user, no session, and a `denied` event.
+  - The IdP refusing carol → `failure idp_error`, redirected.
+  - **TC-F-002-30**:
+    - a missing cookie and a wrong cookie → `browser_binding_failed` and a 400 (no redirect);
+    - redemption from another IP → `denied loopback_ip_mismatch`, the session revoked, and `auth.session.revoked`;
+    - in `alert` mode → success with `ip_mismatch: true`;
+    - a wrong verifier or redirect URI doesn't consume the code; a second redemption revokes the session and writes `reuse_detected`; one sign-in event in all;
+    - an unredeemed code → exactly one `code_not_redeemed` from cleanup, across two runs.
+  - **TC-F-002-31 (flow B)**: erin with weak `amr` still gets `platform_admin` on flow B, and dana (admin only) gets `platform_admin`.
+  - **TC-F-002-07 (flow B)**: 10 sign-ins → exactly 10 success events. No JWT, `rly_` token or client secret is in any event, and none is in `authorization_code.sign_in`. With part 1's 50 flow-A and client-report attempts, the scripted total is 60, above the design's 50, and 20 of them are successes across both flows.
+  - RFC 6749 §4.1.2.1: an unknown client, a non-loopback redirect URI and `localhost` get the plain-text en/ar 400 with `Content-Language: en, ar` and no `Location`. A missing challenge is redirected as `invalid_request`. An unknown callback state gets the plain-text 400.
+- `sessions.int.ts` (T08): `authorization_code` is now served, so its AC-3 case expects `invalid_request` for an incomplete request; `device_code` and `implicit` stay `unsupported_grant_type`. `db.test.ts`, `db.int.ts` and `audit.int.ts` list `cp/0006`.
+- Full control-plane integration suite: 9 files, 121 tests, all passed locally.

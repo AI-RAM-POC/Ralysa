@@ -3,8 +3,9 @@
 // traceparent, rate limits on unauthenticated routes, health, discovery.
 import { newTraceId } from '@ralysa/protocol/common';
 import Fastify, { type FastifyBaseLogger, type FastifyInstance, LogController } from 'fastify';
-import { type RtsServices, assembleRtsDeps } from './auth/deps.js';
+import { type RtsServices, assembleRtsDeps, exchangeEnv } from './auth/deps.js';
 import { registerGovernanceFeed } from './auth/governance-feed.js';
+import { registerAuthorizeRoutes } from './auth/routes/authorize.js';
 import { registerDiscovery } from './auth/routes/discovery.js';
 import { registerSignInFailures } from './auth/routes/sign-in-failures.js';
 import { registerTokenRoutes } from './auth/routes/token.js';
@@ -113,6 +114,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   const rts = assembleRtsDeps(deps.config, deps.keys, deps.rts);
   registerTokenRoutes(app, rts);
   registerSignInFailures(app, rts, rts.signInFailures);
+  registerAuthorizeRoutes(app, rts, exchangeEnv(rts));
   registerGovernanceFeed(app, rts);
   registerDirectoryRoutes(app, rts);
   await app.ready();

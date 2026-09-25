@@ -69,7 +69,7 @@ export interface AttemptContext {
   deviceLabel: string | undefined;
 }
 
-type Actor = { id: string | null; idpSubject: string | null };
+export type Actor = { id: string | null; idpSubject: string | null };
 
 /** The OAuth error a sign-in reason is answered with (§3.3, §3.9). */
 export function signInProblem(reason: SignInReason, description?: string): OAuthProblem {
@@ -419,9 +419,18 @@ export async function mintForSession(
  * is revoked (`audit_unavailable`), the same events and the revocation are spooled, and the
  * returned error is thrown by the caller: no tokens leave RTS (§5.8).
  */
+export interface SuccessRecord {
+  actor: Actor;
+  sessionId: string;
+  roles: SessionRole[];
+  adminRoleWithheld: boolean;
+  /** directory.* events written with the success (flow A); flow B wrote them at the callback. */
+  directoryEvents: StoredEventInput[];
+}
+
 export async function recordSuccess(
   attempt: SignInAttempt,
-  authorized: AuthorizedSignIn,
+  authorized: SuccessRecord,
   details: Record<string, unknown>,
 ): Promise<OAuthProblem | undefined> {
   const { env } = attempt;
@@ -429,7 +438,7 @@ export async function recordSuccess(
   attempt.claimSuccess();
   const success = attempt.signInEvent('success', undefined, {
     actor: authorized.actor,
-    sessionId: authorized.provisioned.sessionId,
+    sessionId: authorized.sessionId,
     details: {
       ...details,
       roles: authorized.roles,
@@ -442,7 +451,7 @@ export async function recordSuccess(
     return undefined;
   } catch (error) {
     env.logger.error('sign_in_audit_unavailable', { error: String(error) });
-    const sid = authorized.provisioned.sessionId;
+    const sid = authorized.sessionId;
     const revoked = await env.store.revokeSession(sid, 'audit_unavailable').catch(() => false);
     const revocation = revoked
       ? [

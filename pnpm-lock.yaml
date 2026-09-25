@@ -466,6 +466,9 @@ importers:
       kysely:
         specifier: 'catalog:'
         version: 0.29.6
+      openid-client:
+        specifier: 6.8.8
+        version: 6.8.8
       pg:
         specifier: 'catalog:'
         version: 8.23.0
@@ -3853,6 +3856,9 @@ packages:
     resolution: {integrity: sha512-9qny7Z9DsQU8Ou39ERsPU4OZQlSTP47ShQzuKZ6PRXpYLtIFgl/DEBYEXKlvcEa+9tHVcK8CF81Y2V72qaZhWA==}
     engines: {node: '>=18'}
 
+  oauth4webapi@3.8.8:
+    resolution: {integrity: sha512-8N28E+a/oxfXWBgOMt+ZP/JUf/XR+IFbvkAEPP3gznXOMv9BpAAwiIj0TFNz3tGTPc0ZQ8zmWBNgN1nAys0gng==}
+
   object-inspect@1.13.4:
     resolution: {integrity: sha512-W67iLl4J2EXEGTbfeHCffrjDfitvLANg0UlX3wFUUSTx92KXRFegMHUVgSqE+wvhAbi4WqjGg9czysTV2Epbew==}
     engines: {node: '>= 0.4'}
@@ -3891,6 +3897,9 @@ packages:
   onetime@7.0.0:
     resolution: {integrity: sha512-VXJjc87FScF88uafS3JllDgvAm+c/Slfz06lorj2uAY34rlUu0Nt+v8wreiImcrgAjjIHp1rXpTDlLOGw29WwQ==}
     engines: {node: '>=18'}
+
+  openid-client@6.8.8:
+    resolution: {integrity: sha512-ZsucJA5Ad04Uv7YN4ql+s4GXNmb9uAYQwyJTsJx7CH/MX3JZioLE2pVKi1SC+YrbSLA4Px3Gi30dMjgOZtb6pA==}
 
   optionator@0.9.4:
     resolution: {integrity: sha512-6IpQ7mKUxRcZNLIObR0hz7lxsapSSIYNZJwXPGeF0mTVqGKFIXj1DQcMoT22S3ROcLyY/rz0PWaWZ9ayWmad9g==}
@@ -8108,6 +8117,8 @@ snapshots:
       path-key: 4.0.0
       unicorn-magic: 0.3.0
 
+  oauth4webapi@3.8.8: {}
+
   object-inspect@1.13.4: {}
 
   object-keys@1.1.1: {}
@@ -8154,6 +8165,11 @@ snapshots:
   onetime@7.0.0:
     dependencies:
       mimic-function: 5.0.1
+
+  openid-client@6.8.8:
+    dependencies:
+      jose: 6.2.12
+      oauth4webapi: 3.8.8
 
   optionator@0.9.4:
     dependencies:

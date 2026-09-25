@@ -17,6 +17,8 @@ import {
   createEntraTokenValidator,
 } from './idp/entra-token-validator.js';
 import { type IdpMetadataSource, createIdpMetadataSource } from './idp/metadata.js';
+import { type OidcClient, createOidcClient } from './idp/oidc-client.js';
+import type { FlowBEnv } from './flow-b.js';
 import { policyVersion } from './policy-version.js';
 import {
   type SignInFailureAggregator,
@@ -42,6 +44,8 @@ export interface RtsServices {
   idpMetadata?: IdpMetadataSource;
   /** Client-reported sign-in failures, aggregated (serve flushes it on a timer). */
   signInFailures?: SignInFailureAggregator;
+  /** The OIDC relying party for flow B (default: openid-client toward `idp.issuer`). */
+  oidc?: OidcClient;
   metrics?: Metrics;
   logger?: Logger;
   /** Process clock for in-memory caches (tests advance it); timestamps in data use the DB clock. */
@@ -66,6 +70,7 @@ export interface RtsDeps {
   signInStore: SignInStore;
   hmac: IdentifierHmac;
   signInFailures: SignInFailureAggregator;
+  oidc: OidcClient;
   metrics: Metrics;
   logger: Logger;
   now?: () => number;
@@ -110,13 +115,16 @@ export function assembleRtsDeps(
         orgId: config.org.id,
         policyVersion: policyVersion(config.access),
       }),
+    oidc:
+      services.oidc ??
+      createOidcClient({ config, secrets: services.secrets ?? createInMemorySecretStore() }),
     metrics: services.metrics ?? noopMetrics,
     logger,
   };
 }
 
-/** The sign-in environment of the grants (sign-in.ts, token-exchange.ts). */
-export function exchangeEnv(deps: RtsDeps): ExchangeEnv {
+/** The sign-in environment of the grants and flow-B routes (sign-in.ts, token-exchange.ts, flow-b.ts). */
+export function exchangeEnv(deps: RtsDeps): ExchangeEnv & FlowBEnv {
   return {
     config: deps.config,
     policyVersion: deps.policyVersion,
@@ -128,6 +136,7 @@ export function exchangeEnv(deps: RtsDeps): ExchangeEnv {
     metrics: deps.metrics,
     logger: deps.logger,
     validator: deps.validator,
+    oidc: deps.oidc,
     ...(deps.now === undefined ? {} : { now: deps.now }),
   };
 }

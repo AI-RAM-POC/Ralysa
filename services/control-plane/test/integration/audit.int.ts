@@ -103,6 +103,7 @@ describe.skipIf(stack === undefined)('audit core (F-002-T06)', () => {
         'cp/0003_cp_sessions_and_tokens',
         'cp/0004_usage_credential_governance',
         'cp/0005_governance_epoch',
+        'cp/0006_authorization_code_sign_in',
       ]);
       for (const row of rows) expect(row.checksum).toMatch(/^[0-9a-f]{64}$/);
     });

@@ -111,7 +111,15 @@ export function classifyGroups(claims: {
 }
 
 export interface EntraTokenValidator {
+  /** Flow A: the IdP access token presented at the exchange grant. */
   validateAccessToken(token: string): Promise<IdpTokenResult>;
+  /**
+   * Flow B: the ID token from RTS's own code redemption at the IdP. The same header, signature,
+   * issuer, tenant, freshness, `ver`, `oid` and `uti` rules; `aud` is the RTS app registration,
+   * and there is no `azp`/`scp` (the token is RTS's own). openid-client has already checked the
+   * nonce, state and PKCE bindings.
+   */
+  validateIdToken(token: string): Promise<IdpTokenResult>;
 }
 
 export function createEntraTokenValidator(deps: {
@@ -124,83 +132,89 @@ export function createEntraTokenValidator(deps: {
   const scope = idp.signin_scope.slice(idp.signin_scope.lastIndexOf('/') + 1);
   const nowS = () => Math.floor((deps.now ?? Date.now)() / 1000);
 
-  return {
-    async validateAccessToken(token) {
-      const parts = token.split('.');
-      const header = decodePart(parts[0]);
-      const payload = decodePart(parts[1]);
-      const unverifiedIdentifier =
-        isObject(payload) && typeof payload.preferred_username === 'string'
-          ? payload.preferred_username
-          : undefined;
-      const fail = (reason: IdpTokenFailureReason, check: string): IdpTokenResult => ({
-        ok: false,
-        reason,
-        check,
-        unverifiedIdentifier,
-      });
-      if (parts.length !== 3 || !isObject(header) || !isObject(payload)) {
-        return fail('invalid_idp_token', 'structure');
-      }
-      if (typeof payload.iss === 'string' && payload.iss.replace(/\/+$/, '') === rtsIssuer) {
-        return fail('untrusted_issuer', 'rts_issuer');
-      }
+  const validate = async (token: string, kind: 'access' | 'id'): Promise<IdpTokenResult> => {
+    const parts = token.split('.');
+    const header = decodePart(parts[0]);
+    const payload = decodePart(parts[1]);
+    const unverifiedIdentifier =
+      isObject(payload) && typeof payload.preferred_username === 'string'
+        ? payload.preferred_username
+        : undefined;
+    const fail = (reason: IdpTokenFailureReason, check: string): IdpTokenResult => ({
+      ok: false,
+      reason,
+      check,
+      unverifiedIdentifier,
+    });
+    if (parts.length !== 3 || !isObject(header) || !isObject(payload)) {
+      return fail('invalid_idp_token', 'structure');
+    }
+    if (typeof payload.iss === 'string' && payload.iss.replace(/\/+$/, '') === rtsIssuer) {
+      return fail('untrusted_issuer', 'rts_issuer');
+    }
 
-      // 1. Header [SEC-F002-07, -19].
-      if (header.alg !== 'RS256') return fail('invalid_idp_token', 'alg');
-      if (header.typ !== 'JWT') return fail('invalid_idp_token', 'typ');
-      if (typeof header.kid !== 'string') return fail('invalid_idp_token', 'kid');
-      if (Object.keys(header).some((name) => !ALLOWED_HEADER.has(name))) {
-        return fail('invalid_idp_token', 'header_member');
-      }
+    // 1. Header [SEC-F002-07, -19].
+    if (header.alg !== 'RS256') return fail('invalid_idp_token', 'alg');
+    if (header.typ !== 'JWT') return fail('invalid_idp_token', 'typ');
+    if (typeof header.kid !== 'string') return fail('invalid_idp_token', 'kid');
+    if (Object.keys(header).some((name) => !ALLOWED_HEADER.has(name))) {
+      return fail('invalid_idp_token', 'header_member');
+    }
 
-      // 2. Signature, RS256 only, with the pinned tenant's keys.
-      try {
-        await compactVerify(token, deps.keys, { algorithms: ['RS256'] });
-      } catch {
-        return fail('invalid_idp_token', 'signature');
-      }
+    // 2. Signature, RS256 only, with the pinned tenant's keys.
+    try {
+      await compactVerify(token, deps.keys, { algorithms: ['RS256'] });
+    } catch {
+      return fail('invalid_idp_token', 'signature');
+    }
 
-      // 3. Claims.
-      const parsed = Claims.safeParse(payload);
-      if (!parsed.success) return fail('invalid_idp_token', 'claims');
-      const claims: Claims = parsed.data;
-      if (claims.iss !== idp.issuer) return fail('untrusted_issuer', 'iss');
-      if (claims.tid !== idp.tenant_id) return fail('untrusted_issuer', 'tid');
-      const now = nowS();
-      if (claims.exp <= now - IDP_CLOCK_SKEW_S) return fail('expired', 'exp');
-      if (claims.iat < now - IDP_TOKEN_MAX_AGE_S) return fail('expired', 'iat_age');
-      if (claims.nbf !== undefined && claims.nbf > now + IDP_CLOCK_SKEW_S) {
-        return fail('invalid_idp_token', 'nbf');
-      }
-      if (claims.iat > now + IDP_CLOCK_SKEW_S) return fail('invalid_idp_token', 'iat_future');
-      if (claims.ver !== '2.0') return fail('invalid_idp_token', 'ver');
-      if (claims.aud !== idp.rts_client_id) return fail('invalid_idp_token', 'aud');
+    // 3. Claims.
+    const parsed = Claims.safeParse(payload);
+    if (!parsed.success) return fail('invalid_idp_token', 'claims');
+    const claims: Claims = parsed.data;
+    if (claims.iss !== idp.issuer) return fail('untrusted_issuer', 'iss');
+    if (claims.tid !== idp.tenant_id) return fail('untrusted_issuer', 'tid');
+    const now = nowS();
+    if (claims.exp <= now - IDP_CLOCK_SKEW_S) return fail('expired', 'exp');
+    if (claims.iat < now - IDP_TOKEN_MAX_AGE_S) return fail('expired', 'iat_age');
+    if (claims.nbf !== undefined && claims.nbf > now + IDP_CLOCK_SKEW_S) {
+      return fail('invalid_idp_token', 'nbf');
+    }
+    if (claims.iat > now + IDP_CLOCK_SKEW_S) return fail('invalid_idp_token', 'iat_future');
+    if (claims.ver !== '2.0') return fail('invalid_idp_token', 'ver');
+    if (claims.aud !== idp.rts_client_id) return fail('invalid_idp_token', 'aud');
+    if (kind === 'access') {
       if (claims.azp === undefined || !idp.allowed_public_client_ids.includes(claims.azp)) {
         return fail('invalid_idp_token', 'azp');
       }
-      if (!(claims.scp ?? '').split(' ').includes(scope)) return fail('invalid_idp_token', 'scp');
-      if (!GUID.test(claims.oid)) return fail('invalid_idp_token', 'oid');
-      if (claims.uti === undefined) return fail('invalid_idp_token', 'uti');
+      if (!(claims.scp ?? '').split(' ').includes(scope)) {
+        return fail('invalid_idp_token', 'scp');
+      }
+    }
+    if (!GUID.test(claims.oid)) return fail('invalid_idp_token', 'oid');
+    if (claims.uti === undefined) return fail('invalid_idp_token', 'uti');
 
-      return {
-        ok: true,
-        identity: {
-          issuer: claims.iss,
-          tenantId: claims.tid,
-          oid: claims.oid.toLowerCase(),
-          uti: claims.uti,
-          iat: claims.iat,
-          exp: claims.exp,
-          name: claims.name,
-          preferredUsername: claims.preferred_username,
-          email: claims.email,
-          amr: claims.amr ?? [],
-          acrs: claims.acrs ?? [],
-          ipaddr: claims.ipaddr,
-          groups: classifyGroups(claims),
-        },
-      };
-    },
+    return {
+      ok: true,
+      identity: {
+        issuer: claims.iss,
+        tenantId: claims.tid,
+        oid: claims.oid.toLowerCase(),
+        uti: claims.uti,
+        iat: claims.iat,
+        exp: claims.exp,
+        name: claims.name,
+        preferredUsername: claims.preferred_username,
+        email: claims.email,
+        amr: claims.amr ?? [],
+        acrs: claims.acrs ?? [],
+        ipaddr: claims.ipaddr,
+        groups: classifyGroups(claims),
+      },
+    };
+  };
+  return {
+    validateAccessToken: (token) => validate(token, 'access'),
+    validateIdToken: (token) => validate(token, 'id'),
   };
 }

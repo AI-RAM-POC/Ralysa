@@ -155,7 +155,17 @@ async function exchange(
     });
   }
 
-  const failed = await recordSuccess(attempt, authorized, details);
+  const failed = await recordSuccess(
+    attempt,
+    {
+      actor: authorized.actor,
+      sessionId: sid,
+      roles: authorized.roles,
+      adminRoleWithheld: authorized.adminRoleWithheld,
+      directoryEvents: authorized.directoryEvents,
+    },
+    details,
+  );
   if (failed !== undefined) throw failed;
 
   // Non-blocking (§3.5): a failed write is spooled, the tokens still go out.

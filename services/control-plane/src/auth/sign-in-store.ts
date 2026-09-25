@@ -14,9 +14,14 @@ import { withOrg } from '../db/kysely.js';
 import type { Database } from '../db/types.js';
 import type { SignInFlow } from './identity-mapping.js';
 import {
+  type CodeBinding,
+  type CodeRedemption,
   type SessionRole,
+  activatePendingSession,
+  createAuthorizationCode,
   createSession,
   issueRefreshToken,
+  redeemAuthorizationCode,
   revokeSession,
   revokeUser,
 } from './sessions.js';
@@ -64,6 +69,25 @@ export interface ProvisionResult {
   refreshToken?: string;
 }
 
+/** A flow-B request between /oauth2/authorize and the IdP callback (§4.4 idp_auth_request). */
+export interface AuthRequest {
+  stateHash: Buffer;
+  browserBindingHash: Buffer;
+  clientRedirectUri: string;
+  clientState: string;
+  clientCodeChallenge: string;
+  authorizeIp: string | null;
+  idpCodeVerifier: string;
+  idpNonce: string;
+}
+
+export interface SessionOwner {
+  userId: string;
+  idpSubject: string;
+  roles: SessionRole[];
+  status: 'pending' | 'active' | 'revoked';
+}
+
 export interface SignInStore {
   /** Inserts the replay key and commits it; false when it was already there (a replay). */
   consumeIdpToken(tokenIdHash: Buffer, expiresAtEpochS: number): Promise<boolean>;
@@ -77,6 +101,26 @@ export interface SignInStore {
   /** Of `ids`, those whose display name is unknown or older than a day (at most 20). */
   groupsNeedingNames(ids: readonly string[]): Promise<string[]>;
   provision(input: ProvisionInput): Promise<ProvisionResult>;
+
+  // Flow B (§3.3, §5.2).
+  /** Stores a request for `ttlSeconds` (10 min). */
+  saveAuthRequest(request: AuthRequest, ttlSeconds: number): Promise<void>;
+  /** Consumes the request atomically (DELETE … RETURNING) [SEC-F002-20]; `live` = not expired. */
+  consumeAuthRequest(stateHash: Buffer): Promise<(AuthRequest & { live: boolean }) | undefined>;
+  createCode(input: {
+    code: string;
+    sessionId: string;
+    clientId: string;
+    redirectUri: string;
+    codeChallenge: string;
+    callbackIp: string | null;
+    ttlSeconds: number;
+    signIn: Record<string, unknown>;
+  }): Promise<void>;
+  redeemCode(code: string, binding: CodeBinding): Promise<CodeRedemption>;
+  sessionOwner(sessionId: string): Promise<SessionOwner | undefined>;
+  /** Activates a pending session and issues its first refresh token; undefined if not pending. */
+  activateSession(sessionId: string, idleSeconds: number): Promise<string | undefined>;
 }
 
 type Trx = Transaction<Database>;
@@ -300,6 +344,90 @@ export function createSignInStore(db: Kysely<Database>, orgId: string): SignInSt
       );
       const fresh = new Set(known.map((k) => k.idp_group_id));
       return ids.filter((id) => !fresh.has(id)).slice(0, GROUP_NAMES_PER_SIGN_IN);
+    },
+
+    async saveAuthRequest(request, ttlSeconds) {
+      await withOrg(db, orgId, (trx) =>
+        trx
+          .insertInto('cp.idp_auth_request')
+          .values({
+            state_hash: request.stateHash,
+            org_id: orgId,
+            browser_binding_hash: request.browserBindingHash,
+            client_redirect_uri: request.clientRedirectUri,
+            client_state: request.clientState,
+            client_code_challenge: request.clientCodeChallenge,
+            authorize_ip: request.authorizeIp,
+            idp_code_verifier: request.idpCodeVerifier,
+            idp_nonce: request.idpNonce,
+            expires_at: sql<Date>`clock_timestamp() + make_interval(secs => ${ttlSeconds})`,
+          })
+          .execute(),
+      );
+    },
+
+    async consumeAuthRequest(stateHash) {
+      const row = await withOrg(db, orgId, (trx) =>
+        trx
+          .deleteFrom('cp.idp_auth_request')
+          .where('state_hash', '=', stateHash)
+          .returning([
+            'state_hash',
+            'browser_binding_hash',
+            'client_redirect_uri',
+            'client_state',
+            'client_code_challenge',
+            'authorize_ip',
+            'idp_code_verifier',
+            'idp_nonce',
+            sql<boolean>`expires_at > clock_timestamp()`.as('live'),
+          ])
+          .executeTakeFirst(),
+      );
+      if (row === undefined) return undefined;
+      return {
+        stateHash: Buffer.from(row.state_hash),
+        browserBindingHash: Buffer.from(row.browser_binding_hash),
+        clientRedirectUri: row.client_redirect_uri,
+        clientState: row.client_state,
+        clientCodeChallenge: row.client_code_challenge,
+        authorizeIp: row.authorize_ip,
+        idpCodeVerifier: row.idp_code_verifier,
+        idpNonce: row.idp_nonce,
+        live: row.live,
+      };
+    },
+
+    createCode: (input) =>
+      withOrg(db, orgId, (trx) => createAuthorizationCode(trx, { orgId, ...input })),
+
+    redeemCode: (code, binding) =>
+      withOrg(db, orgId, (trx) => redeemAuthorizationCode(trx, code, binding)),
+
+    sessionOwner: (sessionId) =>
+      withOrg(
+        db,
+        orgId,
+        (trx) =>
+          trx
+            .selectFrom('cp.auth_session as s')
+            .innerJoin('cp.app_user as u', 'u.id', 's.user_id')
+            .select([
+              'u.id as userId',
+              'u.idp_subject as idpSubject',
+              's.roles as roles',
+              's.status as status',
+            ])
+            .where('s.id', '=', sessionId)
+            .executeTakeFirst(),
+        { readOnly: true },
+      ),
+
+    async activateSession(sessionId, idleSeconds) {
+      const issued = await withOrg(db, orgId, (trx) =>
+        activatePendingSession(trx, { orgId, sessionId, idleSeconds }),
+      );
+      return issued?.token;
     },
 
     provision: (input) =>

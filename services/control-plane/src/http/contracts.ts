@@ -129,11 +129,123 @@ export const ROUTES = {
       503: { description: 'Not ready', schema: Readiness },
     },
   },
+  authorize: {
+    method: 'GET',
+    url: '/oauth2/authorize',
+    summary:
+      'Flow B leg 1 (/login --browser): sets the browser-binding cookie and redirects to the IdP. An unknown client or a non-loopback redirect_uri is never redirected (RFC 6749 §4.1.2.1).',
+    tags: ['oauth'],
+    auth: 'none',
+    parameters: [
+      {
+        name: 'response_type',
+        in: 'query',
+        required: true,
+        description: '`code`',
+        schema: z.literal('code'),
+      },
+      {
+        name: 'client_id',
+        in: 'query',
+        required: true,
+        description: '`ralysa-cli`',
+        schema: z.literal('ralysa-cli'),
+      },
+      {
+        name: 'redirect_uri',
+        in: 'query',
+        required: true,
+        description: 'IP-literal loopback, any port, path /callback (RFC 8252 §7.3)',
+        schema: z.string().max(64),
+      },
+      {
+        name: 'code_challenge',
+        in: 'query',
+        required: true,
+        description: 'S256 PKCE challenge',
+        schema: z.string().max(43),
+      },
+      {
+        name: 'code_challenge_method',
+        in: 'query',
+        required: true,
+        description: '`S256`',
+        schema: z.literal('S256'),
+      },
+      {
+        name: 'state',
+        in: 'query',
+        required: true,
+        description: "The client's state (16–128 characters)",
+        schema: z.string().min(16).max(128),
+      },
+    ],
+    responses: {
+      302: {
+        description: 'To the IdP, or back to the loopback with an OAuth error',
+        schema: z.string().max(0),
+        contentType: 'text/plain',
+      },
+      400: {
+        description: 'Plain-text en/ar error: invalid client or redirect URI',
+        schema: z.string(),
+        contentType: 'text/plain; charset=utf-8',
+      },
+      429: oauthError('Rate limited'),
+    },
+    headers: { 'cache-control': 'no-store' },
+  },
+  idpCallback: {
+    method: 'GET',
+    url: '/oauth2/idp/callback',
+    summary:
+      "Flow B leg 2: the IdP's redirect. Consumes the stored request, checks the browser-binding cookie, redeems the IdP code and redirects to the loopback with a single-use rly_ac_ code (or an OAuth error).",
+    tags: ['oauth'],
+    auth: 'none',
+    parameters: [
+      {
+        name: 'state',
+        in: 'query',
+        required: true,
+        description: "RTS's state toward the IdP",
+        schema: z.string().max(512),
+      },
+      {
+        name: 'code',
+        in: 'query',
+        required: false,
+        description: "The IdP's authorization code",
+        schema: z.string(),
+      },
+      {
+        name: 'error',
+        in: 'query',
+        required: false,
+        description: "The IdP's error",
+        schema: z.string(),
+      },
+    ],
+    responses: {
+      302: {
+        description:
+          'To the loopback with `code` and `state`, or `error` and `error_description` (a sign-in reason)',
+        schema: z.string().max(0),
+        contentType: 'text/plain',
+      },
+      400: {
+        description: 'Plain-text en/ar error: unknown request or browser binding failed',
+        schema: z.string(),
+        contentType: 'text/plain; charset=utf-8',
+      },
+      429: oauthError('Rate limited'),
+    },
+    headers: { 'cache-control': 'no-store' },
+  },
   token: {
     method: 'POST',
     url: '/oauth2/token',
     summary:
-      'Token endpoint: token exchange of an IdP device-flow access token (RFC 8693), refresh_token and client_credentials (private_key_jwt); authorization_code arrives with the second part of F-002-T10. No client secret is ever accepted.',
+      'Token endpoint: authorization_code with PKCE (flow B), token exchange of an IdP device-flow access token (RFC 8693), refresh_token and client_credentials (private_key_jwt). No client secret is ever accepted.',
     tags: ['oauth'],
     auth: 'client',
     request: { contentType: 'application/x-www-form-urlencoded', schema: TokenRequest },
