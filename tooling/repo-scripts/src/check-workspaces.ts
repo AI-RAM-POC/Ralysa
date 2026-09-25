@@ -9,7 +9,7 @@
 // package.json or a pnpm-workspace.yaml catalog or override) could pull code from outside the
 // registry or from packs/, or when Python files appear before the F-004 toolchain exists.
 import { basename, join, posix } from 'node:path';
-import { SPECIFIER_ALLOWLIST } from '@ralysa/eslint-config/boundaries';
+import { DEV_ONLY_PACKAGES, SPECIFIER_ALLOWLIST } from '@ralysa/eslint-config/boundaries';
 import { checkConfigGate, resolveWorkspaceGlobs } from './config-gate.ts';
 import { REQUIRED_SCRIPTS, WorkspacePackageJson } from './contracts/workspace.ts';
 import { LONE_CR, parseMiniYaml } from './lib/mini-yaml.ts';
@@ -39,6 +39,66 @@ export interface CheckWorkspacesOptions {
   specifierAllowlist?: SpecifierException[];
   /** Folder that holds the registers (lifecycle-allowlist.json, allow-builds.json, ...). */
   registersDir?: string;
+  /** Packages banned from shipped closures; defaults to boundaries.js DEV_ONLY_PACKAGES. */
+  devOnlyPackages?: string[];
+}
+
+/** The dependency fields that end up in a production install (`pnpm deploy --prod`). */
+const PRODUCTION_FIELDS = ['dependencies', 'optionalDependencies', 'peerDependencies'] as const;
+
+/**
+ * F-002-T01 (first version of the SEC-F002-13 b / [AR-12] check): a `shipped: true` workspace
+ * must not have a development-only package (the mock IdP workspace, `oidc-provider`) among its
+ * production dependencies, directly or through the production dependencies of any workspace it
+ * depends on. Walks the workspace graph only; F-002-T14 adds the lockfile's transitive closure.
+ */
+function checkDevOnlyInShipped(
+  packages: Map<string, Record<string, unknown>>,
+  devOnly: string[],
+  findings: Finding[],
+): void {
+  const byName = new Map<string, string>();
+  for (const [dir, pkg] of packages) {
+    if (typeof pkg.name === 'string') byName.set(pkg.name, dir);
+  }
+  const productionDeps = (pkg: Record<string, unknown>): string[] =>
+    PRODUCTION_FIELDS.flatMap((field) => {
+      const deps = pkg[field];
+      return isRecord(deps) ? Object.keys(deps) : [];
+    });
+
+  for (const [dir, pkg] of [...packages].sort(([a], [b]) => a.localeCompare(b))) {
+    const meta = pkg.ralysa;
+    if (!isRecord(meta) || meta.shipped !== true) continue;
+    // Breadth-first over workspace production edges, keeping one witness path per package.
+    const seen = new Set<string>([dir]);
+    const queue: { dir: string; path: string[] }[] = [
+      { dir, path: [typeof pkg.name === 'string' ? pkg.name : dir] },
+    ];
+    const reported = new Set<string>();
+    while (queue.length > 0) {
+      const current = queue.shift();
+      if (current === undefined) break;
+      const manifest = packages.get(current.dir);
+      if (manifest === undefined) continue;
+      for (const dependency of productionDeps(manifest)) {
+        const path = [...current.path, dependency];
+        if (devOnly.includes(dependency) && !reported.has(dependency)) {
+          reported.add(dependency);
+          findings.push({
+            rule: 'deps/dev-only-in-shipped',
+            path: `${dir}/package.json`,
+            message: `${dependency} is development-only and must never reach a shipped workspace; production dependency path: ${path.join(' → ')} (SEC-F002-13, AR-12). Use devDependencies and keep imports under test/**.`,
+          });
+        }
+        const next = byName.get(dependency);
+        if (next !== undefined && !seen.has(next)) {
+          seen.add(next);
+          queue.push({ dir: next, path });
+        }
+      }
+    }
+  }
 }
 
 const DEPENDENCY_FIELDS = [
@@ -379,7 +439,10 @@ export function checkWorkspaces(options: CheckWorkspacesOptions): Finding[] {
   checkWorkspaceSettings(settings, findings);
   checkWorkspaceSpecifiers(settings, allowlist, findings);
 
-  // 5. Python ban.
+  // 5. Development-only packages never reach a shipped workspace (F-002 SEC-F002-13, [AR-12]).
+  checkDevOnlyInShipped(packages, options.devOnlyPackages ?? DEV_ONLY_PACKAGES, findings);
+
+  // 6. Python ban.
   checkPython((options.repoFiles ?? listRepoFiles(root)).map(toPosix), findings);
 
   return findings;

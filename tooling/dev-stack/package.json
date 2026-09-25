@@ -1,0 +1,43 @@
+{
+  "name": "@ralysa/dev-stack",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Local dev and test stack for F-002: .env generator, Postgres and OpenBao bootstrap, integration-test harness, mock IdP. Never shipped.",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./harness": {
+      "types": "./dist/harness/index.d.ts",
+      "default": "./dist/harness/index.js"
+    }
+  },
+  "scripts": {
+    "bootstrap": "node src/cli.ts bootstrap",
+    "build": "tsc -p tsconfig.build.json",
+    "lint": "eslint .",
+    "stack:env": "node src/cli.ts env",
+    "test": "vitest run",
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@ralysa/eslint-config": "workspace:*",
+    "@ralysa/tsconfig": "workspace:*",
+    "@ralysa/vitest-config": "workspace:*",
+    "@types/node": "catalog:",
+    "@types/pg": "8.23.1",
+    "eslint": "catalog:",
+    "pg": "8.23.0",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "ralysa": {
+    "kind": "tooling",
+    "shipped": false,
+    "ui": false,
+    "artefacts": []
+  }
+}

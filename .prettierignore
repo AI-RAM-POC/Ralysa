@@ -1,6 +1,8 @@
 # Generated, vendored or owned by other tools
 pnpm-lock.yaml
 **/src/i18n/generated/
+# JSON Schema generated from the zod contracts; check:generated owns its formatting (F-002-T03)
+packages/protocol/src/schema/generated/
 node_modules/
 dist/
 coverage/

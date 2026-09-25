@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ralysa:schema:access-token-header.v1",
+  "title": "AccessTokenHeader",
+  "type": "object",
+  "properties": {
+    "alg": {
+      "type": "string",
+      "const": "ES256"
+    },
+    "typ": {
+      "type": "string",
+      "const": "at+jwt"
+    },
+    "kid": {
+      "type": "string",
+      "maxLength": 80
+    }
+  },
+  "required": [
+    "alg",
+    "typ",
+    "kid"
+  ],
+  "additionalProperties": {}
+}

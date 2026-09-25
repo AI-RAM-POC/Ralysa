@@ -1,0 +1,449 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ralysa:schema:audit-event-input.v1",
+  "title": "AuditEventInput",
+  "type": "object",
+  "properties": {
+    "event_id": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+    },
+    "action": {
+      "type": "string",
+      "pattern": "^[a-z_]+(\\.[a-z_]+){1,3}$"
+    },
+    "actor": {
+      "type": "object",
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "user",
+            "service",
+            "system"
+          ]
+        },
+        "user_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "idp_subject": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 128
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "service": {
+          "anyOf": [
+            {
+              "type": "string",
+              "maxLength": 64
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "user_id",
+        "idp_subject",
+        "service"
+      ],
+      "additionalProperties": false
+    },
+    "act": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "sub": {
+              "type": "string",
+              "maxLength": 200
+            }
+          },
+          "required": [
+            "sub"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "surface": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "cli",
+            "desktop",
+            "web",
+            "automation",
+            "console"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "resource": {
+      "anyOf": [
+        {
+          "type": "object",
+          "properties": {
+            "type": {
+              "type": "string",
+              "maxLength": 40
+            },
+            "id": {
+              "type": "string",
+              "maxLength": 200
+            }
+          },
+          "required": [
+            "type",
+            "id"
+          ],
+          "additionalProperties": false
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "operation": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 32
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "outcome": {
+      "type": "string",
+      "enum": [
+        "success",
+        "failure",
+        "denied",
+        "error",
+        "cancelled",
+        "approved",
+        "rejected",
+        "expired"
+      ]
+    },
+    "reason_code": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 64
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "session_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 64
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "turn_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 64
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "request_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 64
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "tool_call_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 64
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "trace_id": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{32}$"
+    },
+    "span_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{16}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "policy_version": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 64
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "entitlement_version": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "tier": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "T1",
+            "T2",
+            "T3"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "classification": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 16
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "endpoint_id": {
+      "anyOf": [
+        {
+          "type": "string",
+          "maxLength": 100
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "endpoint_region": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[a-z0-9-]{2,40}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "inference_region": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[a-z0-9-]{2,40}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "inference_region_source": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "registry_declared",
+            "provider_reported"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "locality": {
+      "anyOf": [
+        {
+          "type": "string",
+          "enum": [
+            "local",
+            "in_country",
+            "in_region",
+            "global"
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "tokens_in": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "tokens_out": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "cache_read_tokens": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "cache_write_tokens": {
+      "anyOf": [
+        {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "payload_hash": {
+      "anyOf": [
+        {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "details": {
+      "type": "object",
+      "propertyNames": {
+        "type": "string"
+      },
+      "additionalProperties": {
+        "$ref": "#/$defs/__schema0"
+      }
+    }
+  },
+  "required": [
+    "event_id",
+    "action",
+    "actor",
+    "outcome",
+    "trace_id",
+    "details"
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "__schema0": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        },
+        {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/__schema0"
+          }
+        },
+        {
+          "type": "object",
+          "propertyNames": {
+            "type": "string"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/__schema0"
+          }
+        }
+      ]
+    }
+  }
+}

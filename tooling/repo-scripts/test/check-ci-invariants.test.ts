@@ -48,7 +48,7 @@ describe('check-ci-invariants', () => {
     expect(
       rules({
         ci: job(
-          '      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 1\n      - run: pnpm secret-scan history\n',
+          '      - uses: actions/checkout@v4\n        with:\n          fetch-depth: 1\n      - run: node tooling/repo-scripts/src/secret-scan-cli.ts history\n',
         ),
       }),
     ).toEqual(['ci/fetch-depth']);
@@ -103,7 +103,143 @@ describe('check-ci-invariants', () => {
       '      - name: Install gitleaks\n        run: sh tooling/repo-scripts/bin/install-tool.sh gitleaks\n      - run: pnpm install --frozen-lockfile\n      # Fails on an empty range',
     );
     expect(ci).not.toBe(realCi);
-    expect(rules({ ci })).toEqual(['ci/secret-scan-no-install']);
+    // The secret-scan job has no pre-install gate, so the install also trips that rule.
+    expect(rules({ ci }).sort()).toEqual([
+      'ci/pre-install-gate-first',
+      'ci/secret-scan-no-install',
+    ]);
+  });
+
+  describe('ci/pre-install-gate-first (F-002-T02, SEC-F002-28)', () => {
+    const GATE = '      - run: node tooling/repo-scripts/src/pre-install-gate.ts\n';
+    const SETUP_NODE_PNPM_CACHE =
+      '      - uses: actions/setup-node@v4\n        with:\n          node-version-file: .nvmrc\n          cache: pnpm\n';
+
+    it.each([
+      ['pnpm install before the gate', `      - run: pnpm install --frozen-lockfile\n${GATE}`],
+      [
+        'corepack before the gate',
+        `      - run: |\n          corepack enable\n          pnpm --version\n${GATE}`,
+      ],
+      [
+        'pnpm inside $(…) before the gate',
+        `      - run: echo "p=$(pnpm store path)" >> "$GITHUB_OUTPUT"\n${GATE}`,
+      ],
+      ['npx with no gate at all', '      - run: npx turbo run build\n'],
+      ['turbo before the gate', `      - run: turbo run test\n${GATE}`],
+      ['setup-node with cache: pnpm before the gate', `${SETUP_NODE_PNPM_CACHE}${GATE}`],
+      ['pnpm/action-setup before the gate', `      - uses: pnpm/action-setup@v4\n${GATE}`],
+      [
+        'pnpm on a line before the gate in the same step',
+        '      - run: |\n          pnpm --version\n          node tooling/repo-scripts/src/pre-install-gate.ts\n',
+      ],
+    ])('fails on %s', (_label, steps) => {
+      expect(rules({ ci: job(steps) })).toEqual(['ci/pre-install-gate-first']);
+    });
+
+    it.each([
+      ['the gate, then pnpm', `${GATE}      - run: pnpm install --frozen-lockfile\n`],
+      ['the gate, then setup-node with a cache', `${GATE}${SETUP_NODE_PNPM_CACHE}`],
+      [
+        'the gate and pnpm in one step, in that order',
+        '      - run: |\n          node tooling/repo-scripts/src/pre-install-gate.ts\n          pnpm install\n',
+      ],
+      [
+        'no package manager at all',
+        '      - run: node tooling/repo-scripts/src/secret-scan-cli.ts tree\n',
+      ],
+      [
+        'a mention in a comment line',
+        `      - run: |\n          # pnpm comes later\n          echo ok\n`,
+      ],
+      [
+        'setup-node without a cache',
+        '      - uses: actions/setup-node@v4\n        with:\n          node-version-file: .nvmrc\n',
+      ],
+      ['a word that only contains a manager name', '      - run: echo pnpmfile turbofan\n'],
+    ])('passes %s', (_label, steps) => {
+      expect(rules({ ci: job(steps) })).toEqual([]);
+    });
+
+    it('checks every workflow, not only ci.yml', () => {
+      const findings = checkCiInvariants({
+        packageJson: realPkg,
+        workflows: new Map([
+          ['.github/workflows/ci.yml', parse(realCi) as unknown],
+          ['.github/workflows/soak.yml', parse(job('      - run: pnpm install\n')) as unknown],
+        ]),
+        scripts: new Map(),
+      });
+      expect(findings).toEqual([
+        expect.objectContaining({
+          rule: 'ci/pre-install-gate-first',
+          path: '.github/workflows/soak.yml',
+        }),
+      ]);
+    });
+  });
+
+  describe('integration job (F-002-T02, SEC-F002-27)', () => {
+    const integration = /\n {2}integration:\n[\s\S]*?(?=\n {2}# Secret scanning)/.exec(realCi)?.[0];
+    const withJob = (edit: (text: string) => string) => {
+      if (integration === undefined) throw new Error('no integration job in ci.yml');
+      const edited = edit(integration);
+      expect(edited).not.toBe(integration);
+      return realCi.replace(integration, edited);
+    };
+
+    it('the real job passes', () => {
+      expect(integration).toBeDefined();
+      expect(rules()).toEqual([]);
+    });
+
+    it.each([
+      [
+        'a secrets.* reference',
+        (t: string) =>
+          t.replace(
+            "RALYSA_REQUIRE_DEV_STACK: '1'",
+            "RALYSA_REQUIRE_DEV_STACK: '1'\n      TOKEN: ${{ secrets.NPM_TOKEN }}",
+          ),
+      ],
+      [
+        'no permissions block',
+        (t: string) => t.replace('    permissions:\n      contents: read\n', ''),
+      ],
+      ['write permissions', (t: string) => t.replace('contents: read', 'contents: write')],
+      [
+        'an extra permission',
+        (t: string) => t.replace('contents: read', 'contents: read\n      id-token: write'),
+      ],
+      [
+        'a checkout that persists credentials',
+        (t: string) => t.replace('          persist-credentials: false\n', ''),
+      ],
+    ])('fails ci/integration-no-secrets on %s', (_label, edit) => {
+      expect(rules({ ci: withJob(edit) })).toEqual(['ci/integration-no-secrets']);
+    });
+
+    it.each([
+      [
+        'OpenBao logs',
+        (t: string) => t.replace('logs --no-color postgres', 'logs --no-color postgres openbao'),
+      ],
+      ['every service', (t: string) => t.replace('logs --no-color postgres', 'logs --no-color')],
+      ['no retention limit', (t: string) => t.replace('          retention-days: 3\n', '')],
+      ['a long retention', (t: string) => t.replace('retention-days: 3', 'retention-days: 30')],
+    ])('fails ci/integration-artefact on %s', (_label, edit) => {
+      expect(rules({ ci: withJob(edit) })).toEqual(['ci/integration-artefact']);
+    });
+
+    it('requires the pre-install gate before the job installs', () => {
+      const ci = withJob((t) =>
+        t.replace(
+          '      - name: Pre-install config gate\n        run: node tooling/repo-scripts/src/pre-install-gate.ts\n',
+          '',
+        ),
+      );
+      expect(rules({ ci })).toEqual(['ci/pre-install-gate-first']);
+    });
   });
 
   describe('Playwright image digests', () => {

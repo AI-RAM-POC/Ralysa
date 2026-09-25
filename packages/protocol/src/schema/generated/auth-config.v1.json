@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ralysa:schema:auth-config.v1",
+  "title": "AuthConfig",
+  "type": "object",
+  "properties": {
+    "issuer": {
+      "type": "string",
+      "format": "uri"
+    },
+    "flows": {
+      "type": "object",
+      "properties": {
+        "idp_device": {
+          "type": "boolean"
+        },
+        "loopback_pkce": {
+          "type": "boolean",
+          "const": true
+        }
+      },
+      "required": [
+        "idp_device",
+        "loopback_pkce"
+      ],
+      "additionalProperties": false
+    },
+    "idp": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "type": "string",
+          "const": "entra"
+        },
+        "device_authorization_endpoint": {
+          "type": "string",
+          "format": "uri"
+        },
+        "token_endpoint": {
+          "type": "string",
+          "format": "uri"
+        },
+        "cli_client_id": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "scope": {
+          "type": "string",
+          "maxLength": 256
+        }
+      },
+      "required": [
+        "kind",
+        "device_authorization_endpoint",
+        "token_endpoint",
+        "cli_client_id",
+        "scope"
+      ],
+      "additionalProperties": false
+    },
+    "cli_client_id": {
+      "type": "string",
+      "const": "ralysa-cli"
+    }
+  },
+  "required": [
+    "issuer",
+    "flows",
+    "idp",
+    "cli_client_id"
+  ],
+  "additionalProperties": false
+}

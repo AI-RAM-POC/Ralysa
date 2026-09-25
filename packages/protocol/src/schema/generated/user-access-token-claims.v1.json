@@ -1,0 +1,135 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ralysa:schema:user-access-token-claims.v1",
+  "title": "UserAccessTokenClaims",
+  "type": "object",
+  "properties": {
+    "iss": {
+      "type": "string",
+      "format": "uri"
+    },
+    "aud": {
+      "type": "string",
+      "enum": [
+        "control-plane",
+        "agent-host",
+        "model-gateway",
+        "mcp-gateway",
+        "workspace-runtime"
+      ]
+    },
+    "sub": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+    },
+    "client_id": {
+      "type": "string",
+      "maxLength": 64
+    },
+    "tid": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+    },
+    "sid": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+    },
+    "idp_sub": {
+      "type": "string",
+      "maxLength": 128
+    },
+    "surface": {
+      "type": "string",
+      "enum": [
+        "cli",
+        "desktop",
+        "web",
+        "automation"
+      ]
+    },
+    "amr": {
+      "maxItems": 16,
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 32
+      }
+    },
+    "auth_time": {
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991
+    },
+    "region": {
+      "type": "string",
+      "maxLength": 40
+    },
+    "token_use": {
+      "type": "string",
+      "const": "access"
+    },
+    "pol_ver": {
+      "type": "string",
+      "maxLength": 64
+    },
+    "ent_ver": {
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991
+    },
+    "act": {
+      "type": "object",
+      "properties": {
+        "sub": {
+          "type": "string",
+          "maxLength": 200
+        }
+      },
+      "required": [
+        "sub"
+      ],
+      "additionalProperties": {}
+    },
+    "iat": {
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991
+    },
+    "nbf": {
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991
+    },
+    "exp": {
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991
+    },
+    "jti": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+    }
+  },
+  "required": [
+    "iss",
+    "aud",
+    "sub",
+    "client_id",
+    "tid",
+    "sid",
+    "idp_sub",
+    "surface",
+    "auth_time",
+    "region",
+    "token_use",
+    "iat",
+    "nbf",
+    "exp",
+    "jti"
+  ],
+  "additionalProperties": {}
+}

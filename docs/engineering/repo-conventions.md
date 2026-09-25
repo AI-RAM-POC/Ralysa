@@ -86,8 +86,33 @@ A workspace that depends on a TypeScript library must reference it in its `tscon
 ## Tests: `test` vs `test:integration`
 
 - **`test` is hermetic:** no network, no database, no containers, and nothing outside the workspace's own files and temp folders. It runs for every workspace in the CI `quality` job.
-- Tests that need Postgres, Redis or another service go in an optional **`test:integration`** script. `turbo.json` already defines the task (`cache: false`). The first feature that adds one (F-002 is expected to) also adds the `integration` CI job with service containers, so `quality` stays within the CI time budget.
+- Tests that need Postgres, OpenBao or another service go in an optional **`test:integration`** script (`vitest run --config vitest.integration.config.ts`, using the `integration` preset of `@ralysa/vitest-config`). Files are `test/integration/**/*.int.ts`, which the hermetic include never matches. `turbo.json` defines the task with `cache: false`, so a cache hit can never replay a green run. The CI `integration` job runs them (F-002).
 - Put unit tests in `test/**/*.test.ts(x)` or next to the code as `src/**/*.test.ts(x)`.
+
+### The dev stack (F-002)
+
+`deploy/docker/dev/compose.yaml` is the one stack for developers and CI. `tooling/dev-stack` generates its credentials and bootstraps it:
+
+```sh
+node tooling/dev-stack/src/cli.ts env          # deploy/docker/dev/.env: random [A-Za-z0-9] values, mode 0600, git-ignored
+docker compose -f deploy/docker/dev/compose.yaml --env-file deploy/docker/dev/.env up -d --wait
+node tooling/dev-stack/src/cli.ts bootstrap    # OpenBao keys, KV, policies, AppRoles; Postgres login roles
+pnpm exec turbo run test:integration
+docker compose -f deploy/docker/dev/compose.yaml --env-file deploy/docker/dev/.env down -v   # reset
+```
+
+| Service | Host port (127.0.0.1 only) | Notes |
+|---|---|---|
+| Postgres 17 | 55432 | Database `ralysa`, UTF-8, SCRAM; superuser `postgres` with `POSTGRES_PASSWORD` from `.env` |
+| OpenBao 2.6 dev server | 58200 | Root token `BAO_DEV_ROOT_TOKEN_ID` from `.env`; in-memory, so `down` loses everything |
+| Control plane `serve` (host process, later tasks) | 4100 | |
+| Mock IdP (compose profile `idp`, F-002-T09) | 59400 | |
+
+- The env and bootstrap commands need no installed packages. `env` refuses to write outside `deploy/docker/dev/` and never overwrites without `--force`.
+- Postgres sets the superuser password only when its volume is first initialised. If you regenerate `.env` with `--force`, run `down -v` first, or the old volume keeps the old password and the smoke test fails with "password authentication failed for user postgres".
+- Integration tests read the stack only inside hooks, tests and helper functions, never directly in a `describe` body: that body runs at collection time even when the suite is skipped. `check-integration-scope` (in `repo:check`) enforces this. `bootstrap` writes a completion marker last, and the harness treats a stack without it as not bootstrapped.
+- Without the stack, `test:integration` skips with one message saying what to start. With `CI` set or `RALYSA_REQUIRE_DEV_STACK=1` it fails instead, so CI can't pass by skipping.
+- `pnpm secret-scan tree` scans git-ignored files too, so it reports the generated `deploy/docker/dev/.env`. Those values are throwaway; move the file aside (or `down -v` and delete it) before a local tree scan.
 
 ## Dependencies
 
@@ -130,6 +155,10 @@ It needs no installed packages and starts no subprocess. It also fails if your s
 |---|---|
 | `repo-checks` | The pre-install config gate, then `pnpm install --frozen-lockfile`, then `pnpm repo:check` |
 | `quality` | The pre-install config gate, `pnpm install --frozen-lockfile`, then `turbo run lint typecheck test build check:generated --continue=dependencies-successful --summarize`, a generated-drift check, then a workspace × task table in the job summary |
+| `integration` | Least-privilege (`permissions: contents: read`, `persist-credentials: false`, no repository secrets). The pre-install config gate, `pnpm install --frozen-lockfile`, per-run dev-stack credentials (masked), `docker compose up --wait` of Postgres and OpenBao, the bootstrap, then `turbo run test:integration`. On failure it uploads the Postgres container log only (the OpenBao dev server prints its root token), kept for 3 days |
+| `secret-scan` | gitleaks over the PR range, the working tree, the full history (main) and the self-tests; no install and no build |
 | `pr-traceability` | The PR title or body references `F-nnn`, or the PR carries a chore/docs/adlc label |
+
+`check-ci-invariants` (in `repo-checks`) enforces the job rules that security depends on. Among them: in every job of every workflow the pre-install gate runs before anything that invokes a package manager, including `actions/setup-node` with a `cache` and `pnpm/action-setup` (`ci/pre-install-gate-first`); the `integration` job has no `secrets.*`, only `contents: read` and `persist-credentials: false` (`ci/integration-no-secrets`), and its failure artefact names the `postgres` service only and expires within 3 days (`ci/integration-artefact`).
 
 `.github/required-checks.json` names the checks that must be green before an agent squash-merges (design §6.3.3). Each task that adds a job adds its name in the same PR.

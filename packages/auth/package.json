@@ -3,20 +3,31 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Placeholder package (F-001 design §2.1): only README.md and package.json until F-002 converts it (--kind library-isomorphic).",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
   "scripts": {
-    "build": "ralysa-repo placeholder-guard",
-    "lint": "ralysa-repo placeholder-guard",
-    "test": "ralysa-repo placeholder-guard",
-    "typecheck": "ralysa-repo placeholder-guard"
+    "build": "tsc -p tsconfig.build.json",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
   },
   "devDependencies": {
-    "@ralysa/repo-scripts": "workspace:*"
+    "@ralysa/eslint-config": "workspace:*",
+    "@ralysa/tsconfig": "workspace:*",
+    "@ralysa/vitest-config": "workspace:*",
+    "eslint": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
   },
   "ralysa": {
-    "kind": "placeholder",
+    "kind": "library",
+    "runtime": "isomorphic",
     "shipped": false,
-    "ui": false,
-    "artefacts": []
-  }
+    "ui": false
+  },
+  "description": "Token verifier, principal resolver, revocation feed and isomorphic client sign-in flows (F-002)."
 }

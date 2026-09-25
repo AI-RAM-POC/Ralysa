@@ -107,6 +107,14 @@ describe('check-turbo-config: package-level turbo.json (code review m2)', () => 
     );
   });
 
+  it('fails when a package makes test:integration cacheable (F-002-T02, SEC-F002-28)', () => {
+    // A cache hit would replay a green run and skip the TC-F-002-14/-20 scans.
+    const root = repoWith({ extends: ['//'], tasks: { 'test:integration': { cache: true } } });
+    expect(checkTurboConfigFile(root)).toContainEqual(
+      expect.objectContaining({ rule: 'turbo/cached-check', path: 'packages/ui/turbo.json' }),
+    );
+  });
+
   it('fails when a package defines a new check task without cache: false', () => {
     const root = repoWith({ extends: ['//'], tasks: { 'check:contrast': { outputs: [] } } });
     expect(checkTurboConfigFile(root).map((f) => f.rule)).toContain('turbo/cached-check');

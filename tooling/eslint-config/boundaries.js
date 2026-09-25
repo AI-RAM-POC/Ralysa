@@ -217,6 +217,16 @@ export const WORKSPACE_DEPENDENCY_RULES = [
 ];
 
 /**
+ * Development-only packages that must never reach a shipped workspace (F-002 design §2,
+ * SEC-F002-13, [AR-12]): the Entra-shaped mock IdP and its engine. check-workspaces
+ * (`deps/dev-only-in-shipped`) fails when one is a production dependency of a `shipped: true`
+ * workspace, directly or through another workspace's production dependencies (F-002-T01).
+ * F-002-T14 extends the check to the lockfile's production closure, dependency-cruiser and the
+ * image scan. @type {string[]}
+ */
+export const DEV_ONLY_PACKAGES = ['@ralysa/dev-stack', 'oidc-provider'];
+
+/**
  * Model-provider API hostnames (SEC-F001-09 d): a raw `fetch` needs no SDK, so check-provider-hosts
  * greps tracked source (outside services/model-gateway/**, docs/**, requirements/**, *.md and
  * this file) and every shipped artefact for them. `*.` at the start stands for one or more
