@@ -438,7 +438,7 @@ Branch `feat/F-002-checkpoints` (on `main` after #21).
 
 | # | Type | What | Why |
 |---|---|---|---|
-| T16-1 | **Deviation (self-decided under the standing authorization), now remediated** | *Remediated 2026-09-25, see "T16-1 remediation" below.* Originally: the sealer wrote `secret.custody_violation` through the insert-only **`ralysa_audit_writer`** credential. Its config and OpenBao policy gain `db/audit_writer`, and `ralysa_audit_sealer` keeps SELECT on events only. | §3.5 has the sealer write that event, but §4.1 gives the sealer role no INSERT on events, and `audit/0001` is released (immutable). The writer role is the least privilege that works: it can only insert writer columns, like the migrate jobs' use of it. |
+| T16-1 | **Deviation (self-decided under the standing authorization), now remediated** | *Remediated 2026-09-25, see "T16-1 remediation" below.* Originally: the sealer wrote `secret.custody_violation` through the insert-only **`ralysa_audit_writer`** credential. Its config and OpenBao policy gain `db/audit_writer`, and `ralysa_audit_sealer` keeps SELECT on events only. | ~~§3.5 has the sealer write that event, but §4.1 gives the sealer role no INSERT on events, and `audit/0001` is released (immutable). The writer role is the least privilege that works: it can only insert writer columns, like the migrate jobs' use of it.~~ **Superseded by the SEC-F002-34 remediation (#24).** Immutability of `audit/0001` didn't rule out a new migration. `audit/0002`'s SECURITY DEFINER `audit.record_custody_violation()` is strictly less privilege, and the writer credential was removed from the sealer. |
 | T16-2 | Interpretation (amended by SEC-F002-35 a) | During a custody violation the sealer **keeps sealing** and only stops checkpoint signing, and the stop is terminal (flags can't be cleared). | §3.2.4 says "stops signing". The hash chain uses no key, and stopping it would add a second gap. `audit-verify` reports the missing checkpoints as `checkpoint_gap`. The sealer has no HTTP `/readyz`, so the "unready" signal is the `secret_custody_violation` gauge plus an error log (the alert input). |
 | T16-3 | Implementation choice | `audit-verify` compares checkpoints with the chain **recomputed from events**, not with the stored seals. The stored seals are also checked separately (`chain_broken`). | An owner who rewrites an event and recomputes every later seal leaves stored seals that are self-consistent (`verifyChain` passes: tested), so only the recompute from events against the signed hash catches it (§4.5 residual, SEC-F002-01 c). |
 | T16-4 | Implementation choice | The cadence check uses each seal's `sealed_at` for the "newest seal older than 120 s" rule. `now` is injectable. | The design's rule is about sealed data not covered by a checkpoint. Injecting `now` lets the test assert the gap without waiting 2 minutes. |
@@ -527,3 +527,125 @@ The security review of deviation T16-1 is appended verbatim to security.md: **AC
 | SEC-F002-36 | Pin the trust anchor: log each key version's JWK thumbprint at sealer start and in each checkpoint line; `audit-verify` takes pinned thumbprints. Separate the OpenBao admin from the DB superuser. | G6 (same) |
 | SEC-F002-37 | A key recreated under the same name: the signer already stays stopped (terminal). Thumbprint tracking makes it detectable outside the process's lifetime. | G6 (with -36) |
 | SEC-F002-38 | Without the log, tail truncation is invisible: `audit-verify` should report `anchor: none` with a distinct exit code and require `--log-checkpoints` outside dev and test, with the log shipped off-host. | **Any non-dev deployment** |
+
+### Nits folded in after #24 merged
+
+- The custody-function test T5 now asserts the specific code: on a fresh connection that never set `app.org_id`, `audit.current_org()` raises **`42704`** (unrecognized parameter). On a pooled connection where the setting was set transaction-locally before, the placeholder is `''` and the uuid cast raises `22P02`; both fail closed. The test uses a fresh pool.
+- The T16-1 row's original rationale is struck through and marked superseded by the SEC-F002-34 remediation.
+- status.md "Open items" lists SEC-F002-35 (b)–(d), -36 and -37 (block G6 unless a named human accepts them in writing as F-011 prerequisites) and -38 (blocks any non-dev deployment).
+
+## T07: control-plane app skeleton and keys
+
+Branch `feat/F-002-app-skeleton` (on `main` after #24).
+
+### What landed
+
+- **Config** (`src/config/`):
+  - `ServeConfig` (§3.8) plus `access.mfa_claim_exception_ref`, `rate_limits`, `audit.{spool_dir, spool_persistent}` and bounds on `tokens`.
+  - `crossFieldIssues()`: every KV path is under `vault.kv_mount` (**closes OI-2**); service audit actions may be allow-listed [SEC-F002-03]; the service client id and Transit key follow the service name; names are unique.
+  - `mfaClaimRequired()`.
+  - Env overrides `RALYSA_CFG__<PATH>`.
+  - `serveProductionRefusals()` and the async `openBaoStorageRefusals()` (`sys/seal-status`: in-memory, sealed or unreachable).
+- **HTTP** (`src/http/`):
+  - zod validation and response serialization (a response that breaks its contract fails closed);
+  - problem+json and OAuth errors with one error handler;
+  - request context: UUIDv7 request ids never taken from the client, traceparent continued or started and echoed, `orgId = config.org.id`;
+  - logging: request logging off, one onResponse line with the route template, pino `redact`, and a `formatters.log` scrubber;
+  - in-memory per-IP and global rate limits on the unauthenticated prefixes;
+  - route contracts, and the OpenAPI 3.1 generator.
+- `src/app.ts`: `buildApp()` (no listen) with health, readiness and discovery.
+- `src/auth/tokens/signing-keys.ts`: `selectActiveVersion`/`jwksRows` (pure) and `createSigningKeys()` (the watcher: publish, activate, retire, the custody monitor, JWKS from the database, the database clock).
+- `src/auth/tokens/mint.ts`: `mintAccessToken()`.
+- `src/auth/routes/discovery.ts`: RFC 8414 metadata, JWKS, `/v1/auth/config`.
+- `src/org/bootstrap.ts`: `ensureOrganization()`.
+- `src/serve.ts`: the `serve` and `bootstrap-org` entry points (dispatched from `main.ts`).
+- `openapi/control-plane.v1.json`, generated, committed, and in `.prettierignore`.
+- `deploy/docker/dev/control-plane.serve.dev.yaml`.
+
+### Versions
+
+| Item | Pinned | Evidence |
+|---|---|---|
+| `fastify` | **5.12.5** (control-plane dependency) | Published 2026-09-16; the 5.12 line started 2026-08-13 (43 days). MIT. No install scripts (the install passes `strictDepBuilds`). |
+| `jose` | 6.2.12, moved to the **catalog** | Now a devDependency of both secrets and control-plane (tests only). |
+
+### Recorded decisions and deviations
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T07-1 | Deviation from §2.2 | Rate limits are a small in-memory limiter (`src/http/rate-limits.ts`: per-IP and global one-minute windows, a bounded IP map), not `@fastify/rate-limit`. | The design needs a per-IP **and** a global limit on route prefixes, with an OAuth error body on `/oauth2/*`. That is about 40 lines, versus a dependency configured twice. Both are per-instance in memory, like the plugin's default store. |
+| T07-2 | Scope | `@fastify/formbody` and `@fastify/cookie` aren't added yet. | They serve the OAuth endpoints and the flow-B cookie (T08/T10), which add them with their routes. |
+| T07-3 | Design gap, filled | `/v1/auth/config` derives the IdP device and token endpoints from the pinned issuer (Entra: `<authority>/oauth2/v2.0/devicecode` and `/token`). `cli_client_id` is the first of `idp.allowed_public_client_ids`. | §3.4.1 says "from the pinned tenant's discovery document". Fetching it is T10's IdP client; for Entra the two URLs are fixed under the authority. |
+| T07-4 | Interpretation | The RFC 8414 metadata already lists the authorize, token and revoke endpoints and the four grants, although those routes land in T08 and T10. | The metadata describes the F-002 surface, and F-002 is released as a whole: no release is cut between T07 and T10. |
+| T07-5 | Design gap, filled | The **first** signing key ever is active at once. Later versions wait `activation_delay_s` on the database clock. | Publish-then-activate protects a switch from one key to the next; with no previous key there is nothing to keep signing with. |
+| T07-6 | Implementation choice | `/readyz` is ready when the database answers, a signing key is active, the last successful poll is younger than max(30 s, 2 × `key_poll_s`), and there is no custody violation. | §3.1 and §5.8: "unready after 30 s" of OpenBao trouble shows up as a stale poll. |
+| T07-7 | Implementation choice | `SigningKeys.sign(build)` gives the builder the active version's `kid` before signing, so the header's `kid` and the signing version can't disagree. | The kid is derived from the configured key name and the version [SEC-F002-19]. |
+| T07-8 | Implementation choice | Responses are serialized through their zod contract (`safeParse`). A response that doesn't match fails with 500 instead of leaving. | The OpenAPI document is generated from the same contracts, so what is published is what is sent. |
+| T07-9 | Implementation choice | `serve` and `bootstrap-org` live in `src/serve.ts`, and `main.ts` only dispatches. | It kept the rebase conflicts with the sealer and audit-verify work small. |
+| T07-10 | Scope | `ensureOrganization` reports `deviceCodeChanged`. Revoking live flow-A sessions when `device_code_enabled` turns off is T10's device-code switch. | §3.8 and SEC-F002-32 assign the revocation to T10. |
+| T07-11 | Scope | OI-4 (the rejection aggregator's `orgId` from config) stays open: T07 serves no authenticated route, so nothing verifies tokens yet. | The control plane's own verifier path arrives with T08 (`/v1/me`, internal routes) and T11. |
+| T07-12 | Scope | The one server-rendered i18n string (`auth.error.invalid_authorize_request`) belongs to the authorize route (T10). | §3.9. |
+| T07-13 | Implementation choice | Signing-key events use `actor.service = rts`, with `credential_ref_hash` = SHA-256 of `transit/<key>`. | §3.5 lists `credential_ref_hash`. The raw path is not a secret, but the hash keeps the event shape stable. |
+
+### Tests (T07)
+
+- **Unit** (147 in control-plane, 38 new for T07):
+  - `config-serve.test.ts`:
+    - **TC-F-002-36**: serve refuses migrator, audit_migrator and sealer credentials; the sealer accepts only its own; secret-looking values, a `client_secret` key and a group name are refused;
+    - the `kv_mount` check and reserved service actions;
+    - errors never carry values;
+    - env overrides can't inject a credential;
+    - **TC-F-002-34**: each guard (token auth, AppRole without opt-in, `http://` for vault and public URL, `db.ssl`, `0.0.0.0/0` and `::/0`, non-Entra issuer, http or other-tenant issuer, non-Graph base, MFA claim off) refuses, as do OpenBao in-memory, sealed and unreachable; the MFA exception works; an unset env behaves as production.
+  - `logging.test.ts`: the scrubber cases (JWT, refresh token, code, OpenBao token, form secrets, URL credentials); redaction paths; serializers drop raw requests and responses.
+  - `signing-keys.test.ts`: the first key at once; activation exactly at the delay; the AC-10 budget; pin; retired keys; JWKS retention.
+  - `app.test.ts`:
+    - health and readiness (DB, custody and no-key failures give 503);
+    - metadata, JWKS (public members only, Cache-Control) and auth config;
+    - traceparent continued or new; problem+json 404 without echo;
+    - **per-IP and global rate limits with Retry-After**, and the OAuth-form 429;
+    - **the request log line has the route template and no query, token, header or cookie**;
+    - **`X-Org-Id` and a body `org_id` are ignored** (SEC-F002-31).
+  - `openapi.test.ts`: the committed file equals the generator output; every contract is a registered route; no password or client secret.
+  - `mint.test.ts`: the minted token verifies with `jose` against the JWKS, and its header is exactly `{alg, typ, kid}`; a service token; bad claims (an array audience, an unknown audience, a non-UUID sub) are never signed; minting is refused during a custody violation.
+- **Integration** (`serve.int.ts`, 6):
+  - the Organization is created once, a region change is refused, and the device-code flag is stored;
+  - `/readyz` is ready, **JWKS lists the active key, and a minted token verifies with jose against the served JWKS**;
+  - **rotation: v2 is published at once while v1 still signs, v2 signs after the delay, v1 stays in JWKS until retention and is then retired, with `secret.rotated` events published:v1, activated:v1, published:v2, activated:v2, retired:v1**;
+  - **startup refuses a key with `allow_plaintext_backup`** (TC-14 part);
+  - **TC-F-002-33**: flipping `exportable` at runtime gives 503 on `/readyz`, minting refused, and exactly one `secret.custody_violation`; the same for `allow_plaintext_backup`.
+- **Manual (dev stack):** `start:dev` came up ready. JWKS served `ralysa-rts-signing.v1`, and `traceparent` was echoed. A request with `?code=rly_ac_TOPSECRET…` left no trace of it in the log. SIGTERM stopped it cleanly (exit 0).
+
+### Code review of PR #25 (changes requested): resolutions
+
+| # | Finding | Resolution | Evidence |
+|---|---|---|---|
+| R25-1 | **Blocking (Critical).** Rate limiting matched the raw URL, so percent-encoded paths (`/%2Ewell-known/jwks.json`, `/%2ewell-known/…`, `/v1/%61uth/config`) reached the routes and skipped both limits. | `limitedFamily()` decides on the **matched route template** (`request.routeOptions.url`, available in `onRequest`). A request matching no route is judged on its decoded, lower-cased path, and an undecodable one is limited. The same decision picks the 429 body (OAuth on `/oauth2/*`, problem+json elsewhere). | `app.test.ts`: the three encoded paths hit the real route once and then get 429; an encoded `/oauth2/token` gets the OAuth 429 body. |
+| R25-2 | **Blocking (Major).** `RALYSA_CFG__ENV=dev` over a production file switched off every production guard (SEC-F002-12). | Overrides of `env`, `vault.auth.*`, `vault.allow_approle`, `trust_proxy_cidrs`, `idp.issuer`, `idp.require_mfa_claim` and `access.mfa_claim_exception_ref` are refused with a `ConfigError`. The last one is added because it switches the MFA requirement off. Settings the production guards already check (`vault.addr`, `db.ssl`, `public_base_url`, `graph_base_url`) stay overridable; the guards still apply. The **names** of applied overrides are reported at start (`config_overrides`), never values. | `config-serve.test.ts`: `RALYSA_CFG__ENV=dev` over the production fixture is refused; each protected key is refused; applied names are reported, values aren't. |
+| R25-3 | Log scrubbing gaps: message strings, depth, and Logger-port lines outside pino. | One pino instance per serve process (`createPinoLogger`), passed to Fastify as `loggerInstance`. The Logger port for the key watcher, spool and start-up is built on it (`loggerFromPino`, as T06-3 promised). `hooks.logMethod` scrubs message strings. `scrubValue` replaces anything deeper than 8 levels with `[REDACTED:depth]`. The one-shot entry points' JSON logger scrubs message and fields too. | `logging.test.ts`: a JWT and a refresh token in the message are scrubbed; a deeply nested secret is redacted; a Logger-port line has redaction and scrubbing (`body.code` redacted, URL credentials and JWTs scrubbed); the JSON logger scrubs. |
+| R25-4 | IPv6 per-IP limiting let one host spread across its /64. | `clientKey()`: IPv6 is keyed by /64 (`networkOf()` from `audit/rejections.ts`); IPv4 and IPv4-mapped by address. | `app.test.ts`: two addresses in one /64 share the limit; another /64 has its own. |
+| R25-a | RTS custody should behave like the sealer's. | The RTS watcher's custody violation is **terminal**. All three conditions (`exportable`, `allow_plaintext_backup`, `key_replaced`) are recorded, and recording is retried every poll until it lands (SEC-F002-39/-40). **A stored version whose public key no longer matches Transit's is treated as the key having been recreated** (SEC-F002-37). The watcher reads only its own key's rows (`kid LIKE <key>.v%`). | `serve.int.ts`: after the flip, more polls change nothing and record nothing more; `allow_plaintext_backup` is recorded with its pair; **a key deleted and recreated under the same name is flagged `key_replaced` and minting stops** (second org, since `cp.signing_key_version` is one key per org by design: `UNIQUE (org_id, version)`). |
+| R25-b | The OpenAPI password test pattern was too narrow. | TC-F-002-05's substring pattern `/pass(word\|wd\|phrase)\|\bpin\b\|otp\|client_secret/i` over the whole document. It matched the document's own description sentence, which was reworded ("no route accepts a user-held shared secret"). | `openapi.test.ts` |
+| R25-c | The RFC 8414 metadata advertises T08 and T10 routes. | status.md open item: no release may be cut before T08 and T10 land. | status.md |
+| R25-d | Fastify FSTDEP023: `disableRequestLogging` is deprecated. | `logController: new LogController({ disableRequestLogging: true })`. | No FSTDEP warning in the test run. |
+| R25-e | A malformed percent-encoded URL (`/%E0%A4%A`) left no request log line. | `frameworkErrors` answers problem+json 400 and writes one summary line (`route: bad_url`); the raw URL is not logged. | `app.test.ts`: exactly one `request` line, with no `%E0`. |
+
+### Re-review of PR #25 (head 160a6c7)
+
+| Item             | Finding                                                                                                                                                                                                                                                                                                                                                               | Fix                                                                                                                                                                                                                                                                                                                            | Test                                                                                                                                                                                                                                                                                                        |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| R25-2b (blocker) | `isProtected()` refused a protected path and anything under it, but not the paths above it. Override values were JSON-parsed, so `RALYSA_CFG__VAULT='{..."auth":{"method":"approle"...},"allow_approle":true}'`, `RALYSA_CFG__IDP='{..."require_mfa_claim":false}'` and `RALYSA_CFG__ACCESS='{..."mfa_claim_exception_ref":"fake"}'` were all accepted in production. | Both fixes, for defence in depth (coordinator decision): (a) a path is refused when it is a protected path, lies under one, or lies above one; (b) only scalar values (string, number, boolean) are accepted, and a JSON object, array or `null` is refused with a `ConfigError` on any path. README config reference updated. | `config-serve.test.ts`: `__VAULT`, `__IDP` and `__ACCESS` object overrides refused; a scalar value on those ancestor paths refused; an object on an unprotected path refused; an array and `null` refused; a scalar `RATE_LIMITS__PER_IP_PER_MINUTE=30` still applies. Without the fix, the new tests fail. |
+| R25-f (nit)      | printf-style interpolation (`%o`, `%j`, `%s`) was formatted after `logMethod` and `formatters.log`, so a token in an interpolated argument reached the output unscrubbed.                                                                                                                                                                                             | `hooks.streamWrite` runs `scrubText` over every final serialized line. The existing argument, object and redact scrubbing are kept.                                                                                                                                                                                            | `logging.test.ts`: `app.log.info({}, 'interp %o', { tok })`, `%j` and `%s` with a runtime-built `rly_rt_` token; no token in the output, three `[REDACTED]` markers.                                                                                                                                        |
+
+Self-decided: `null` counts as non-scalar and is refused, because an explicit `null` would remove a value that the schema defaults or requires. To unset a value, remove it from the config file.
+
+### Incident: a flagged test fixture was pushed (T07, 2026-09-25)
+
+- **What happened.**
+  - The local pre-push `secret-scan pr` on the T07 commit found a gitleaks `generic-api-key` hit: a made-up OpenBao-token-shaped string in `services/control-plane/test/logging.test.ts` (the scrubber test).
+  - The scan's exit code was masked by a pipe (`… | tail -1`), so the chained `git push` still ran.
+  - The value was never a real credential, so nothing needs revoking.
+- **Remediation.**
+  - The fixtures are now built at runtime from low-entropy filler, so no literal reads as a credential.
+  - The commit was amended and force-pushed with lease to the feature branch (no PR yet, single author). The branch history scans clean.
+  - A GitHub force-push doesn't purge the earlier objects: the old commit stays reachable by SHA until GitHub garbage-collects it. For a fake fixture that's acceptable; for a real secret, rotation at the issuer would be the only remediation (F-001 design §6.2.6).
+- **Process fix.** Local pre-push scans now run without pipes, and the exit code is checked explicitly (`scan > file; S=$?; [ $S -eq 0 ] && git push`). `set -o pipefail` would do the same where a pipe is needed.

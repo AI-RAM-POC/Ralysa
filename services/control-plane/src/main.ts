@@ -7,7 +7,8 @@
 //   control-plane sealer --config <file>            the sealer process, as ralysa_audit_sealer
 //   control-plane audit-verify --config <file> [--org <uuid>] [--shard <s>] [--log-checkpoints <jsonl>]
 //
-// `serve` and `bootstrap-org` arrive with F-002-T07.
+//   control-plane serve --config <file>             the API (RTS, discovery, audit, directory), as ralysa_cp_app
+//   control-plane bootstrap-org --config <file>     create or check the one Organization (serve config)
 // The config path may also come from RALYSA_CONFIG.
 import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
@@ -34,9 +35,10 @@ import { createPool } from './db/pools.js';
 import type { Database } from './db/types.js';
 import { createJsonLogger } from './observability/logger.js';
 import { openVault } from './secrets/vault.js';
+import { bootstrapOrgCommand, serveCommand } from './serve.js';
 
 const USAGE =
-  'usage: control-plane <migrate [--audit] | sealer | audit-verify [--org <uuid>] [--shard <s>] [--log-checkpoints <jsonl>]> --config <file>';
+  'usage: control-plane <serve | bootstrap-org | migrate [--audit] | sealer | audit-verify [--org <uuid>] [--shard <s>] [--log-checkpoints <jsonl>]> --config <file>';
 const logger = createJsonLogger();
 
 function configPath(value: string | undefined): string {
@@ -227,6 +229,8 @@ async function auditVerifyCommand(args: string[]): Promise<number> {
 export async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
   try {
+    if (command === 'serve') return await serveCommand(rest);
+    if (command === 'bootstrap-org') return await bootstrapOrgCommand(rest, logger);
     if (command === 'migrate') return await migrateCommand(rest);
     if (command === 'sealer') return await sealerCommand(rest);
     if (command === 'audit-verify') return await auditVerifyCommand(rest);

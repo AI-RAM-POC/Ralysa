@@ -26,3 +26,4 @@ __pycache__/
 # F-001-T13: Playwright output (reports, traces, failure screenshots)
 test-results/
 playwright-report/
+deploy/docker/dev/.audit-spool/

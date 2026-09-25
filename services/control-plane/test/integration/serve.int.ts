@@ -1,0 +1,305 @@
+// F-002-T07 against the dev stack: the serve app with real Postgres and OpenBao Transit
+// (throwaway keys per run: a custody flag can't be undone).
+//   - JWKS lists the active key; a minted token verifies with jose against the served JWKS;
+//   - rotation: publish at once, activate after the delay (DB clock), retire after retention,
+//     with secret.rotated for each phase (AC-10);
+//   - TC-F-002-33: flipping `exportable` / `allow_plaintext_backup` at runtime stops minting,
+//     /readyz goes 503 and one secret.custody_violation is written;
+//   - startup refuses a key that violates custody (TC-F-002-14 part);
+//   - the one Organization: created from config, region immutable, device-code flag stored.
+import { uuidv7 } from '@ralysa/protocol/common';
+import { type KeyCustody, createOpenBao } from '@ralysa/secrets';
+import { devStackOrSkip, expectOk, rootBao, uniqueName } from '@ralysa/dev-stack/harness';
+import type { FastifyInstance } from 'fastify';
+import { createLocalJWKSet, decodeProtectedHeader, jwtVerify } from 'jose';
+import { type Kysely, sql } from 'kysely';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { buildApp } from '../../src/app.js';
+import { createAuditWriter } from '../../src/audit/writer.js';
+import { mintAccessToken } from '../../src/auth/tokens/mint.js';
+import { type SigningKeys, createSigningKeys } from '../../src/auth/tokens/signing-keys.js';
+import { ConfigError } from '../../src/config/load.js';
+import { createDb } from '../../src/db/kysely.js';
+import type { Database } from '../../src/db/types.js';
+import { silentLogger } from '../../src/observability/logger.js';
+import { OrganizationMismatchError, ensureOrganization } from '../../src/org/bootstrap.js';
+import { assertSigningKeyCustody } from '../../src/serve.js';
+import { serveConfig } from '../fixtures/serve-config.js';
+import { type TestDatabase, createTestDatabase } from './support/db.js';
+
+const stack = await devStackOrSkip();
+const config = serveConfig({
+  env: 'test',
+  org: {
+    id: uuidv7(),
+    name: 'Org F',
+    residency: 'in_country',
+    region: 'qa-doha',
+    deployment_model: 'on_prem',
+  },
+});
+const ORG = config.org.id;
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+describe.skipIf(stack === undefined)('serve app (F-002-T07)', () => {
+  let db: TestDatabase | undefined;
+  let cpDb: Kysely<Database>;
+  let custody: KeyCustody;
+  let keys: SigningKeys;
+  let app: FastifyInstance;
+  const key = uniqueName('ralysa-test-t07-sign');
+  const backupKey = uniqueName('ralysa-test-t07-bak');
+  const replacedKey = uniqueName('ralysa-test-t07-rep');
+  const t = (): TestDatabase => {
+    if (db === undefined) throw new Error('beforeAll did not create the database');
+    return db;
+  };
+  const events = async (action: string) =>
+    (
+      await t().superuser.query<{ details: Record<string, unknown>; service: string }>(
+        `SELECT details, actor_service AS service FROM audit.audit_event WHERE action = $1 ORDER BY ingest_seq`,
+        [action],
+      )
+    ).rows;
+  const claims = () => {
+    const now = Math.floor(Date.now() / 1000);
+    return {
+      iss: config.public_base_url,
+      aud: 'model-gateway' as const,
+      sub: uuidv7(),
+      client_id: 'ralysa-cli',
+      tid: ORG,
+      sid: uuidv7(),
+      idp_sub: '4f1c2e3d-0000-4000-8000-000000000001',
+      surface: 'cli' as const,
+      auth_time: now,
+      region: 'qa-doha',
+      token_use: 'access' as const,
+      iat: now,
+      nbf: now,
+      exp: now + 900,
+      jti: uuidv7(),
+    };
+  };
+  const servedJwks = async () =>
+    (await app.inject('/.well-known/jwks.json')).json<{ keys: { kid: string }[] }>();
+
+  beforeAll(async () => {
+    const root = rootBao(stack!);
+    for (const name of [key, backupKey]) {
+      expectOk(await root('POST', `transit/keys/${name}`, { type: 'ecdsa-p256' }), name);
+    }
+    custody = createOpenBao({
+      addr: stack!.openbao.addr,
+      auth: { method: 'token', token: stack!.openbao.rootToken },
+      env: 'test',
+    }).keys;
+    db = await createTestDatabase(stack!);
+    await db.migrate(ORG);
+    cpDb = createDb<Database>(await db.pool('cp_app', 4));
+    await expect(ensureOrganization(cpDb, config)).resolves.toEqual({
+      created: true,
+      deviceCodeChanged: false,
+    });
+    keys = createSigningKeys({
+      db: cpDb,
+      custody,
+      orgId: ORG,
+      key,
+      timing: { activationDelayMs: 1_500, retentionMs: 1_500 },
+      writer: createAuditWriter({ db: createDb<Database>(await db.pool('audit_writer', 2)) }),
+      logger: silentLogger,
+    });
+    await keys.poll();
+    app = await buildApp({
+      config,
+      keys,
+      pingDatabase: async () => {
+        await sql`select 1`.execute(cpDb);
+        return true;
+      },
+    });
+  }, 60_000);
+
+  afterAll(async () => {
+    await app.close();
+    const root = rootBao(stack!);
+    for (const name of [key, backupKey, replacedKey]) {
+      await root('POST', `transit/keys/${name}/config`, { deletion_allowed: true });
+      await root('DELETE', `transit/keys/${name}`);
+    }
+    await db?.drop();
+  });
+
+  it('the Organization is created once from config; its region is immutable; device-code flag stored', async () => {
+    await expect(ensureOrganization(cpDb, config)).resolves.toEqual({
+      created: false,
+      deviceCodeChanged: false,
+    });
+    await expect(
+      ensureOrganization(cpDb, { ...config, org: { ...config.org, region: 'ae-dubai' } }),
+    ).rejects.toBeInstanceOf(OrganizationMismatchError);
+    await expect(
+      ensureOrganization(cpDb, {
+        ...config,
+        access: { ...config.access, device_code_enabled: false },
+      }),
+    ).resolves.toEqual({ created: false, deviceCodeChanged: true });
+    const { rows } = await t().superuser.query<{
+      settings: { auth: { device_code_enabled: boolean } };
+    }>(`SELECT settings FROM cp.organization WHERE id = $1`, [ORG]);
+    expect(rows[0]?.settings.auth.device_code_enabled).toBe(false);
+    await ensureOrganization(cpDb, config);
+  });
+
+  it('/readyz is ready; JWKS lists the active key; a minted token verifies with jose', async () => {
+    expect((await app.inject('/readyz')).json()).toMatchObject({ status: 'ready' });
+    const jwks = await servedJwks();
+    expect(jwks.keys.map((k) => k.kid)).toEqual([`${key}.v1`]);
+    const token = await mintAccessToken(keys, claims());
+    const { protectedHeader } = await jwtVerify(token, createLocalJWKSet(jwks as never), {
+      issuer: config.public_base_url,
+      audience: 'model-gateway',
+      typ: 'at+jwt',
+      algorithms: ['ES256'],
+    });
+    expect(protectedHeader.kid).toBe(`${key}.v1`);
+  });
+
+  it('rotation: publish at once, activate after the delay, retire after retention (AC-10)', async () => {
+    expectOk(await rootBao(stack!)('POST', `transit/keys/${key}/rotate`, {}), 'rotate');
+    await keys.poll();
+    expect((await servedJwks()).keys.map((k) => k.kid)).toEqual([`${key}.v2`, `${key}.v1`]);
+    expect(decodeProtectedHeader(await mintAccessToken(keys, claims())).kid).toBe(`${key}.v1`);
+    await sleep(1_600);
+    await keys.poll();
+    const token = await mintAccessToken(keys, claims());
+    expect(decodeProtectedHeader(token).kid).toBe(`${key}.v2`);
+    // Verifiers holding the JWKS from before still accept both (the old key stays published).
+    const both = await servedJwks();
+    expect(both.keys.map((k) => k.kid)).toEqual([`${key}.v2`, `${key}.v1`]);
+    await expect(jwtVerify(token, createLocalJWKSet(both as never))).resolves.toBeDefined();
+    await sleep(1_600);
+    await keys.poll();
+    expect((await servedJwks()).keys.map((k) => k.kid)).toEqual([`${key}.v2`]);
+    const phases = (await events('secret.rotated')).map(
+      (e) => `${String(e.details.phase)}:v${String(e.details.version)}`,
+    );
+    expect(phases).toEqual([
+      'published:v1',
+      'activated:v1',
+      'published:v2',
+      'activated:v2',
+      'retired:v1',
+    ]);
+  });
+
+  it('startup refuses a key that violates custody (TC-F-002-14 part)', async () => {
+    await expect(assertSigningKeyCustody(custody, key)).resolves.toBeUndefined();
+    expectOk(
+      await rootBao(stack!)('POST', `transit/keys/${backupKey}/config`, {
+        allow_plaintext_backup: true,
+      }),
+      'flip',
+    );
+    await expect(assertSigningKeyCustody(custody, backupKey)).rejects.toBeInstanceOf(ConfigError);
+  });
+
+  it('TC-F-002-33: flipping exportable at runtime stops minting, /readyz 503, one custody_violation', async () => {
+    expectOk(
+      await rootBao(stack!)('POST', `transit/keys/${key}/config`, { exportable: true }),
+      'flip',
+    );
+    await keys.poll();
+    await keys.poll();
+    const ready = await app.inject('/readyz');
+    expect(ready.statusCode).toBe(503);
+    expect(ready.json()).toMatchObject({ checks: { custody: false } });
+    await expect(mintAccessToken(keys, claims())).rejects.toThrow(/signing unavailable/);
+    const violations = await events('secret.custody_violation');
+    expect(violations).toEqual([
+      {
+        details: {
+          key,
+          flag: 'exportable',
+          exportable: true,
+          allow_plaintext_backup: false,
+          key_replaced: false,
+        },
+        service: 'rts',
+      },
+    ]);
+    // Terminal (SEC-F002-35 a): more polls change nothing and record nothing more.
+    await keys.poll();
+    expect(keys.status()).toMatchObject({ ready: false, custodyViolation: 'exportable' });
+    expect(await events('secret.custody_violation')).toHaveLength(1);
+  });
+
+  it('TC-F-002-33: the same for allow_plaintext_backup', async () => {
+    const other = createSigningKeys({
+      db: cpDb,
+      custody,
+      orgId: ORG,
+      key: backupKey,
+      timing: { activationDelayMs: 0, retentionMs: 1_000 },
+      writer: createAuditWriter({ db: createDb<Database>(await t().pool('audit_writer', 1)) }),
+      logger: silentLogger,
+    });
+    await other.poll();
+    expect(other.status()).toMatchObject({
+      ready: false,
+      custodyViolation: 'allow_plaintext_backup',
+    });
+    await expect(mintAccessToken(other, claims())).rejects.toThrow(/signing unavailable/);
+    expect((await events('secret.custody_violation')).at(-1)).toEqual({
+      details: {
+        key: backupKey,
+        flag: 'allow_plaintext_backup',
+        exportable: false,
+        allow_plaintext_backup: true,
+        key_replaced: false,
+      },
+      service: 'rts',
+    });
+  });
+
+  it('a key recreated under the same name is a custody violation (review of #25, SEC-F002-37)', async () => {
+    const root = rootBao(stack!);
+    expectOk(await root('POST', `transit/keys/${replacedKey}`, { type: 'ecdsa-p256' }), 'key');
+    // cp.signing_key_version is one key per org (UNIQUE (org_id, version)): use a second org.
+    const org2 = uuidv7();
+    await ensureOrganization(cpDb, { ...config, org: { ...config.org, id: org2 } });
+    const watcher = createSigningKeys({
+      db: cpDb,
+      custody,
+      orgId: org2,
+      key: replacedKey,
+      timing: { activationDelayMs: 0, retentionMs: 1_000 },
+      writer: createAuditWriter({ db: createDb<Database>(await t().pool('audit_writer', 1)) }),
+      logger: silentLogger,
+    });
+    await watcher.poll();
+    expect(watcher.status()).toMatchObject({ ready: true, activeVersion: 1 });
+    await root('POST', `transit/keys/${replacedKey}/config`, { deletion_allowed: true });
+    expectOk(await root('DELETE', `transit/keys/${replacedKey}`), 'delete');
+    expectOk(await root('POST', `transit/keys/${replacedKey}`, { type: 'ecdsa-p256' }), 'recreate');
+    await watcher.poll();
+    expect(watcher.status()).toMatchObject({ ready: false, custodyViolation: 'key_replaced' });
+    await expect(mintAccessToken(watcher, claims())).rejects.toThrow(/signing unavailable/);
+    const { rows } = await t().superuser.query<{ details: Record<string, unknown> }>(
+      `SELECT details FROM audit.audit_event WHERE action = 'secret.custody_violation' AND org_id = $1`,
+      [org2],
+    );
+    expect(rows).toEqual([
+      {
+        details: {
+          key: replacedKey,
+          flag: 'key_replaced',
+          exportable: false,
+          allow_plaintext_backup: false,
+          key_replaced: true,
+        },
+      },
+    ]);
+  });
+});

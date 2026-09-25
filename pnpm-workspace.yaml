@@ -43,6 +43,7 @@ catalog:
   eslint: 10.11.0
   i18next: 26.4.2
   i18next-cli: 1.74.1
+  jose: 6.2.12
   jsdom: 30.1.0
   kysely: 0.29.6
   pg: 8.23.0

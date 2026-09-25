@@ -22,3 +22,4 @@ docs/
 test-results/
 playwright-report/
 services/control-plane/src/db/migration-checksums.generated.ts
+services/control-plane/openapi/control-plane.v1.json
