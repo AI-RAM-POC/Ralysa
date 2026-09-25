@@ -1,0 +1,50 @@
+# gitleaks config for shipped-artefact scans in the `quality` job (F-001 design §6.2.2;
+# SEC-F001-05). It has NO allow-list, ever, and it does not [extend] the repository config, so
+# it can never inherit one. check-gitleaks-config fails on any [allowlist]/[[allowlists]] here,
+# on an [extend] path or disabledRules, and on custom rules that differ from .gitleaks.toml.
+title = "Ralysa: shipped-artefact scans"
+
+[extend]
+useDefault = true
+
+# --- Custom rules (T05, SEC-F001-24). Keep in sync with .gitleaks.artefacts.toml. -------------
+
+[[rules]]
+id = "azure-openai-key"
+description = "Azure OpenAI / Azure AI Services key (32 hex) near an Azure keyword"
+regex = '''(?i)(?:azure|aoai|openai\.azure\.com|cognitiveservices|api[_-]?key).{0,40}?\b([a-f0-9]{32})\b'''
+secretGroup = 1
+entropy = 3.0
+keywords = ["azure", "aoai", "cognitiveservices", "api-key", "api_key", "apikey"]
+
+[[rules]]
+id = "litellm-key"
+description = "LiteLLM master or virtual key near a LiteLLM keyword"
+regex = '''(?i)(?:litellm|master[_-]?key|virtual[_-]?key).{0,40}?\b(sk-[A-Za-z0-9_-]{20,})'''
+secretGroup = 1
+entropy = 3.0
+keywords = ["litellm", "master_key", "master-key", "masterkey", "virtual_key", "virtual-key", "virtualkey"]
+
+[[rules]]
+id = "mistral-api-key"
+description = "Mistral API key (32 alphanumerics) near a Mistral keyword"
+regex = '''(?i)mistral.{0,40}?\b([A-Za-z0-9]{32})\b'''
+secretGroup = 1
+entropy = 3.5
+keywords = ["mistral"]
+
+[[rules]]
+id = "groq-api-key"
+description = "Groq API key"
+regex = '''\b(gsk_[A-Za-z0-9]{52})\b'''
+secretGroup = 1
+entropy = 3.5
+keywords = ["gsk_"]
+
+[[rules]]
+id = "ralysa-selftest-canary"
+description = "Self-test canary: proves this config, not the built-in default, was loaded"
+regex = '''\b(RALYSA_SELFTEST_CANARY_[A-Z0-9]{24})\b'''
+secretGroup = 1
+entropy = 3.0
+keywords = ["ralysa_selftest_canary_"]

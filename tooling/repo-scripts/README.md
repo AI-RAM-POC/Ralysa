@@ -11,6 +11,10 @@ node tooling/repo-scripts/src/cli.ts check-tsrefs
 node tooling/repo-scripts/src/cli.ts check-turbo-config
 node tooling/repo-scripts/src/cli.ts check-banned-deps
 node tooling/repo-scripts/src/cli.ts check-imports
+node tooling/repo-scripts/src/cli.ts check-gitleaks-config
+node tooling/repo-scripts/src/cli.ts check-ci-invariants
+sh tooling/repo-scripts/bin/install-tool.sh gitleaks [--verify]   # pnpm tools:install
+node tooling/repo-scripts/src/secret-scan-cli.ts <pr --base <sha> --head <sha>|tree|history|artefacts|selftest>   # pnpm secret-scan
 pnpm scaffold <apps|packages|services>/<name> --kind <library|library-isomorphic|service|app|cli>
 node tooling/repo-scripts/src/cli.ts summary [--file .turbo/runs/<id>.json] [--out "$GITHUB_STEP_SUMMARY"]
 ralysa-repo placeholder-guard                          # the four scripts of every placeholder package
@@ -23,9 +27,28 @@ ralysa-repo placeholder-guard                          # the four scripts of eve
 | `check-turbo-config` | The root `turbo.json` doesn't disable the remote cache or lacks a required `globalDependencies` entry; or the root **or any package-level `<workspace>/turbo.json`** lets a `check*`, `scan*`, `check:generated` or `test:integration` task resolve to cached (a package task without `cache` inherits the root's value); or a package-level file carries a root-only key (SEC-F001-12, -23). |
 | `check-banned-deps` | A banned package (the groups in `tooling/eslint-config/boundaries.js`) is anywhere in the `pnpm-lock.yaml` graph of a workspace or the root (prod, dev and optional, any depth) on a path that doesn't contain one of the group's `graphAllowedThrough` sequences. The Agent SDK only through `@ralysa/agent-host`; `@anthropic-ai/sdk` only through `@ralysa/agent-host` → `@anthropic-ai/claude-agent-sdk` or `@ralysa/model-gateway`; model providers only through `@ralysa/model-gateway`; vendor telemetry never. Names are the resolved names, so an `npm:` alias can't hide one. Also fails when `apps/web` or `packages/*` depend on `@ralysa/agent-host`, when anything depends on `@ralysa/ui-lab` (`WORKSPACE_DEPENDENCY_RULES`), and, fail-closed, on a lockfile version other than 9.0 or an entry it can't resolve. Each finding carries one witness path (ADR-0012, SR-03, ADR-0024, AC-13; SEC-F001-08, -09 a/c). |
 | `check-imports` | dependency-cruiser, with the root `.dependency-cruiser.cjs`, finds a forbidden import (static, `require()` or `import()` with a literal, type-only included) in `apps/`, `packages/`, `services/`, `tooling/` or `packs/`: a banned package outside its allowed paths, anything importing `apps/ui-lab` or `packs/`, or a layering break (packages → apps/services, app → other app, apps → services, service → other service). Also fails if the options leave no package target in the graph (`imports/graph-sanity`), because then the package rules couldn't fire. |
+| `check-gitleaks-config` | Fails when `.gitleaks.artefacts.toml` has any allow-list (top-level or per rule, `allowlist` or `allowlists`) or `[extend] disabledRules`; when either config drops `[extend] useDefault = true` or loads another config (`[extend] path`/`url`); when a `.gitleaks.toml` path allow-list entry isn't anchored with `^`, or that file has a content allow-list (`regexes`, `stopwords`, `commits`); when a custom rule (`azure-openai-key`, `litellm-key`, `mistral-api-key`, `groq-api-key`, `ralysa-selftest-canary`) is missing or lacks keywords or an entropy floor of at least 3; when the two files' `[[rules]]` differ; or when a `.gitleaksignore` is tracked anywhere, because gitleaks would read it as a second allow-list (SEC-F001-05, -24). |
+| `check-ci-invariants` | Fails when `packageManager` isn't `pnpm@x.y.z+sha512.<hash>`; when a workflow or job has an unconditional `cancel-in-progress: true`; when a job running `secret-scan pr` or `history` checks out without `fetch-depth: 0`; when a direct gitleaks call in a workflow, `.githooks/*` or `bin/*` lacks `--config`; when the `secret-scan` job runs pnpm, npm, npx, corepack or turbo; or when a Playwright image isn't pinned by digest, or CI and `apps/ui-lab/scripts/e2e-update.sh` use different digests (SEC-F001-06, -20, -21). |
 | `placeholder-guard` | A placeholder package holds anything besides `README.md` and `package.json`. |
 | `summary` | A workspace is missing one of the four required tasks in the Turbo run. It also renders the workspace × task table for the CI job summary, reading only the run's `execution` and `tasks` (never the `user` or `scm` blocks). |
 | `check-tsrefs` | The root `tsconfig.json` doesn't reference exactly the workspaces that have a `tsconfig.json`, or a workspace doesn't reference a TypeScript library it depends on. |
+
+## Secret scanning (F-001 design §6.2)
+
+- **`bin/install-tool.sh gitleaks`** (`pnpm tools:install`) downloads gitleaks for `linux_x64`, `darwin_arm64` or `darwin_x64` into `.tools/gitleaks/<version>/`, which git ignores.
+  - It checks the archive **and** the extracted binary against **`bin/tool-hashes.txt`**. That file is committed and holds the version, the URL and both SHA-256 values. A hash is never read from a downloaded checksums file.
+  - An existing binary (a restored cache) is re-verified and never replaced. `--verify` only verifies.
+  - gitleaks 8.30.1 is pinned. To upgrade, update all three lines after checking the release digests, the release's checksums file and your own download.
+- **`src/secret-scan-cli.ts`** (`pnpm secret-scan`) is the only way gitleaks runs. It imports only `node:*`, so the CI `secret-scan` job needs no install.
+  - Every call re-hashes the binary and passes `--config` explicitly, with `--redact --ignore-gitleaks-allow --exit-code 1` and a JSON report.
+  - It points `--gitleaks-ignore-path` at an empty folder, and refuses a target that holds a `.gitleaksignore`.
+  - Exit codes: 0 is clean; 1 is findings or a failed self-test; 2 is a usage or scanner error, which covers any gitleaks exit other than 0 or 1.
+  - `pr --base <sha> --head <sha>` scans the new commits. It fails on an empty range ("is the base commit fetched?").
+  - `tree` and `history` scan the working tree and the full history, with `.gitleaks.toml`.
+  - `artefacts` scans every `ralysa.artefacts` path of every `shipped: true` workspace, with `.gitleaks.artefacts.toml`. A missing path fails.
+  - `selftest` runs the dir, git, artefact and canary cases, with synthetic credentials assembled at runtime.
+- Reports go to `$RUNNER_TEMP/secret-scan-reports` in CI (uploaded on failure), to `.tools/reports` locally, or to `--report-dir`. Secrets are redacted in them.
+- The `@ralysa/repo-scripts` tests run the real binary. They fail with "run pnpm tools:install" if it isn't installed.
 
 ## Scaffold templates
 
@@ -42,6 +65,6 @@ Tests put every temp folder through `test/temp.ts`; `test/setup.ts` removes them
 
 Both are protected paths: loosening them is a reviewed change.
 
-Dependencies: `dependency-cruiser` 18.2.0 (MIT, provenance-attested, no install scripts) for `check-imports`.
+Dependencies: `dependency-cruiser` 18.2.0 (MIT) for `check-imports`, and `smol-toml` 1.8.0 (BSD-3-Clause, no dependencies) for `check-gitleaks-config`. Both are provenance-attested and have no install scripts.
 
-There are no environment variables.
+Environment: the secret-scan commands read `RUNNER_TEMP` (set by GitHub Actions) to choose the report and self-test folders. There are no other environment variables.

@@ -15,6 +15,7 @@
   },
   "dependencies": {
     "dependency-cruiser": "18.2.0",
+    "smol-toml": "1.8.0",
     "typescript": "catalog:",
     "yaml": "catalog:",
     "zod": "catalog:"

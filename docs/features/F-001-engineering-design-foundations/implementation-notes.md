@@ -273,6 +273,69 @@ Branch `feat/F-001-boundaries-secrets` (T04, T05 and T16 together, one commit pe
   - The four layering rules and the graph-sanity guard are covered.
 - TC-F-001-30 (`packs/*` not a workspace glob) was already covered by T02's `check-workspaces`, which runs in `repo-checks`.
 
+## T05: CI secret scan
+
+### What landed
+
+- **`tooling/repo-scripts/bin/tool-hashes.txt`** pins gitleaks **8.30.1** for `linux_x64`, `darwin_arm64` and `darwin_x64`. Each line holds the URL, the archive SHA-256 and the extracted-binary SHA-256.
+- **`bin/install-tool.sh`** (POSIX sh) checks the archive, extracts only the binary and checks it too, then moves it into `.tools/gitleaks/8.30.1/`. It never reads a downloaded checksums file. An existing binary is re-verified, and a mismatch fails and is not replaced. `--verify` only verifies.
+- **`.gitleaks.toml`** and **`.gitleaks.artefacts.toml`**: `[extend] useDefault = true`, no allow-lists, and the same five custom rules (`azure-openai-key`, `litellm-key`, `mistral-api-key`, `groq-api-key`, `ralysa-selftest-canary`), each with keywords and an entropy floor.
+- **`src/secret-scan.ts`**, **`src/secret-scan-selftest.ts`** and **`src/secret-scan-cli.ts`** (`pnpm secret-scan pr|tree|history|artefacts|selftest`). They are dependency-free, so the `secret-scan` job has no install. Every call re-hashes the binary, uses explicit `--config` and the fixed flags, and treats exit codes as 0 = pass, 1 = findings, anything else = scanner error. It also treats exit 1 with an empty report, and exit 0 with findings, as scanner errors. The PR scan asserts a non-empty `base..head`, and a missing artefact path fails.
+- **`check-gitleaks-config`** and **`check-ci-invariants`**, both in `repo-check`.
+- **CI:**
+  - A new **`secret-scan`** job: `fetch-depth: 0`, no install and no build, the gitleaks cache keyed on `tool-hashes.txt` and re-verified, then the PR range (PRs), tree, full history (push to `main`) and self-tests. Reports are uploaded on failure.
+  - In **`quality`**: gitleaks is installed before the Turbo run (see T05-6), and `secret-scan artefacts` runs after the build, outside Turbo.
+  - `required-checks.json` adds `secret-scan`.
+- Root scripts `tools:install` and `secret-scan`.
+
+### Versions and hashes (checked 2026-09-25)
+
+| Item | Pinned | Evidence |
+|---|---|---|
+| gitleaks | **8.30.1** (MIT), released 2026-03-21, the `Latest` GitHub release (8.30.0 was 2025-11-26) | `gh release view v8.30.1 --repo gitleaks/gitleaks` asset digests = the lines in the release's `gitleaks_8.30.1_checksums.txt` = `shasum -a 256` of each downloaded tarball, for all three platforms. |
+| archive `linux_x64` | `551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb` | as above |
+| archive `darwin_arm64` | `b40ab0ae55c505963e365f271a8d3846efbc170aa17f2607f13df610a9aeb6a5` | as above |
+| archive `darwin_x64` | `dfe101a4db2255fc85120ac7f3d25e4342c3c20cf749f2c20a18081af1952709` | as above |
+| binary `linux_x64` | `88f91962aa2f93ac6ab281d553b9e125f5197bbbce38f9f2437f7299c32e5509` | sha256 of `gitleaks` extracted from the verified tarball |
+| binary `darwin_arm64` | `ba52fb1bfabbcde42f032afad3d6e0b19dff8ed105229a16e7caa338bbc0e84f` | as above; `gitleaks version` prints `8.30.1` |
+| binary `darwin_x64` | `cee01fea7173f1b779dff188e1c26ecbcb4027d394acc573b23aaf0be260e291` | as above |
+| smol-toml | **1.8.0** (BSD-3-Clause, no dependencies, no install scripts, SLSA provenance) | New dependency of `@ralysa/repo-scripts` for `check-gitleaks-config`. 1.9.0 (2026-09-22) is under 30 days old; 1.8.0 is from 2026-08-11. The lockfile adds only this package. |
+
+### Recorded decisions and deviations
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T05-1 | **Design gap (not redesigned; needs a decision)** | `[extend] useDefault = true` makes both configs inherit **gitleaks' default global allow-list**, so the artefact config is not allow-list-free, as §6.2.2 ("None, ever") and SEC-F001-05 intend. From the v8.30.1 `config/gitleaks.toml`, it skips any path matching, among others: `gitleaks\.toml` (unanchored, so any file whose path contains it); image and font extensions (`.svg`, `.png`, `.woff2` …); `(?:^\|/)node_modules(?:/.*)?$`; lockfiles; and `(?:^\|/)(?:angular\|bootstrap\|jquery(?:-?ui)?\|plotly\|swagger-?ui)[a-zA-Z0-9.-]*(?:\.min)?\.js(?:\.map)?$`. It also has content regexes (`true\|false\|null`, `${VAR}` shapes) and stopwords. So a Vite chunk named `swagger-ui-<hash>.js`, or a secret inside an `.svg` in `dist/`, would not be reported. gitleaks has no option to extend the default rules without their global allow-list. `check-gitleaks-config` can't see it, because it is inside the binary's default, not in our file. | The design mandates both `useDefault = true` and an allow-list-free artefact config, and in gitleaks 8.30.1 the two conflict. The self-test's `dist/assets/index-abc123.js` path is not affected, so TC-F-001-38 passes as specified. **Options for the security reviewer:** (a) accept the residual risk and record it; (b) in the artefact config, vendor the default rules without `[extend]` (about 3,200 lines to keep in sync on every gitleaks upgrade; `check-gitleaks-config` could diff them against the pinned release); (c) add artefact self-test cases for the skipped shapes so the gap is visible. I haven't picked one. |
+| T05-2 | Hardening within the design's intent | **`.gitleaksignore` is neutralised.** The wrapper passes `--gitleaks-ignore-path <empty folder>` and **refuses a target that holds a `.gitleaksignore`**. `check-gitleaks-config` fails on any tracked `.gitleaksignore`. | Checked with 8.30.1: a `.gitleaksignore` in the scanned directory's root suppressed a matching finding **even with `-i` pointing at an empty folder** (a nested one doesn't). That is a second allow-list outside the configs, which §6.2.2 rules out ("the configs are the only allow-list"). A `public/.gitleaksignore` would be copied into `dist/` by Vite. |
+| T05-3 | Open (design allows) | `azure-openai-key` covers the **32-hex format only**. | §6.2.2 asks to add the newer long Azure key format "if T05 confirms it". I couldn't confirm it from an authoritative source (web search; the GitGuardian detector page publishes no format). Add it when Microsoft or GitHub secret-scanning documentation gives the pattern. |
+| T05-4 | Implementation choice | `check-gitleaks-config` also fails on `[extend] path`/`url` (either config), `[extend] disabledRules` (artefact config), content allow-lists (`regexes`, `stopwords`, `commits`) in the repo config, and a custom rule with no keywords or an entropy floor below 3. | Each enforces a sentence of §6.2.2: the artefact config "can never inherit an allow-list", there are "no content allow-list entries", and each rule has "keyword context and an entropy floor". |
+| T05-5 | Implementation choice | The scans run through a **separate, dependency-free entry `src/secret-scan-cli.ts`**, not a `ralysa-repo` subcommand. | `cli.ts` imports `yaml`, `typescript` and dependency-cruiser, and the `secret-scan` job has no install (§8.2). The same constraint shaped `pre-install-gate.ts`. |
+| T05-6 | Sequencing and developer impact | In `quality`, gitleaks is installed **before** the Turbo run, and the `@ralysa/repo-scripts` tests that need it **fail** (they don't skip) with "run pnpm tools:install" when it is missing. `pnpm test` therefore needs a one-time `pnpm tools:install` per checkout, including each git worktree. | TC-F-001-03, -37, -38 and -39 prove detection with the real, hash-pinned scanner, so a fake would prove nothing, and a skip could let CI pass without running them. §9 already makes `pnpm tools:install` a one-time developer step. |
+| T05-7 | Implementation choice | `tool-hashes.txt` also holds the **URL** and the **binary** hash, not only the archive hash per platform. | The binary hash is what every wrapper call re-verifies (§6.2.1). The URL in the reviewed file lets the tests run `install-tool.sh` against a `file://` archive, with no network and no test-only environment variables. |
+| T05-8 | Implementation note | The keyword rules match the keyword, then up to 40 characters of anything (`.{0,40}?`), then the value. | A narrower character class missed `…openai.azure.com"; const k = "<key>"`. Values that come **before** the keyword aren't matched. |
+| T05-9 | Implementation note | `check-ci-invariants` also enforces "no install, no build" in the `secret-scan` job. The Playwright digest check passes vacuously until T13/T14 add an image. | §8.2 states the first; the second is in TC-F-001-44 and becomes live with T13. |
+| T05-10 | Implementation choice | The self-test fixtures build every token prefix with `frag('AK', 'IA')` and similar calls. No token body or prefix-shaped literal is in the source. | §6.2.5: "no matching literal exists in the repo". The lint rule `no-unnecessary-template-expression` rejected the first `${'AK'}${'IA'}` form, and its autofix would have joined the prefixes. |
+
+### Local results (2026-09-25, darwin_arm64)
+
+- `pnpm tools:install`: downloaded, archive and binary verified. A second run printed "gitleaks 8.30.1 verified".
+- `pnpm secret-scan selftest`: dir, git, artefact and canary ✓. `tree`, `history` (all commits) and `artefacts` (`apps/web/dist`): **0 findings**. `pr --base 99c55d6 --head <T04 commit>`: 0 findings. With `--base` = `--head`: exit 2, "scan range is empty; is the base commit fetched?".
+- **Not done:** TC-F-001-04 (the manual throw-away-branch PR) and the first CI run of the `secret-scan` job. Both need a PR, and this task says not to open one.
+
+### Tests added (T05)
+
+- `test/secret-scan-selftest.test.ts` (20):
+  - The four self-test cases.
+  - **TC-F-001-03:** every synthetic credential is reported at file:line, and the planted values are absent from the JSON report (redaction).
+  - **TC-F-001-37:** the git range finds the set and ties it to the commit, and a clean range passes. The range helper fails on an empty range, a missing SHA and a non-SHA. The wrapper fails on exit 2, exit 126, a signal, exit 1 with no report, and exit 0 with findings. A target holding a `.gitleaksignore` is refused.
+  - **The canary** fires with both of our configs and not with a default-only config.
+  - **Re-verification:** a tampered or missing binary is refused.
+  - **TC-F-001-38:** the exact CI command (`secret-scan-cli.ts artefacts`) on a throw-away repo finds a key under `apps/web/dist/assets/index-abc123.js`. A missing `dist` fails. A tampered binary makes `artefacts`, `tree` and `selftest` exit 2.
+- `test/gitleaks-rules.test.ts` (3), **TC-F-001-39:** 11 positive fixtures across the five custom rules fire in both configs. 11 negatives trigger no custom rule: bare 32-hex hashes, a UUID next to `AZURE_OPENAI`, a keyword more than 40 characters away, `sk-` without context, LiteLLM context without a key, a low-entropy or 31-character Mistral value, a short `gsk_`, and a lowercase or short canary.
+- `test/check-gitleaks-config.test.ts` (16), **TC-F-001-38 config part:** the real files pass. It fails on an artefact `[allowlist]`, `[[allowlists]]`, an empty `[allowlist]`, a rule-level allow-list, and `disabledRules`; on an unanchored repo path (an anchored one passes); on content allow-lists; on diverging rules; on a missing rule; on a weak entropy floor; on `useDefault = false` or `[extend] path`; and on a tracked `.gitleaksignore`.
+- `test/check-ci-invariants.test.ts` (22), **TC-F-001-44:** five bad `packageManager` values; a missing `fetch-depth: 0`; four gitleaks calls without `--config` (in a workflow and in a hook), while five `--config`/`-c`/comment/wrapper forms pass; an unconditional `cancel-in-progress` at the top level and in a job; an install in `secret-scan`; and Playwright digests (same passes, different fails, tag-only fails).
+- `test/install-tool.test.ts` (8), **TC-F-001-44:** install and print the path; re-verify instead of downloading; `--verify` and install both fail on a tampered cached binary and leave it untouched; `--verify` fails when the binary is missing; an archive or binary hash mismatch installs nothing; an unknown tool or bad option fails; the real register pins 8.30.1 × 3 GitHub URLs.
+
 ## Version confirmations (npm registry, 2026-09-25 ~08:20 UTC)
 
 Policy (§2.2): the latest patch of a line GA for at least 30 days, and `minimumReleaseAge` holds back anything under 3 days old. Cut-off for the 3-day rule: 2026-09-22T08:20Z.

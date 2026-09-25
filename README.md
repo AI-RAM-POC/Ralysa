@@ -29,9 +29,12 @@ pnpm workspaces + Turborepo on Node.js 24 LTS. pnpm comes from Corepack, which v
 
 ```bash
 nvm use && corepack enable
+node tooling/repo-scripts/src/pre-install-gate.ts  # before pnpm, especially on someone else's branch
 pnpm install
+pnpm tools:install                               # once: hash-pinned gitleaks into .tools/ (the tests use it)
 pnpm lint && pnpm typecheck && pnpm test && pnpm build
-pnpm repo:check                                  # workspace, tsconfig and Turbo checks + prettier
+pnpm repo:check                                  # workspace, boundary, gitleaks-config and CI checks + prettier
+pnpm secret-scan tree                            # also: pr --base <sha> --head <sha>, history, artefacts, selftest
 pnpm scaffold services/<name> --kind service     # turn a placeholder into a real package
 ```
 

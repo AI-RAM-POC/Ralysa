@@ -9,11 +9,16 @@
 //   ralysa-repo check-turbo-config       remote cache off, globalDependencies, uncached checks
 //   ralysa-repo check-banned-deps        banned packages in the lockfile graph (SR-03, ADR-0012)
 //   ralysa-repo check-imports            dependency-cruiser import boundaries (.dependency-cruiser.cjs)
+//   ralysa-repo check-gitleaks-config    the two gitleaks configs (no artefact allow-list, same rules)
+//   ralysa-repo check-ci-invariants      packageManager hash, fetch-depth, gitleaks --config, cancel-in-progress
+// The secret scans themselves run through secret-scan-cli.ts (dependency-free).
 //   ralysa-repo placeholder-guard        run inside a placeholder package (its four scripts)
 //   ralysa-repo scaffold <path> --kind <kind>
 //   ralysa-repo summary [--file <run.json>] [--out <file>]
 import { appendFileSync } from 'node:fs';
 import { checkBannedDeps } from './check-banned-deps.ts';
+import { checkCiInvariantsFiles } from './check-ci-invariants.ts';
+import { checkGitleaksConfigFiles } from './check-gitleaks-config.ts';
 import { checkImports } from './check-imports.ts';
 import { checkTsrefs } from './check-tsrefs.ts';
 import { checkConfigGate } from './config-gate.ts';
@@ -35,6 +40,8 @@ const REPO_CHECKS: Record<string, Check> = {
   'check-turbo-config': (root) => checkTurboConfigFile(root),
   'check-banned-deps': (root) => checkBannedDeps({ root }),
   'check-imports': (root) => checkImports({ root }),
+  'check-gitleaks-config': (root) => checkGitleaksConfigFiles(root),
+  'check-ci-invariants': (root) => checkCiInvariantsFiles(root),
 };
 
 function report(name: string, findings: Finding[]): boolean {

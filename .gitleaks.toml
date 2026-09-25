@@ -1,0 +1,54 @@
+# gitleaks config for repository scans: PR range, working tree, full history, and the local
+# pre-commit and agent commit hooks (F-001 design §6.2.2; SEC-F001-05, -24).
+#
+# - Always passed explicitly with --config, with --redact and --ignore-gitleaks-allow, so inline
+#   `gitleaks:allow` comments don't count and this file is the only allow-list (SEC-F001-06).
+# - No allow-list entries at start. A future path entry must be anchored at the repo root
+#   (`^apps/...`); check-gitleaks-config enforces it. No content allow-list entries.
+# - The [[rules]] below must stay identical to .gitleaks.artefacts.toml (check-gitleaks-config).
+title = "Ralysa: repository scans"
+
+[extend]
+useDefault = true
+
+# --- Custom rules (T05, SEC-F001-24). Keep in sync with .gitleaks.artefacts.toml. -------------
+
+[[rules]]
+id = "azure-openai-key"
+description = "Azure OpenAI / Azure AI Services key (32 hex) near an Azure keyword"
+regex = '''(?i)(?:azure|aoai|openai\.azure\.com|cognitiveservices|api[_-]?key).{0,40}?\b([a-f0-9]{32})\b'''
+secretGroup = 1
+entropy = 3.0
+keywords = ["azure", "aoai", "cognitiveservices", "api-key", "api_key", "apikey"]
+
+[[rules]]
+id = "litellm-key"
+description = "LiteLLM master or virtual key near a LiteLLM keyword"
+regex = '''(?i)(?:litellm|master[_-]?key|virtual[_-]?key).{0,40}?\b(sk-[A-Za-z0-9_-]{20,})'''
+secretGroup = 1
+entropy = 3.0
+keywords = ["litellm", "master_key", "master-key", "masterkey", "virtual_key", "virtual-key", "virtualkey"]
+
+[[rules]]
+id = "mistral-api-key"
+description = "Mistral API key (32 alphanumerics) near a Mistral keyword"
+regex = '''(?i)mistral.{0,40}?\b([A-Za-z0-9]{32})\b'''
+secretGroup = 1
+entropy = 3.5
+keywords = ["mistral"]
+
+[[rules]]
+id = "groq-api-key"
+description = "Groq API key"
+regex = '''\b(gsk_[A-Za-z0-9]{52})\b'''
+secretGroup = 1
+entropy = 3.5
+keywords = ["gsk_"]
+
+[[rules]]
+id = "ralysa-selftest-canary"
+description = "Self-test canary: proves this config, not the built-in default, was loaded"
+regex = '''\b(RALYSA_SELFTEST_CANARY_[A-Z0-9]{24})\b'''
+secretGroup = 1
+entropy = 3.0
+keywords = ["ralysa_selftest_canary_"]
