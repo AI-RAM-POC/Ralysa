@@ -1,6 +1,6 @@
 # ADR-0029: Zone-level HA with synchronous Postgres standby; DR to a second in-country location, never cross-border by default
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-25
 - **Deciders:** Architect (proposal); Tech lead (G3)
 - **Related:** spec §8 Data residency, §12 Availability and Recoverability; REQ-096, REQ-104, REQ-110; DV-1; market MA-301, MA-303; F-023, F-043; `docs/architecture/deployment.md` §6–§7
@@ -52,4 +52,4 @@ Also: CloudNativePG WAL archiving and PITR, https://cloudnative-pg.io/docs/1.28/
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| | | | | |
+| Ram Mohan Rao Adduri | Founder / Product owner (acting tech lead) | Approved | 2026-09-25 | Approval given in chat ("accept all"); recorded by Claude on the approver's instruction. |

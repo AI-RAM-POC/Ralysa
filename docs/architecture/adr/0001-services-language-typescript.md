@@ -1,6 +1,6 @@
 # ADR-0001: TypeScript for control plane and Ralysa-owned services
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-25
 - **Deciders:** Proposed by architect agent (stream A). Decision owner: Tech lead (G3).
 - **Related:** spec §4 D2/D9, §6.2.1, §10.3, §15 Q3; REQ-010, REQ-011, REQ-015, REQ-027, REQ-098, REQ-110; F-002, F-003, F-004, F-005
@@ -76,4 +76,4 @@ Any new exception needs its own ADR.
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| | | | | |
+| Ram Mohan Rao Adduri | Founder / Product owner (acting tech lead) | Approved | 2026-09-25 | Approval given in chat ("accept all"); recorded by Claude on the approver's instruction. |

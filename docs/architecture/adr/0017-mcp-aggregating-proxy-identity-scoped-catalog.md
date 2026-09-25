@@ -1,6 +1,6 @@
 # ADR-0017: MCP Gateway as an aggregating proxy with an identity-scoped virtual tool catalog
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-25
 - **Deciders:** Tech lead (G3 approver); proposed by architect
 - **Related:** spec §4 D5, §6.4.2 (hidden tools), §6.6.1, §6.15.5, §8 Supply chain · REQ-022, REQ-033, REQ-034, REQ-055, REQ-078 · summary R-5(e) · [mcp-gateway.md](../mcp-gateway.md) §2, §7
@@ -51,4 +51,4 @@ All accessed 2026-09-25.
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| | | | | |
+| Ram Mohan Rao Adduri | Founder / Product owner (acting tech lead) | Approved | 2026-09-25 | Approval given in chat ("accept all"); recorded by Claude on the approver's instruction. |

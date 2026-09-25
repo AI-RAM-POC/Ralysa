@@ -1,6 +1,6 @@
 # ADR-0010: Ralysa Token Service brokers all IdP sign-ins and mints audience-bound Ralysa tokens
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-25
 - **Deciders:** Tech lead (G3 approver); proposed by architect
 - **Related:** spec §4 D3, §6.4.1, §8 Authentication/Secrets, §9, §12 · REQ-001, REQ-016, REQ-017, REQ-021, REQ-069, REQ-078, REQ-095 · F-002, F-005 · [identity-and-policy.md](../identity-and-policy.md) §3.1 · [security.md](../security.md) TM-01, SR-08, OQ-S4 · Revised in the G3 consistency review (CLI sign-in options added)
@@ -85,4 +85,4 @@ All accessed 2026-09-25.
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| | | | | |
+| Ram Mohan Rao Adduri | Founder / Product owner (acting tech lead) | Approved | 2026-09-25 | Approval given in chat ("accept all"); recorded by Claude on the approver's instruction. |

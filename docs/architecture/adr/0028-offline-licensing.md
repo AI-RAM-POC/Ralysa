@@ -1,6 +1,6 @@
 # ADR-0028: Signed licence file (JWS, EdDSA) verified locally, with optional online sync
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-25
 - **Deciders:** Architect (proposal); Tech lead (G3)
 - **Related:** spec §6.15.7; REQ-081, REQ-103c; DV-1; market R-4; F-013, F-042; `docs/architecture/deployment.md` §9
@@ -46,4 +46,4 @@ Option **A**:
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| | | | | |
+| Ram Mohan Rao Adduri | Founder / Product owner (acting tech lead) | Approved | 2026-09-25 | Approval given in chat ("accept all"); recorded by Claude on the approver's instruction. |

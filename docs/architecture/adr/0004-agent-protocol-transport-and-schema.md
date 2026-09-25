@@ -1,6 +1,6 @@
 # ADR-0004: Agent Protocol: JSON-RPC 2.0, JSON Schema contract authored in zod, engine-neutral types
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-25
 - **Deciders:** Proposed by architect agent (stream A). Decision owner: Tech lead (G3).
 - **Related:** spec §4 D2/D8, §5.1, §6.2, §14 (Agent SDK dependency); REQ-008, REQ-009, REQ-011, REQ-012, REQ-015, REQ-062, REQ-069; MA-109; F-003, F-005, F-017
@@ -91,4 +91,4 @@ Forces:
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| | | | | |
+| Ram Mohan Rao Adduri | Founder / Product owner (acting tech lead) | Approved | 2026-09-25 | Approval given in chat ("accept all"); recorded by Claude on the approver's instruction. |

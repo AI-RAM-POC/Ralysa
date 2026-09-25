@@ -1,6 +1,6 @@
 # ADR-0020: Web sandbox isolation (gVisor/Kata via RuntimeClass) and orchestration (agent-sandbox with warm pools)
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-25
 - **Deciders:** Architect (proposal); Tech lead (G3)
 - **Related:** spec §6.3, §8 Isolation, §12 Web runtime; REQ-013, REQ-014, REQ-096; DV-16; F-016, F-024; `docs/architecture/workspace-runtime.md`
@@ -67,4 +67,4 @@ Also: Kubernetes RuntimeClass, https://kubernetes.io/docs/concepts/containers/ru
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| | | | | |
+| Ram Mohan Rao Adduri | Founder / Product owner (acting tech lead) | Approved | 2026-09-25 | Approval given in chat ("accept all"); recorded by Claude on the approver's instruction. |

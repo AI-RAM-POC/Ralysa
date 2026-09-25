@@ -1,6 +1,6 @@
 # ADR-0021: Tamper-evident audit store (insert-only Postgres, sharded hash chain, signed Merkle checkpoints on WORM storage)
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-25
 - **Deciders:** Architect (proposal); Tech lead (G3)
 - **Related:** spec §6.14, §8 Audit, §12 Observability; REQ-071, REQ-072, REQ-075, REQ-099, REQ-100; DV-12; F-004, F-011; `docs/architecture/observability-audit.md` §5
@@ -58,4 +58,4 @@ All accessed 2026-09-25.
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| | | | | |
+| Ram Mohan Rao Adduri | Founder / Product owner (acting tech lead) | Approved | 2026-09-25 | Approval given in chat ("accept all"); recorded by Claude on the approver's instruction. |

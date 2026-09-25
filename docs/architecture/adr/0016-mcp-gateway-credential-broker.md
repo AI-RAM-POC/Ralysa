@@ -1,6 +1,6 @@
 # ADR-0016: The MCP/Data Gateway is the sole credential broker; no token passthrough
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-25
 - **Deciders:** Tech lead (G3 approver); proposed by architect
 - **Related:** spec §6.6.1 (identity pass-through), §6.7.1, §6.7.3, §8 Secrets · REQ-035, REQ-037, REQ-040, REQ-041, REQ-066, REQ-095 · [mcp-gateway.md](../mcp-gateway.md) §8
@@ -51,4 +51,4 @@ All accessed 2026-09-25.
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| | | | | |
+| Ram Mohan Rao Adduri | Founder / Product owner (acting tech lead) | Approved | 2026-09-25 | Approval given in chat ("accept all"); recorded by Claude on the approver's instruction. |

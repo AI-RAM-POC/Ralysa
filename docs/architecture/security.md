@@ -464,4 +464,4 @@ SR-02, SR-03, SR-04 (full), SR-05, SR-09, SR-10, SR-11, SR-12, SR-13, SR-14, SR-
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| | | | | |
+| Ram Mohan Rao Adduri | Founder / Product owner (acting tech lead) | Approved | 2026-09-25 | Approval given in chat ("accept all"); recorded by Claude on the approver's instruction. |

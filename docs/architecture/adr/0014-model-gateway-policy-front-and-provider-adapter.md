@@ -1,6 +1,6 @@
 # ADR-0014: Model Gateway = Ralysa policy front + replaceable provider adapter (LiteLLM), Anthropic-compatible northbound API
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-25
 - **Deciders:** Tech lead (G3 approver); proposed by architect
 - **Related:** spec §4 D4, §6.5, §10.3, §12 · REQ-024 to REQ-032, REQ-079 · DV-2, DV-4, DV-12 · F-004 · [model-gateway.md](../model-gateway.md) · Language [ADR-0001](0001-services-language-typescript.md), Phase 0 provider [ADR-0005](0005-phase0-model-provider-and-region.md), local runtime [ADR-0006](0006-local-model-runtime.md), budgets [ADR-0019](0019-budget-enforcement-reservation-ledger.md) · [security.md](../security.md) TM-37, SR-20, SR-26, OQ-S2
@@ -74,4 +74,4 @@ All accessed 2026-09-25.
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| | | | | |
+| Ram Mohan Rao Adduri | Founder / Product owner (acting tech lead) | Approved | 2026-09-25 | Approval given in chat ("accept all"); recorded by Claude on the approver's instruction. |

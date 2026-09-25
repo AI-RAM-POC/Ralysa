@@ -1,6 +1,6 @@
 # ADR-0019: Usage budgets and metering enforced by pre-call reservation with an append-only usage ledger
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-25 (merged with the withdrawn ADR-0023 in the G3 consistency review, same date)
 - **Deciders:** Tech lead (G3 approver); proposed by architect (streams B and C)
 - **Related:** spec §6.4.4 budget, §6.5.3, §6.14, §6.15.3, §6.15.7 · REQ-027, REQ-032, REQ-054, REQ-073, REQ-074, REQ-079 · DV-4, DV-12 · F-007, F-014 · MA-402, MA-404, MA-407, MA-411, summary R-5(g), R-7 · [model-gateway.md](../model-gateway.md) §7 · [observability-audit.md](../observability-audit.md) §7 · Supersedes the content of [ADR-0023](0023-usage-metering-reserve-settle.md) (withdrawn, merged here)
@@ -62,4 +62,4 @@ All accessed 2026-09-25.
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| | | | | |
+| Ram Mohan Rao Adduri | Founder / Product owner (acting tech lead) | Approved | 2026-09-25 | Approval given in chat ("accept all"); recorded by Claude on the approver's instruction. |

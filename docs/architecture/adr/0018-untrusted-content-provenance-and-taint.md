@@ -1,6 +1,6 @@
 # ADR-0018: Untrusted tool and document content: provenance envelope, spotlighting and session taint rule
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-25
 - **Deciders:** Tech lead (G3 approver); proposed by architect
 - **Related:** spec §6.7.3, §6.12, §8 Prompt injection, §14 (High risk) · REQ-040d, REQ-042e, REQ-059, REQ-060, REQ-063 · [mcp-gateway.md](../mcp-gateway.md) §5 · [agent-protocol.md](../agent-protocol.md) §3.4
@@ -54,4 +54,4 @@ All accessed 2026-09-25.
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| | | | | |
+| Ram Mohan Rao Adduri | Founder / Product owner (acting tech lead) | Approved | 2026-09-25 | Approval given in chat ("accept all"); recorded by Claude on the approver's instruction. |

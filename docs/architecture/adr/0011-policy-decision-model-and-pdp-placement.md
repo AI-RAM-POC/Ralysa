@@ -1,6 +1,6 @@
 # ADR-0011: Policy decision model and embedded PDPs with signed policy bundles
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-25
 - **Deciders:** Tech lead (G3 approver); proposed by architect
 - **Related:** spec §4 D3/D13, §6.4.2–6.4.5, §6.15.5, §12 · REQ-019, REQ-020, REQ-021, REQ-023, REQ-027, REQ-034, REQ-060, REQ-061, REQ-064, REQ-078, REQ-110 · DV-19 · [identity-and-policy.md](../identity-and-policy.md) · Engine: [ADR-0002](0002-policy-engine-cedar.md) proposes Cedar and implements this model in its Decision 2a · Kill-switch: [ADR-0025](0025-kill-switch-enforcement.md) · Fail-closed rules: [identity-and-policy.md §5.6](../identity-and-policy.md#56-governance-state-freshness-and-fail-closed-rules-canonical)
@@ -62,4 +62,4 @@ All accessed 2026-09-25.
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| | | | | |
+| Ram Mohan Rao Adduri | Founder / Product owner (acting tech lead) | Approved | 2026-09-25 | Approval given in chat ("accept all"); recorded by Claude on the approver's instruction. |

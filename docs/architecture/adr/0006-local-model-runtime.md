@@ -1,6 +1,6 @@
 # ADR-0006: Local model runtime: vLLM, behind the Model Gateway
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-25
 - **Deciders:** Proposed by architect agent (stream A). Decision owner: Tech lead (G3).
 - **Related:** spec §6.5.2, §9, §14 (multi-model quality, regional availability); PRD DV-1, DV-2, A-4, OQ-6; REQ-025, REQ-028, REQ-030, REQ-054, REQ-102, REQ-103, REQ-110; summary R-4, R-5(d); MA-302, MA-303, MA-408; F-007, F-008, F-023, F-042
@@ -85,4 +85,4 @@ All links above were accessed 2026-09-25.
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| | | | | |
+| Ram Mohan Rao Adduri | Founder / Product owner (acting tech lead) | Approved | 2026-09-25 | Approval given in chat ("accept all"); recorded by Claude on the approver's instruction. |

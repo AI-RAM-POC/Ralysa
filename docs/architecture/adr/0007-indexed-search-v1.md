@@ -1,6 +1,6 @@
 # ADR-0007: Indexed search: not in v1; designed for, pgvector-first when built
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-25
 - **Deciders:** Proposed by architect agent (stream A). Decision owner: Tech lead (G3) with Product owner (OQ-13).
 - **Related:** spec §6.7.3, §6.15.2 (Indexed Enterprise Search add-on), §10.3 (pgvector optional), §13 Phase 3, §15 Q9; PRD OQ-3, OQ-13; REQ-036, REQ-040, REQ-042, REQ-043, REQ-044, REQ-096; F-026, F-027, F-039
@@ -78,4 +78,4 @@ Design rules now, so Phase 3 is additive:
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| | | | | |
+| Ram Mohan Rao Adduri | Founder / Product owner (acting tech lead) | Approved | 2026-09-25 | Approval given in chat ("accept all"); recorded by Claude on the approver's instruction. |

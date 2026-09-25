@@ -1,6 +1,6 @@
 # ADR-0026: One export engine for the exit bundle, evidence pack and AI register; JSONL + CSV + original files with a signed manifest
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-25
 - **Deciders:** Architect (proposal); Tech lead (G3)
 - **Related:** REQ-070, REQ-099, REQ-100; DV-3, DV-10; market R-5(i), compliance-artefact checklist #6 and #10 (QCB exit plan, CRA portability regulation); F-012; `docs/architecture/data-model.md` §6
@@ -48,4 +48,4 @@ Option **A**:
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| | | | | |
+| Ram Mohan Rao Adduri | Founder / Product owner (acting tech lead) | Approved | 2026-09-25 | Approval given in chat ("accept all"); recorded by Claude on the approver's instruction. |

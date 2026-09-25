@@ -1,6 +1,6 @@
 # ADR-0024: OpenTelemetry-only instrumentation, bundled OSS backends, Langfuse optional, audit separate from traces
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-25
 - **Deciders:** Architect (proposal); Tech lead (G3)
 - **Related:** spec §6.14, §10.3 (OpenTelemetry, Prometheus, Grafana, Langfuse), §12; REQ-072, REQ-074; F-011; `docs/architecture/observability-audit.md` §8
@@ -51,4 +51,4 @@ All accessed 2026-09-25.
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| | | | | |
+| Ram Mohan Rao Adduri | Founder / Product owner (acting tech lead) | Approved | 2026-09-25 | Approval given in chat ("accept all"); recorded by Claude on the approver's instruction. |

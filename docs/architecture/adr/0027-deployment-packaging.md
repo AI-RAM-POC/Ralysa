@@ -1,6 +1,6 @@
 # ADR-0027: One Helm umbrella chart (OCI) + per-cloud Terraform modules + signed air-gapped bundle
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-25
 - **Deciders:** Architect (proposal); Tech lead (G3)
 - **Related:** spec §9, §10.4 (`deploy/helm`, `deploy/terraform`, `deploy/docker`); REQ-098, REQ-101, REQ-102, REQ-103; DV-1; market R-4; F-023, F-042; `docs/architecture/deployment.md` §4–§5
@@ -52,4 +52,4 @@ All accessed 2026-09-25.
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| | | | | |
+| Ram Mohan Rao Adduri | Founder / Product owner (acting tech lead) | Approved | 2026-09-25 | Approval given in chat ("accept all"); recorded by Claude on the approver's instruction. |

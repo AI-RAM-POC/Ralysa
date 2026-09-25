@@ -1,6 +1,6 @@
 # ADR-0022: Write-ahead audit intent, fail-closed before any model or tool call
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-25
 - **Deciders:** Architect (proposal); Tech lead (G3)
 - **Related:** spec §6.12.1, §12 Observability; REQ-024, REQ-059d, REQ-071c, REQ-003e; F-003, F-004, F-011; `docs/architecture/observability-audit.md` §4
@@ -53,4 +53,4 @@ The envelope, event names and the reconciliation rule ("one terminal event per c
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| | | | | |
+| Ram Mohan Rao Adduri | Founder / Product owner (acting tech lead) | Approved | 2026-09-25 | Approval given in chat ("accept all"); recorded by Claude on the approver's instruction. |

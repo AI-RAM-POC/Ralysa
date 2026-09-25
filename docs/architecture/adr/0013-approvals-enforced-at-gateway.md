@@ -1,6 +1,6 @@
 # ADR-0013: Approvals are enforced at the gateway with payload-bound, single-use grants
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-25
 - **Deciders:** Tech lead (G3 approver); proposed by architect
 - **Related:** spec §4 D3, §6.1.3, §6.2.2 (`approval.required`, `approval.respond`), §6.12.2, §8 (prompt injection) · REQ-060, REQ-061, REQ-062, REQ-063, REQ-064 · [mcp-gateway.md](../mcp-gateway.md) §6 · [agent-protocol.md](../agent-protocol.md) §5.1
@@ -50,4 +50,4 @@ All accessed 2026-09-25.
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| | | | | |
+| Ram Mohan Rao Adduri | Founder / Product owner (acting tech lead) | Approved | 2026-09-25 | Approval given in chat ("accept all"); recorded by Claude on the approver's instruction. |

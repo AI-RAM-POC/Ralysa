@@ -1,6 +1,6 @@
 # ADR-0005: Phase 0 model provider and region: Claude on Vertex AI, regional endpoint only
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-25
 - **Deciders:** Proposed by architect agent (stream A). Decision owner: Tech lead (G3) with Product owner.
 - **Related:** spec §4 D4, §6.5, §8 (Data residency), §14 (regional model availability; Agent SDK dependency); PRD DV-2, DV-12, DV-18, A-8, OQ-2, OQ-4, OQ-5; REQ-001d, REQ-024, REQ-025, REQ-028, REQ-032, REQ-095; MA-302; F-004
@@ -87,4 +87,4 @@ Rules for Model Gateway v0:
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| | | | | |
+| Ram Mohan Rao Adduri | Founder / Product owner (acting tech lead) | Approved | 2026-09-25 | Approval given in chat ("accept all"); recorded by Claude on the approver's instruction. |

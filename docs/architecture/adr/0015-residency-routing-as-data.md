@@ -1,6 +1,6 @@
 # ADR-0015: Residency routing as data: endpoint eligibility labels, session tier high-water mark, never-widen fallback
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-25
 - **Deciders:** Tech lead (G3 approver); proposed by architect
 - **Related:** spec §6.5.3, §7.7, §8 Data residency, §9 · REQ-025, REQ-028, REQ-030, REQ-031, REQ-032, REQ-094 · DV-2, DV-12, DV-13, DV-18 · MA-302, MA-303, summary R-5(a)(c) · [model-gateway.md](../model-gateway.md) §4.2, §5
@@ -53,4 +53,4 @@ All accessed 2026-09-25.
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| | | | | |
+| Ram Mohan Rao Adduri | Founder / Product owner (acting tech lead) | Approved | 2026-09-25 | Approval given in chat ("accept all"); recorded by Claude on the approver's instruction. |

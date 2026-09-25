@@ -197,4 +197,4 @@ De-duplicated across overview (AQ), identity-and-policy (IQ), agent-protocol (PQ
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| | | | | |
+| Ram Mohan Rao Adduri | Founder / Product owner (acting tech lead) | Approved | 2026-09-25 | All ADRs accepted (ADR-0023 remains withdrawn). Approval given in chat ("accept all"); recorded by Claude on the approver's instruction. |

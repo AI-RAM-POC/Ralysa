@@ -1,6 +1,6 @@
 # ADR-0003: Tenancy and isolation: one organization per deployment through Phase 3
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-25
 - **Deciders:** Proposed by architect agent (stream A). Decision owner: Tech lead (G3) with Product owner (OQ-12).
 - **Related:** spec §8 (Isolation), §9, §11, §15 Q2; PRD DV-1, DV-15, OQ-12, A-2; REQ-013, REQ-081, REQ-087, REQ-090, REQ-096, REQ-100, REQ-101, REQ-102, REQ-103, REQ-105; summary R-4; MA-301, MA-302, MA-304; F-002, F-023, F-043
@@ -82,4 +82,4 @@ To keep Phase 4 additive, these rules apply from Phase 0:
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| | | | | |
+| Ram Mohan Rao Adduri | Founder / Product owner (acting tech lead) | Approved | 2026-09-25 | Approval given in chat ("accept all"); recorded by Claude on the approver's instruction. |

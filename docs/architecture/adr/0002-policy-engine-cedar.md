@@ -1,6 +1,6 @@
 # ADR-0002: Policy engine: Cedar, embedded, with a typed obligations resolver
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-25
 - **Deciders:** Proposed by architect agent (stream A). Decision owner: Tech lead (G3).
 - **Related:** spec §4 D3, §6.4.2–6.4.4, §6.12.2, §6.15.5, §15 Q6; REQ-019, REQ-020, REQ-021, REQ-022, REQ-023, REQ-027, REQ-028, REQ-034, REQ-060, REQ-061, REQ-067, REQ-070, REQ-078, REQ-094; F-006, F-008, F-009, F-010 · Decision model and PDP placement: [ADR-0011](0011-policy-decision-model-and-pdp-placement.md) (this ADR implements it on Cedar)
@@ -104,4 +104,4 @@ The ADR-0011 evaluation order maps as follows. Token validity, kill-switch and e
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| | | | | |
+| Ram Mohan Rao Adduri | Founder / Product owner (acting tech lead) | Approved | 2026-09-25 | Approval given in chat ("accept all"); recorded by Claude on the approver's instruction. |

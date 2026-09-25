@@ -1,6 +1,6 @@
 # ADR-0012: Agent Host engine port and adapter boundary; engine-neutral protocol contract; governance outside the engine
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-25
 - **Deciders:** Tech lead (G3 approver); proposed by architect
 - **Related:** spec §4 D2/D8, §6.2, §10.3, §14 (SDK dependency) · REQ-010, REQ-011, REQ-012, REQ-015, REQ-022, REQ-059 · OQ-4 · F-003 · [agent-protocol.md](../agent-protocol.md) · Transport and schema rule: [ADR-0004](0004-agent-protocol-transport-and-schema.md) · Language: [ADR-0001](0001-services-language-typescript.md)
@@ -57,4 +57,4 @@ All accessed 2026-09-25.
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| | | | | |
+| Ram Mohan Rao Adduri | Founder / Product owner (acting tech lead) | Approved | 2026-09-25 | Approval given in chat ("accept all"); recorded by Claude on the approver's instruction. |

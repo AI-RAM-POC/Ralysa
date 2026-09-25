@@ -1,6 +1,6 @@
 # ADR-0025: Kill-switch enforced at the gateways by push + poll, fail closed on stale state
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-09-25
 - **Deciders:** Architect (proposal); Tech lead (G3)
 - **Related:** REQ-064, REQ-070 (kill-switch tests in the evidence pack); DV-3; MA-305 (CBUAE AI guidance: ability to stop the service); F-012; `docs/architecture/observability-audit.md` §9; [ADR-0011](0011-policy-decision-model-and-pdp-placement.md) (signed bundles); canonical fail-closed table in [identity-and-policy.md §5.6](../identity-and-policy.md#56-governance-state-freshness-and-fail-closed-rules-canonical) (rule G-1 is this ADR)
@@ -46,4 +46,4 @@ Option **A**, plus the notification from C for user experience:
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| | | | | |
+| Ram Mohan Rao Adduri | Founder / Product owner (acting tech lead) | Approved | 2026-09-25 | Approval given in chat ("accept all"); recorded by Claude on the approver's instruction. |
