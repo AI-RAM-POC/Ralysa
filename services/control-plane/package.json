@@ -22,7 +22,6 @@
     "typecheck": "tsc -p tsconfig.json"
   },
   "devDependencies": {
-    "@ralysa/auth": "workspace:*",
     "@ralysa/dev-stack": "workspace:*",
     "@ralysa/eslint-config": "workspace:*",
     "@ralysa/tsconfig": "workspace:*",
@@ -43,6 +42,7 @@
   },
   "description": "Ralysa control plane: token service (RTS), directory, audit ingest and query, sealer (F-002).",
   "dependencies": {
+    "@ralysa/auth": "workspace:*",
     "@ralysa/protocol": "workspace:*",
     "@ralysa/secrets": "workspace:*",
     "fastify": "5.12.5",

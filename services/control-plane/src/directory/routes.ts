@@ -35,12 +35,12 @@ export function registerDirectoryRoutes(app: FastifyInstance, deps: RtsDeps): vo
           const user = await trx
             .selectFrom('cp.app_user')
             .select(['id', 'org_id', 'idp_subject', 'email', 'display_name', 'locale', 'status'])
-            .where('id', '=', claims.sub)
+            .where('id', '=', claims.userId)
             .executeTakeFirst();
           const session = await trx
             .selectFrom('cp.auth_session')
             .select('roles')
-            .where('id', '=', claims.sid)
+            .where('id', '=', claims.sessionId)
             .executeTakeFirst();
           if (user === undefined || session === undefined) return undefined;
           return { ...user, roles: session.roles, groups: await groupsOf(trx, user.id) };

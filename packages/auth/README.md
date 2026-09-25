@@ -61,6 +61,12 @@ const principals = createPrincipalResolver({ baseUrl: controlPlane, serviceToken
   ends. The PEP then fails closed. OpenBao is therefore in the control-plane HA tier.
 - **Principals.** They are cached for 30 s. A 404 is `PrincipalNotFoundError`. Any other failure
   throws.
+- **Service tokens at the control plane.** `createServiceTokenVerifier({ issuer, jwksUrl,
+  kidPrefix, orgId, isRegistered })` applies the same header, signature and claim rules to
+  `token_use: service` tokens (`aud: control-plane`, `sub` = `client_id` = `svc:<name>`) and
+  refuses an unregistered client as `wrong_token_use`. Only the control plane accepts service
+  tokens. It runs both verifiers over its own JWKS rows (`keySet`) with a database
+  `RevocationSource` (F-002-T12, T11-11).
 
 ## Clients (CLI in F-005)
 
