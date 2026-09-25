@@ -68,6 +68,8 @@ export function userAccessClaims(user: MockUser, input: AccessClaimInput): Recor
     aio: newTokenId(),
     azp: input.azp,
     azpacr: input.azpacr,
+    // The RTS app registration requests the `email` optional claim (design §6.7).
+    email: user.upn,
     name: user.displayName,
     oid: user.oid,
     preferred_username: user.upn,

@@ -454,6 +454,7 @@
                             "loopback_ip_mismatch",
                             "idp_unavailable",
                             "group_overage_unresolved",
+                            "internal_error",
                             "revoked",
                             "reuse_detected",
                             "idp_session_revoked"
@@ -522,6 +523,7 @@
                             "loopback_ip_mismatch",
                             "idp_unavailable",
                             "group_overage_unresolved",
+                            "internal_error",
                             "revoked",
                             "reuse_detected",
                             "idp_session_revoked"
@@ -590,6 +592,7 @@
                             "loopback_ip_mismatch",
                             "idp_unavailable",
                             "group_overage_unresolved",
+                            "internal_error",
                             "revoked",
                             "reuse_detected",
                             "idp_session_revoked"
@@ -619,7 +622,7 @@
     },
     "/oauth2/token": {
       "post": {
-        "summary": "Token endpoint: refresh_token and client_credentials (private_key_jwt); authorization_code and token exchange arrive with F-002-T10. No client secret is ever accepted.",
+        "summary": "Token endpoint: token exchange of an IdP device-flow access token (RFC 8693), refresh_token and client_credentials (private_key_jwt); authorization_code arrives with the second part of F-002-T10. No client secret is ever accepted.",
         "tags": [
           "oauth"
         ],
@@ -810,7 +813,7 @@
             }
           },
           "400": {
-            "description": "invalid_request, invalid_grant, invalid_scope or unsupported_grant_type",
+            "description": "invalid_request, invalid_grant, invalid_scope, unauthorized_client (device code switched off), access_denied (sign-in refused by policy) or unsupported_grant_type",
             "content": {
               "application/json": {
                 "schema": {
@@ -853,6 +856,7 @@
                             "loopback_ip_mismatch",
                             "idp_unavailable",
                             "group_overage_unresolved",
+                            "internal_error",
                             "revoked",
                             "reuse_detected",
                             "idp_session_revoked"
@@ -921,6 +925,7 @@
                             "loopback_ip_mismatch",
                             "idp_unavailable",
                             "group_overage_unresolved",
+                            "internal_error",
                             "revoked",
                             "reuse_detected",
                             "idp_session_revoked"
@@ -989,6 +994,7 @@
                             "loopback_ip_mismatch",
                             "idp_unavailable",
                             "group_overage_unresolved",
+                            "internal_error",
                             "revoked",
                             "reuse_detected",
                             "idp_session_revoked"
@@ -1014,7 +1020,7 @@
             }
           },
           "503": {
-            "description": "temporarily_unavailable (IdP directory unreachable; the token is not consumed)",
+            "description": "temporarily_unavailable (IdP directory, token signing or audit unavailable; a refresh token is not consumed)",
             "content": {
               "application/json": {
                 "schema": {
@@ -1057,6 +1063,7 @@
                             "loopback_ip_mismatch",
                             "idp_unavailable",
                             "group_overage_unresolved",
+                            "internal_error",
                             "revoked",
                             "reuse_detected",
                             "idp_session_revoked"
@@ -1264,6 +1271,205 @@
                     "cli_client_id"
                   ],
                   "additionalProperties": false
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "pattern": "^urn:ralysa:problem:[a-z_]+$"
+                    },
+                    "title": {
+                      "type": "string",
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "detail": {
+                      "type": "string",
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "maxLength": 200
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "invalid_request",
+                        "unauthorized",
+                        "forbidden",
+                        "not_found",
+                        "conflict",
+                        "locked",
+                        "payload_too_large",
+                        "unprocessable",
+                        "rate_limited",
+                        "audit_unavailable",
+                        "temporarily_unavailable",
+                        "internal"
+                      ]
+                    },
+                    "i18n_key": {
+                      "type": "string",
+                      "maxLength": 100
+                    },
+                    "trace_id": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{32}$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status",
+                    "code"
+                  ],
+                  "additionalProperties": {}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/sign-in-failures": {
+      "post": {
+        "summary": "Client-reported IdP-side failures of the device flow (AC-4): audited as auth.sign_in failure, idempotent per attempt_id, rate-limited and aggregated",
+        "tags": [
+          "auth"
+        ],
+        "security": [],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "attempt_id": {
+                    "type": "string",
+                    "format": "uuid",
+                    "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                  },
+                  "flow": {
+                    "type": "string",
+                    "const": "idp_device"
+                  },
+                  "error": {
+                    "type": "string",
+                    "enum": [
+                      "authorization_declined",
+                      "expired_token",
+                      "access_denied",
+                      "bad_verification_code",
+                      "conditional_access_blocked",
+                      "other"
+                    ]
+                  },
+                  "idp_error_code": {
+                    "type": "string",
+                    "maxLength": 64
+                  },
+                  "device_label": {
+                    "type": "string",
+                    "maxLength": 64
+                  }
+                },
+                "required": [
+                  "attempt_id",
+                  "flow",
+                  "error"
+                ],
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Accepted (also for a repeated attempt_id)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {},
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid report",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "pattern": "^urn:ralysa:problem:[a-z_]+$"
+                    },
+                    "title": {
+                      "type": "string",
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "detail": {
+                      "type": "string",
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "maxLength": 200
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "invalid_request",
+                        "unauthorized",
+                        "forbidden",
+                        "not_found",
+                        "conflict",
+                        "locked",
+                        "payload_too_large",
+                        "unprocessable",
+                        "rate_limited",
+                        "audit_unavailable",
+                        "temporarily_unavailable",
+                        "internal"
+                      ]
+                    },
+                    "i18n_key": {
+                      "type": "string",
+                      "maxLength": 100
+                    },
+                    "trace_id": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{32}$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status",
+                    "code"
+                  ],
+                  "additionalProperties": {}
                 }
               }
             }

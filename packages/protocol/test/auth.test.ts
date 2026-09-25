@@ -307,11 +307,12 @@ describe('reason codes and i18n keys (§3.9)', () => {
     expect(signInI18nKey('replay')).toBe('auth.failed.replay');
     expect(signInI18nKey('idp_unavailable')).toBe('auth.error.idp_unavailable');
     expect(signInI18nKey('group_overage_unresolved')).toBe('auth.error.group_overage_unresolved');
+    expect(signInI18nKey('internal_error')).toBe('auth.error.internal_error');
     expect(refreshI18nKey('reuse_detected')).toBe('auth.denied.reuse_detected');
   });
 
   it('covers the §3.5 catalogue', () => {
-    expect(SignInReason.options).toHaveLength(15);
+    expect(SignInReason.options).toHaveLength(16);
     expect(RefreshReason.options).toHaveLength(7);
     expect(new Set(RalysaErrorCode.options).size).toBe(RalysaErrorCode.options.length);
     for (const reason of [...SignInReason.options, ...RefreshReason.options]) {
