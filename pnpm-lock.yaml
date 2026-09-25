@@ -451,6 +451,9 @@ importers:
 
   services/control-plane:
     dependencies:
+      '@ralysa/auth':
+        specifier: workspace:*
+        version: link:../../packages/auth
       '@ralysa/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol
@@ -482,9 +485,6 @@ importers:
         specifier: 'catalog:'
         version: 4.6.5
     devDependencies:
-      '@ralysa/auth':
-        specifier: workspace:*
-        version: link:../../packages/auth
       '@ralysa/dev-stack':
         specifier: workspace:*
         version: link:../../tooling/dev-stack

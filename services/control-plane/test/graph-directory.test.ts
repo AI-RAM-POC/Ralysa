@@ -176,23 +176,77 @@ describe('Graph directory', () => {
     if (result.kind === 'unavailable') expect(result.reason).toContain(reason);
   });
 
-  it('one deadline covers the whole check, the token request included (R29-3)', async () => {
-    // graph_timeout_ms is 200 here: a slow token endpoint (150 ms) plus slow Graph calls (150 ms)
-    // must still end at about 200 ms, not 300 or more.
-    const { dir } = directory(async (url) => {
-      if (url !== TOKEN_URL) return 'hang'; // aborted by the check's deadline
-      await new Promise((resolve) => setTimeout(resolve, 150));
-      return tokenOk();
+  // Deterministic (R29 follow-up): the deadline is a controller the test aborts itself, so these
+  // don't depend on real timers. `times out at graph_timeout_ms` below keeps one real-timer check
+  // of the default AbortSignal.timeout.
+  function manualDeadlines() {
+    const created: { ms: number; controller: AbortController }[] = [];
+    return {
+      created,
+      deadline: (ms: number) => {
+        const controller = new AbortController();
+        created.push({ ms, controller });
+        return controller.signal;
+      },
+      expire(index = 0) {
+        created[index]?.controller.abort(new DOMException('deadline', 'TimeoutError'));
+      },
+    };
+  }
+  const signalled = () => {
+    let resolve: () => void = () => undefined;
+    const promise = new Promise<void>((r) => {
+      resolve = r;
     });
-    const started = performance.now();
-    expect(await dir.check(user)).toEqual({ kind: 'unavailable', reason: 'timeout' });
-    expect(performance.now() - started).toBeLessThan(290);
+    return { promise, resolve };
+  };
+
+  it('one deadline covers the whole check, the token request included (R29-3)', async () => {
+    const deadlines = manualDeadlines();
+    const tokenAsked = signalled();
+    const release = signalled();
+    const graphAsked = signalled();
+    let graphCalls = 0;
+    const fake = fakeGraph(async (url) => {
+      if (url === TOKEN_URL) {
+        tokenAsked.resolve();
+        await release.promise;
+        return tokenOk();
+      }
+      if (++graphCalls === 2) graphAsked.resolve();
+      return 'hang'; // aborted by the check's deadline
+    });
+    const dir = createGraphDirectory({
+      config,
+      secrets: createInMemorySecretStore({ [config.idp.client_secret_path]: 'secret-v1' }),
+      tokenEndpoint: () => Promise.resolve(TOKEN_URL),
+      fetch: fake.doFetch,
+      deadline: deadlines.deadline,
+    });
+    const result = dir.check(user);
+    await tokenAsked.promise;
+    release.resolve();
+    await graphAsked.promise;
+    deadlines.expire();
+    expect(await result).toEqual({ kind: 'unavailable', reason: 'timeout' });
+    // One deadline of graph_timeout_ms for the check; the token request and both Graph calls
+    // carried that same signal.
+    expect(deadlines.created.map((d) => d.ms)).toEqual([200]);
+    expect(fake.calls).toHaveLength(3);
+    for (const call of fake.calls) {
+      expect(call.init.signal).toBe(deadlines.created[0]?.controller.signal);
+    }
   });
 
   it('a slow secret read counts against the same deadline', async () => {
+    const deadlines = manualDeadlines();
+    const secretAsked = signalled();
     const secrets = createInMemorySecretStore();
     const slow = {
-      get: () => new Promise<never>(() => undefined),
+      get: () => {
+        secretAsked.resolve();
+        return new Promise<never>(() => undefined);
+      },
       watch: secrets.watch.bind(secrets),
     };
     const fake = fakeGraph(graphHandler({ groups: [ACCESS] }));
@@ -201,10 +255,15 @@ describe('Graph directory', () => {
       secrets: slow,
       tokenEndpoint: () => Promise.resolve(TOKEN_URL),
       fetch: fake.doFetch,
+      deadline: deadlines.deadline,
     });
-    const started = performance.now();
-    expect(await dir.check(user)).toEqual({ kind: 'unavailable', reason: 'timeout' });
-    expect(performance.now() - started).toBeLessThan(290);
+    const result = dir.check(user);
+    await secretAsked.promise;
+    deadlines.expire();
+    expect(await result).toEqual({ kind: 'unavailable', reason: 'timeout' });
+    expect(deadlines.created).toHaveLength(1);
+    // The secret never arrived, so nothing was sent.
+    expect(fake.calls).toEqual([]);
   });
 
   it('a 404 that is not Request_ResourceNotFound is a fault, not a deletion (review of #29)', async () => {

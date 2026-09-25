@@ -11,11 +11,19 @@ export function packageName(): string {
 export {
   type AccessTokenVerifier,
   type AccessTokenVerifierOptions,
+  type CommonVerifierOptions,
+  type KeyResolver,
   type RejectInfo,
+  type ServiceTokenVerifier,
+  type ServiceTokenVerifierOptions,
+  type ServiceVerifyResult,
   type VerifiedPrincipal,
+  type VerifiedService,
+  type VerifyContext,
   type VerifyResult,
   VerifierUnavailableError,
   createAccessTokenVerifier,
+  createServiceTokenVerifier,
 } from './verify/access-token-verifier.js';
 export {
   JWKS_CACHE_MAX_AGE_MS,

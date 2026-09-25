@@ -27,7 +27,7 @@ import {
 import { type SignInStore, createSignInStore } from './sign-in-store.js';
 import { mintAccessToken } from './tokens/mint.js';
 import type { SigningKeys } from './tokens/signing-keys.js';
-import { type LocalVerifier, createLocalVerifier } from './verify-local.js';
+import { type ControlPlaneVerifier, createControlPlaneVerifier } from './verifier.js';
 
 /** What the serve process (or a test) provides; buildApp derives the rest from config. */
 export interface RtsServices {
@@ -64,7 +64,7 @@ export interface RtsDeps {
   directory: IdpDirectory;
   writer: AuditWriter;
   clients: ClientRegistry;
-  verifier: LocalVerifier;
+  verifier: ControlPlaneVerifier;
   rejections: RejectionAggregator;
   policyVersion: string;
   idpMetadata: IdpMetadataSource;
@@ -93,7 +93,7 @@ export function assembleRtsDeps(
     config,
     keys,
     clients,
-    verifier: createLocalVerifier({ config, keys, db: services.db, clients }),
+    verifier: createControlPlaneVerifier({ config, keys, db: services.db, clients }),
     policyVersion: policyVersion(config.access),
     idpMetadata,
     validator: createEntraTokenValidator({

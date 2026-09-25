@@ -25,20 +25,31 @@
 // Not a rejection: when the JWKS can't be fetched at all, `verify` throws VerifierUnavailableError,
 // so the PEP answers 503 instead of recording a bogus `auth.token_rejected`. Either way it fails
 // closed.
+//
+// `createServiceTokenVerifier` applies steps 1–4 to service tokens (`token_use: service`,
+// `aud: control-plane`, §3.2.7). Only the control plane accepts service tokens; it uses both
+// factories over its own key set and a database `RevocationSource` (§3.2.6; F-002-T12, T11-11).
 import {
   ACCESS_TOKEN_ALG,
   ACCESS_TOKEN_TYP,
   type Audience,
   FORBIDDEN_JOSE_HEADERS,
+  ServiceAccessTokenClaims,
   type Surface,
   TOKEN_LIFETIMES,
   type TokenRejectReason,
   UserAccessTokenClaims,
   kidPattern,
 } from '@ralysa/protocol/auth';
-import { type JWTPayload, decodeProtectedHeader, errors, jwtVerify } from 'jose';
+import {
+  type JWTPayload,
+  type JWTVerifyGetKey,
+  decodeProtectedHeader,
+  errors,
+  jwtVerify,
+} from 'jose';
 import type { Fetch } from '../platform.js';
-import { type JwksKeySet, createJwksCache } from './jwks.js';
+import { createJwksCache } from './jwks.js';
 import type { RevocationSource } from './revocation-feed.js';
 
 export interface VerifiedPrincipal {
@@ -56,23 +67,36 @@ export interface VerifiedPrincipal {
 export type VerifyResult =
   { ok: true; principal: VerifiedPrincipal } | { ok: false; reason: TokenRejectReason };
 
+/** A verified service token (§3.2.7): `sub` = `client_id` = `svc:<name>`. */
+export interface VerifiedService {
+  /** `svc:<name>` */
+  clientId: string;
+  /** `<name>` */
+  service: string;
+  orgId: string;
+  expiresAt: Date;
+  tokenId: string;
+}
+
+export type ServiceVerifyResult =
+  { ok: true; service: VerifiedService } | { ok: false; reason: TokenRejectReason };
+
 export interface RejectInfo {
   reason: TokenRejectReason;
   clientIp?: string;
   traceId?: string;
 }
 
-export interface AccessTokenVerifierOptions {
+/** Resolves a token's verification key (jose); by default the remote JWKS cache. */
+export type KeyResolver = JWTVerifyGetKey;
+
+export interface CommonVerifierOptions {
   /** Exact match (RTS `public_base_url`, no trailing slash). */
   issuer: string;
-  /** Exactly one. */
-  audience: Audience;
   /** RTS `/.well-known/jwks.json`. */
   jwksUrl: string;
   /** Config `vault.signing_key`; the `kid` must be `<kidPrefix>.v<n>` [SEC-F002-19]. */
   kidPrefix: string;
-  /** The feed (services) or the database (control plane). */
-  revocation: RevocationSource;
   /** When set, a token of another org is refused (single-org deployments, ADR-0003). */
   orgId?: string;
   /** Default 30. */
@@ -80,18 +104,46 @@ export interface AccessTokenVerifierOptions {
   onReject?: (r: RejectInfo) => void;
   /** For tests and non-global fetch; also the JWKS fetch. */
   fetch?: Fetch;
-  /** Instead of a remote JWKS (tests, or a PEP that already holds the key set). */
-  keySet?: JwksKeySet;
+  /**
+   * Instead of the remote JWKS: tests, or a PEP that already holds the key set (the control
+   * plane reads its own JWKS rows). An error it throws that isn't a jose key error makes `verify`
+   * throw VerifierUnavailableError.
+   */
+  keySet?: KeyResolver;
   now?: () => number;
 }
 
+export interface AccessTokenVerifierOptions extends CommonVerifierOptions {
+  /** Exactly one. */
+  audience: Audience;
+  /** The feed (services) or the database (control plane). */
+  revocation: RevocationSource;
+}
+
+export interface ServiceTokenVerifierOptions extends CommonVerifierOptions {
+  /**
+   * Whether `client_id` is a registered service. An unregistered one is `wrong_token_use`: the
+   * token is authentic, but for nothing this PEP serves.
+   */
+  isRegistered?: (clientId: string) => boolean;
+}
+
+export interface VerifyContext {
+  clientIp?: string;
+  traceId?: string;
+}
+
 export interface AccessTokenVerifier {
-  verify(bearer: string, context?: { clientIp?: string; traceId?: string }): Promise<VerifyResult>;
+  verify(bearer: string, context?: VerifyContext): Promise<VerifyResult>;
+}
+
+export interface ServiceTokenVerifier {
+  verify(bearer: string, context?: VerifyContext): Promise<ServiceVerifyResult>;
 }
 
 export class VerifierUnavailableError extends Error {
-  constructor() {
-    super('the verification keys could not be fetched');
+  constructor(message = 'the verification keys could not be fetched') {
+    super(message);
     this.name = 'VerifierUnavailableError';
   }
 }
@@ -104,7 +156,11 @@ class Rejected extends Error {
   }
 }
 
-export function createAccessTokenVerifier(opts: AccessTokenVerifierOptions): AccessTokenVerifier {
+/** Steps 1–4, shared by both token kinds: shape, header, signature, iss, aud, exp, nbf, iat. */
+function createJwsCheck(
+  opts: CommonVerifierOptions,
+  audience: Audience,
+): (bearer: string) => Promise<JWTPayload> {
   const issuer = opts.issuer.replace(/\/+$/, '');
   const kidRule = kidPattern(opts.kidPrefix);
   const skew = opts.clockSkewSeconds ?? TOKEN_LIFETIMES.verifierClockSkewSeconds;
@@ -116,7 +172,7 @@ export function createAccessTokenVerifier(opts: AccessTokenVerifierOptions): Acc
       ...(opts.fetch === undefined ? {} : { fetch: opts.fetch }),
     });
 
-  const check = async (bearer: string): Promise<VerifiedPrincipal> => {
+  return async (bearer) => {
     const token = /^bearer /i.test(bearer) ? bearer.slice(7) : bearer;
     if (!COMPACT_JWS.test(token)) throw new Rejected('malformed');
     let header;
@@ -141,7 +197,7 @@ export function createAccessTokenVerifier(opts: AccessTokenVerifierOptions): Acc
         algorithms: [ACCESS_TOKEN_ALG],
         typ: ACCESS_TOKEN_TYP,
         issuer,
-        audience: opts.audience,
+        audience,
         clockTolerance: skew,
         currentDate: new Date(nowMs),
         requiredClaims: ['iat', 'nbf', 'exp', 'sub', 'jti'],
@@ -154,6 +210,34 @@ export function createAccessTokenVerifier(opts: AccessTokenVerifierOptions): Acc
     if (typeof payload.iat === 'number' && payload.iat > nowMs / 1000 + skew) {
       throw new Rejected('issued_in_future');
     }
+    return payload;
+  };
+}
+
+/** Runs `check`; a rejection is reported through `onReject`, which never changes the answer. */
+async function settle<T>(
+  opts: CommonVerifierOptions,
+  context: VerifyContext,
+  check: () => Promise<T>,
+): Promise<{ ok: true; value: T } | { ok: false; reason: TokenRejectReason }> {
+  try {
+    return { ok: true, value: await check() };
+  } catch (error) {
+    if (!(error instanceof Rejected)) throw error;
+    try {
+      opts.onReject?.({ reason: error.reason, ...context });
+    } catch {
+      // Recording a rejection never changes the answer.
+    }
+    return { ok: false, reason: error.reason };
+  }
+}
+
+export function createAccessTokenVerifier(opts: AccessTokenVerifierOptions): AccessTokenVerifier {
+  const jws = createJwsCheck(opts, opts.audience);
+
+  const check = async (bearer: string): Promise<VerifiedPrincipal> => {
+    const payload = await jws(bearer);
     if (payload.token_use !== 'access') throw new Rejected('wrong_token_use');
     const claims = UserAccessTokenClaims.safeParse(payload);
     if (!claims.success) throw new Rejected('malformed');
@@ -182,17 +266,43 @@ export function createAccessTokenVerifier(opts: AccessTokenVerifierOptions): Acc
 
   return {
     async verify(bearer, context = {}) {
-      try {
-        return { ok: true, principal: await check(bearer) };
-      } catch (error) {
-        if (!(error instanceof Rejected)) throw error;
-        try {
-          opts.onReject?.({ reason: error.reason, ...context });
-        } catch {
-          // Recording a rejection never changes the answer.
-        }
-        return { ok: false, reason: error.reason };
-      }
+      const result = await settle(opts, context, () => check(bearer));
+      return result.ok ? { ok: true, principal: result.value } : result;
+    },
+  };
+}
+
+export function createServiceTokenVerifier(
+  opts: ServiceTokenVerifierOptions,
+): ServiceTokenVerifier {
+  const jws = createJwsCheck(opts, 'control-plane');
+
+  const check = async (bearer: string): Promise<VerifiedService> => {
+    const payload = await jws(bearer);
+    if (payload.token_use !== 'service') throw new Rejected('wrong_token_use');
+    const claims = ServiceAccessTokenClaims.safeParse(payload);
+    if (!claims.success || claims.data.client_id !== claims.data.sub) {
+      throw new Rejected('malformed');
+    }
+    if (opts.orgId !== undefined && claims.data.tid !== opts.orgId) {
+      throw new Rejected('wrong_audience');
+    }
+    if (opts.isRegistered !== undefined && !opts.isRegistered(claims.data.sub)) {
+      throw new Rejected('wrong_token_use');
+    }
+    return {
+      clientId: claims.data.sub,
+      service: claims.data.sub.slice('svc:'.length),
+      orgId: claims.data.tid,
+      expiresAt: new Date(claims.data.exp * 1000),
+      tokenId: claims.data.jti,
+    };
+  };
+
+  return {
+    async verify(bearer, context = {}) {
+      const result = await settle(opts, context, () => check(bearer));
+      return result.ok ? { ok: true, service: result.value } : result;
     },
   };
 }
@@ -227,6 +337,6 @@ function mapJoseError(error: unknown): Error {
     return new VerifierUnavailableError();
   }
   if (error instanceof errors.JOSEError) return new Rejected('malformed');
-  // A fetch that threw (DNS, connection refused) surfaces as a non-JOSE error.
+  // A fetch that threw (DNS, connection refused), or a local key set that threw.
   return new VerifierUnavailableError();
 }

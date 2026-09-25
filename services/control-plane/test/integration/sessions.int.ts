@@ -30,6 +30,7 @@ import {
   issueRefreshToken,
   redeemAuthorizationCode,
 } from '../../src/auth/sessions.js';
+import { mintAccessToken } from '../../src/auth/tokens/mint.js';
 import { newAuthorizationCode, tokenHash } from '../../src/auth/tokens/opaque.js';
 import { createRateLimiter } from '../../src/http/rate-limits.js';
 import { createDb, withOrg } from '../../src/db/kysely.js';
@@ -418,9 +419,37 @@ describe.skipIf(stack === undefined)('sessions and grants (F-002-T08)', () => {
       }),
     ]);
     // The control plane's own routes read revocation from the database [SEC-F002-18 d].
+    rejected.length = 0;
     const me = await app.inject({ url: '/v1/me', headers: bearer(first.access_token) });
     expect(me.statusCode).toBe(401);
     expect(me.headers['www-authenticate']).toBe('Bearer error="invalid_token"');
+    expect(rejected.map((r) => r.reason)).toEqual(['session_revoked']);
+
+    // A token whose sid is ANOTHER user's live session is session_revoked too (review of #32).
+    const other = await seedUser();
+    const otherSession = await seedSession(other.id);
+    const now = Math.floor(Date.now() / 1000);
+    const crossed = await mintAccessToken(signing.keys, {
+      iss: config.public_base_url,
+      aud: 'control-plane',
+      sub: user.id,
+      client_id: CLI_CLIENT_ID,
+      tid: ORG,
+      sid: otherSession.sid,
+      idp_sub: 'b1e2c3d4-0000-4000-8000-00000000e001',
+      surface: 'cli',
+      auth_time: now,
+      region: config.org.region,
+      token_use: 'access',
+      iat: now,
+      nbf: now,
+      exp: now + 600,
+      jti: uuidv7(),
+    });
+    rejected.length = 0;
+    const crossedMe = await app.inject({ url: '/v1/me', headers: bearer(crossed) });
+    expect(crossedMe.statusCode).toBe(401);
+    expect(rejected.map((r) => r.reason)).toEqual(['session_revoked']);
 
     // A PEP's next poll: the sid is listed, issued_at is fresh, and the epoch went up.
     const after = await feed(svc, before.cursor);

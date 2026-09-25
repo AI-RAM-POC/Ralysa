@@ -16,6 +16,7 @@
 | 2026-09-25 | 2 | **Architect review applied**: "Architect review notes" section (Part A) inserted; body edits [AR-1] to [AR-18] (RC-1 to RC-12); ADR-0021 and ADR-0025 clarified (wording only). AD-1 to AD-4 accepted with conditions. G3 escalations listed (ADR-0004 decision 4, proposed ADR-0030, ADR-0031). **Security review applied** ([security.md](./security.md), copied verbatim): all ten §5 required changes (SEC-F002-01 to -08, -11 to -15) plus Q1, Q2 and Q8 decided under the standing authorization: Transit-signed chain-head checkpoints and `audit-verify` brought into F-002 (new task T16); flow-B callback/redemption IP mismatch denied by default; switching device code off revokes flow-A sessions. Dedicated `ralysa_audit_owner` role and a break-glass audit-migration path; per-entry-point OpenBao policies and configs; per-service audit action allow-list; consume-first IdP-token replay key; GUID-only groups with Graph always authoritative; runtime custody monitoring; single `env` source with production guards; enforced mock-IdP exclusion; server-issued client-audit sessions. Low and Info findings (SEC-F002-09, -10, -16 to -33) added to task Definitions of Done. OQ-D1, -D2, -D3, -D4, -D5, -D7, -D8 decided. AC→design→test table and task list updated. |
 | 2026-09-25 | 3 | Implementation feedback (F-002-T08, code review of #26), recorded under the standing authorization: §3.5 `auth.session.revoked` gains cause `not_in_access_group` and is written only when a revocation changed something. The governance feed's `cursor` lags `issued_at` by 60 s, and revocation transactions are capped at 15 s so that overlap always covers them (implementation notes T08-1, R26-3). |
 | 2026-09-26 | 4 | Implementation feedback (F-002-T10), recorded under the standing authorization: §3.5 `auth.sign_in` gains `error: internal_error` for a signing or database fault that ends an attempt (every attempt is audited exactly once, AC-4); an IdP token issued before Entra's `signInSessionsValidFromDateTime` is refused at sign-in as `failure expired` with `details.cause = idp_sessions_revoked`; §4.4 `cp.authorization_code` gains `sign_in jsonb` (migration cp/0006), the callback's facts for the success event written at redemption (implementation notes T10-2, T10-4, T10-22). |
+| 2026-09-26 | 5 | Implementation feedback (F-002-T12 part 1, T11-11), recorded under the standing authorization: §3.6 `@ralysa/auth` gains `createServiceTokenVerifier` (the same header, signature and claim checks for `token_use: service` tokens, `aud: control-plane`, registered clients only), and the control plane uses both package verifiers over its own JWKS rows with a database `RevocationSource`; a database fault there is 503, never `auth.token_rejected` (implementation notes T12-2 to T12-6, R32-1 to R32-4). |
 
 ---
 
@@ -741,6 +742,13 @@ export function createAccessTokenVerifier(opts: {
   clockSkewSeconds?: number;          // default 30
   onReject?: (r: { reason: TokenRejectReason; clientIp?: string; traceId?: string }) => void;
 }): { verify(bearer: string): Promise<VerifyResult> };
+
+/** Rev 5 (T12): the control plane verifies service tokens with the same checks. */
+export function createServiceTokenVerifier(opts: {
+  issuer: string; jwksUrl: string; kidPrefix: string; orgId?: string;
+  isRegistered?: (clientId: string) => boolean;   // unregistered → wrong_token_use
+  keySet?: KeyResolver; onReject?: (r: RejectInfo) => void;
+}): { verify(bearer: string): Promise<ServiceVerifyResult> };
 
 export function createRevocationFeed(opts: {
   url: string; serviceTokens: ServiceTokenSource; pollMs?: number /* 5000 */; staleAfterMs?: number /* 60000 */;
