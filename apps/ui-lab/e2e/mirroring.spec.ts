@@ -5,7 +5,8 @@
 //     `rtl:-scale-x-100` sets the CSS `scale` property, so the computed style is `scale: -1 1`
 //     with `transform: none`. The design's `transform: matrix(-1, 0, 0, 1, 0, 0)` is the same
 //     visual result through a different property (T09-9); the spec reads `scale`, and also
-//     checks that each icon's rendered box doesn't move (a mirror, not a shift).
+//     checks that each mirrored icon's rendered box is the box it has unmirrored (a mirror in
+//     place, not a shift).
 //   - code, pre and [data-ltr] islands stay `direction: ltr` inside the rtl page.
 import type { Page } from '@playwright/test';
 import { expect, openLab, test } from './helpers/fixtures.js';
@@ -55,6 +56,26 @@ for (const lang of ['en', 'ar'] as const satisfies readonly Locale[]) {
         expect(icon).toEqual({ scale: lang === 'ar' ? '-1 1' : 'none', transform: 'none' });
       }
       for (const icon of other) expect(icon).toEqual({ scale: 'none', transform: 'none' });
+
+      // Mirrored in place: removing the scale doesn't move or resize the rendered box.
+      const shifts = await page
+        .locator('[data-icon-strip="directional"] svg')
+        .evaluateAll((icons) =>
+          icons.map((icon) => {
+            const element = icon as SVGElement;
+            const box = (): number[] => {
+              const r = element.getBoundingClientRect();
+              return [r.left, r.top, r.width, r.height].map((n) => Math.round(n * 10) / 10);
+            };
+            const mirrored = box();
+            const previous = element.style.scale;
+            element.style.scale = 'none';
+            const plain = box();
+            element.style.scale = previous;
+            return { mirrored, plain };
+          }),
+        );
+      for (const { mirrored, plain } of shifts) expect(mirrored).toEqual(plain);
     });
 
     test('code, pre and LTR islands keep direction: ltr', async ({ page }) => {

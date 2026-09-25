@@ -210,8 +210,13 @@ export async function walk(
   return { stops, end: 'max' };
 }
 
-/** A walk that reached the edge of the page: focus left it, or stayed on the last stop. */
-export const reachedEdge = (w: Walk): boolean => w.end === 'left-page' || w.end === 'stayed';
+/**
+ * A walk that reached the edge of the page. Focus leaving the document counts everywhere.
+ * Focus staying on the last stop counts only in Firefox, where Playwright's headless browser
+ * has no UI to move focus to; in any other engine it would hide a stuck focus.
+ */
+export const reachedEdge = (w: Walk, browserName: string): boolean =>
+  w.end === 'left-page' || (w.end === 'stayed' && browserName === 'firefox');
 
 const sameLine = (a: Box, b: Box): boolean => {
   const overlap = Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top);

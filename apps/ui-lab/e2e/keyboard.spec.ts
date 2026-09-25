@@ -5,6 +5,7 @@
 // the Select popover and returns focus to its trigger, Enter and Space open it, typeahead picks an
 // option, Space toggles the Checkbox (T11-4), and arrow keys move through the RadioGroup in the
 // reading direction (Radix DirectionProvider).
+import type { Locator } from '@playwright/test';
 import { LAB, lookup } from './helpers/catalogs.js';
 import { expect, openLab, test } from './helpers/fixtures.js';
 import {
@@ -24,6 +25,7 @@ for (const lang of LOCALES) {
 
     test('Tab reaches every focusable element in reading order, with a visible ring', async ({
       page,
+      browserName,
     }) => {
       const expected = await indexFocusables(page);
       expect(expected.length).toBeGreaterThan(10);
@@ -36,7 +38,7 @@ for (const lang of LOCALES) {
       expect(forward.end, 'Tab past the last element reaches the edge of the page').not.toBe(
         'cycled',
       );
-      expect(reachedEdge(forward)).toBe(true);
+      expect(reachedEdge(forward, browserName)).toBe(true);
 
       expect(readingOrderProblems(forward.stops, lang === 'ar' ? 'rtl' : 'ltr')).toEqual([]);
       expect(ringProblems(forward.stops)).toEqual([]);
@@ -46,22 +48,33 @@ for (const lang of LOCALES) {
       page,
       browserName,
     }) => {
-      // D-F001-E2E-1 (open): in Playwright's Firefox, Shift+Tab from a Radix RadioGroup item
-      // lands on the group element, which hands focus straight back to the item, so focus can't
-      // leave the group backwards. Chromium is fine. Not yet confirmed in a stock Firefox (manual
-      // TC-F-001-25). test.fail keeps the check running: it turns red the day it passes, so the
-      // annotation can't outlive the defect.
-      test.fail(browserName === 'firefox', 'D-F001-E2E-1: Shift+Tab out of RadioGroup in Firefox');
       const expected = await indexFocusables(page);
+      const reversed = expected.map((_, index) => index).reverse();
       const forward = await walk(page, 'Tab');
-      expect(reachedEdge(forward)).toBe(true);
+      expect(reachedEdge(forward, browserName)).toBe(true);
       // Chromium: focus left the page and Shift+Tab re-enters at the last stop. Firefox: focus
       // stayed on the last stop, so the walk back starts there.
       const backward = await walk(page, 'Shift+Tab', { fromCurrent: forward.end === 'stayed' });
-      expect(backward.stops.map((stop) => stop.id)).toEqual(
-        expected.map((_, index) => index).reverse(),
+      const ids = backward.stops.map((stop) => stop.id);
+
+      if (browserName !== 'firefox') {
+        expect(ids).toEqual(reversed);
+        expect(backward.end).toBe('left-page');
+        return;
+      }
+      // D-F001-E2E-1 (open): in Playwright's Firefox, Shift+Tab from a Radix RadioGroup item
+      // lands on the group element, which hands focus straight back to the item, so focus can't
+      // leave the group backwards. Not yet confirmed in a stock Firefox (manual TC-F-001-25).
+      // Assert exactly that known shape, so any other Shift+Tab regression still fails, and so
+      // the test fails once the defect is fixed (then this branch goes and Firefox joins the
+      // check above).
+      const last = backward.stops.at(-1);
+      expect(backward.end, 'D-F001-E2E-1: focus stays in the RadioGroup').toBe('stayed');
+      expect(last?.label, 'D-F001-E2E-1: stuck on a radio item').toContain('[role=radio]');
+      expect(ids, 'every stop before the RadioGroup is in reverse order').toEqual(
+        reversed.slice(0, ids.length),
       );
-      expect(reachedEdge(backward), 'Shift+Tab past the first element reaches the edge').toBe(true);
+      expect(ids.length).toBeLessThan(reversed.length);
     });
 
     test('Select: Enter opens, Escape closes and returns focus; Space opens too', async ({
@@ -148,18 +161,16 @@ for (const lang of LOCALES) {
       await expect(radio('normal')).toBeChecked();
       // "Next" is to the right in en and to the left in ar. Radix checks the item that arrow-key
       // focus lands on only while the key is still down (it moves focus in a task after
-      // keydown), so hold the key as a person does instead of an instant press.
-      const arrow = async (key: string): Promise<void> => {
+      // keydown), so hold the key, as a person does, until focus has moved, then release it.
+      // Condition waits, not a fixed delay, so a loaded runner can't release it too early.
+      const arrow = async (key: string, target: Locator): Promise<void> => {
         await page.keyboard.down(key);
-        await page.waitForTimeout(100);
+        await expect(target).toBeFocused();
         await page.keyboard.up(key);
+        await expect(target).toBeChecked();
       };
-      await arrow(lang === 'ar' ? 'ArrowLeft' : 'ArrowRight');
-      await expect(radio('high')).toBeFocused();
-      await expect(radio('high')).toBeChecked();
-      await arrow(lang === 'ar' ? 'ArrowRight' : 'ArrowLeft');
-      await expect(radio('normal')).toBeFocused();
-      await expect(radio('normal')).toBeChecked();
+      await arrow(lang === 'ar' ? 'ArrowLeft' : 'ArrowRight', radio('high'));
+      await arrow(lang === 'ar' ? 'ArrowRight' : 'ArrowLeft', radio('normal'));
     });
 
     test('Enter and Space activate a button', async ({ page }) => {

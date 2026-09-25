@@ -23,11 +23,20 @@ test.describe('Arabic shaping', () => {
   });
 
   test('the bundled Arabic face is loaded', async ({ page }) => {
-    const loaded = await page.evaluate(
-      (face) => document.fonts.check(`16px ${face}`, 'بسم'),
-      ARABIC_FACE,
-    );
-    expect(loaded).toBe(true);
+    const { check, faces } = await page.evaluate((face) => {
+      const family = face.replace(/"/g, '');
+      return {
+        check: document.fonts.check(`16px ${face}`, 'بسم'),
+        // check() is also true when no face matches the family at all; require a real one.
+        faces: [...document.fonts]
+          .filter((f) => f.family.replace(/"/g, '') === family && f.status === 'loaded')
+          .map((f) => f.unicodeRange),
+      };
+    }, ARABIC_FACE);
+    expect(check).toBe(true);
+    expect(faces.length, 'a loaded Noto Sans Arabic face').toBeGreaterThan(0);
+    // The loaded face covers the Arabic block (U+0600–06FF), not only a Latin subset.
+    expect(faces.some((range) => /U\+6[0-9A-F]{2}|U\+0?600/i.test(range))).toBe(true);
     expect(SAMPLE_IDS).toHaveLength(20);
   });
 
