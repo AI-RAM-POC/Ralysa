@@ -48,7 +48,8 @@ jobs:
           restore-keys: pnpm-store-${{ runner.os }}-
       - run: pnpm install --frozen-lockfile
       # check-workspaces (coverage, contract, lifecycle scripts, build settings, specifiers,
-      # packs/, Python), check-tsrefs, check-turbo-config, then prettier --check.
+      # packs/, Python), check-tsrefs, check-turbo-config, check-banned-deps (lockfile graph),
+      # check-imports (dependency-cruiser), then prettier --check.
       - run: pnpm repo:check
 
   # Every workspace's lint, typecheck, test and build (AC-1). --continue=dependencies-successful

@@ -215,6 +215,64 @@ yaml pnpmfile (control)                        | gate: pnpm/pnpmfile            
 - **NEL, LS and the kebab key** now fail closed as well, although pnpm ignores them.
 - **The two `env …` rows still read `PASS`** because the harness passes the variable only to pnpm, not to its in-process gate call. Calling `checkConfigGate` on those two case directories with the variable in `options.env` gives `gate/env-config env pnpm_config_pnpmfile` and `gate/env-config env npm_config_pnpmfile`. The CLI tests above cover the same through the real entry point.
 
+## T04: boundary rules
+
+Branch `feat/F-001-boundaries-secrets` (T04, T05 and T16 together, one commit per task). Date: 2026-09-25.
+
+### What landed
+
+- **`tooling/eslint-config/boundaries.js`** now holds the lists. `BANNED_PACKAGE_GROUPS` has four groups, in this order, and a package belongs to the first one that matches it:
+  - `agent-sdk`: `@anthropic-ai/claude-agent-sdk` and its `-*` platform packages.
+  - `anthropic-sdk-peer`: `@anthropic-ai/sdk`.
+  - `model-provider`: the §6.1 SR-03 list, scope bans included, with no `@ai-sdk/react` exemption.
+  - `telemetry-vendor`: the AR-9 list.
+
+  Each group has `importAllowedIn` (ESLint and dependency-cruiser) and `graphAllowedThrough` (check-banned-deps). The file also has `RESTRICTED_SYNTAX` (the loading ban), `LOADING_EXCEPTIONS` (empty), `WORKSPACE_DEPENDENCY_RULES` (web/packages → agent-host, anything → ui-lab) and the shared glob helpers. Platform package names were checked on npm: `@anthropic-ai/claude-agent-sdk@0.3.282` has optional deps `-darwin-arm64`, `-linux-x64-musl` and so on, and peer `@anthropic-ai/sdk >=0.93.0`.
+- **`base.js`**: `no-restricted-imports` gets one `regex` pattern per group, covering the package and any subpath. `base()` works out the workspace from `tsconfigRootDir` and adds a block only for the allowed paths inside it. `services/agent-host` gets `src/engine/claude/**` (Agent SDK plus peer), and `services/model-gateway` gets `**` (providers plus `@anthropic-ai/sdk`). Every other rule stays in force there. The `no-restricted-syntax` loading ban, the eslint-comments rules and the `tests` preset keep their shape.
+- **`.dependency-cruiser.cjs`** (root). It `require`s the ESM `boundaries.js`, which Node 24 supports. It has one rule per group, plus `no-ui-lab`, `no-packs` and the four layering rules. It scans `apps packages services tooling packs` through **`ralysa-repo check-imports`**.
+- **`check-banned-deps`**: builds the lockfile v9 graph (importers with prod, dev and optional deps; snapshots with deps and optional deps; `link:` edges to workspaces; aliases resolved by key). It runs one BFS per importer over (node, progress along each allowed sequence) states, and reports each banned package once per importer with a witness path. It fails closed on another lockfile version and on an entry it can't resolve.
+- `repo-check` (and therefore `pnpm repo:check` and the CI `repo-checks` job) runs `check-banned-deps` and `check-imports` after the existing checks. `main` in `cli.ts` became async for dependency-cruiser's API.
+
+### Recorded decisions and deviations
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T04-1 | Version | **dependency-cruiser 18.2.0**, not the newest 18.4.0. | This follows the §2.2 policy, applied per minor line as in the T01 notes. 18.2.0 was published 2026-08-10 (46 days ago), while 18.3.x (2026-09-13/14) and 18.4.0 (2026-09-20) are under 30 days old. 18.2.0 has provenance (SLSA v1 attestation), `engines.node ^22‖^24‖>=26`, MIT, and no `preinstall`/`install`/`postinstall`. Its `prepare` (husky) and `prepack` scripts don't run for registry installs, and `strictDepBuilds` passed. It adds 36 packages, all its own closure. The rest of the lockfile diff is the same packages re-keyed with a `supports-color` peer suffix, because `debug`'s optional peer now resolves. No base version changed (compared name@version lists before and after). |
+| T04-2 | Placement | dependency-cruiser is a dependency of `@ralysa/repo-scripts` and runs through its API (`check-imports`), not a root devDependency with a CLI step. | It gives the same `Finding` output as the other checks, it can be tested with fixtures, and it's part of `repo-check`. |
+| T04-3 | Design deviation (small) | `.dependency-cruiser.cjs` uses **no `includeOnly`**, and its `exclude` is anchored to workspace output folders (`^(apps\|packages\|services\|tooling\|packs)/[^/]+/(dist\|coverage\|.turbo\|.tsc)/`). §6.1 says "`includeOnly` and `exclude` are set so …". | Found while testing. `includeOnly: '^(apps\|…)/'`, or an unanchored `node_modules`/`dist` exclude, also removes every dependency on a package (`node_modules/.pnpm/vite@…/vite/dist/…`) and every unresolved one (`openai`). The banned-package rules then silently never fire. With the first draft, the real repo reported 0 violations while `apps/web/vite.config.ts` showed no dependencies at all. **Guard:** `check-imports` fails with `imports/graph-sanity` when dependencies were cruised but none points at a package. |
+| T04-4 | Implementation note | `check-imports` cruises the **real path** of the root. | enhanced-resolve returns real paths. Under a symlinked root (macOS `/var` → `/private/var`), every cross-folder target came back as `../../../../private/var/…`, so no path rule matched. The fixture tests caught it. |
+| T04-5 | Implementation note | `conditionNames` is `import, require, node, default` (no `types`). | Our tooling packages list `types: ./dist/*.d.ts` first in `exports`. Before a build, that condition wins and then fails, which leaves `@ralysa/*` unresolved. |
+| T04-6 | Interpretation | `@anthropic-ai/sdk` has its own group. Imports are allowed in agent-host `engine/claude/**` **and** in `services/model-gateway/**`. In the graph it's allowed through `@ralysa/agent-host` → `@anthropic-ai/claude-agent-sdk`, or through `@ralysa/model-gateway`. | §6.1: `@anthropic-ai/*` is a provider scope allowed in the gateway, and AR-6 makes the SDK peer the one standing exception inside agent-host. F-004 may narrow the gateway path. |
+| T04-7 | Scope note | ESLint's layer covers static `import`/`export … from` (including `import type`). `require('x')` and `import('x')` with a literal are dependency-cruiser's job, as §6.1 assigns. | `no-restricted-imports` doesn't inspect `require` or `ImportExpression`. Non-literal forms are banned by `no-restricted-syntax`. |
+| T04-8 | Implementation choice | The loading ban matches any mention of `createRequire`, `getBuiltinModule` and `eval` (`Identifier[name=…]`), plus the computed-member forms, instead of call shapes only. | This also catches `import { createRequire as cr }`, `(0, globalThis.eval)(…)` and a stored reference. A search of the tracked sources found no such code, so the rule lands at 0 findings. |
+
+### Tests added (T04)
+
+- `tooling/eslint-config/test/boundaries.test.ts` (79):
+  - **TC-F-001-29, ESLint layer.** 29 banned names are errors, including subpaths, platform packages, `ai`, `@ai-sdk/react`, `@ai-sdk/gateway` and `@openrouter/*`. They fire in test, test-helper, script and config paths too. Look-alikes are allowed. The type-only and re-export forms are banned.
+  - **Allowed paths.** Only agent-host `engine/claude/**` may use the Agent SDK. The gateway may use providers in every file. A look-alike workspace (`services/model-gateway-v2`) gets no exception. The isomorphic preset keeps the bans.
+  - **TC-F-001-42, loading ban.** Errors: non-literal `import()` and `require()`, `createRequire`, `module.createRequire`, the computed form, `getBuiltinModule`, direct and indirect `eval`, `new Function` and `Function()`. Allowed: literal `import()`, literal `require()` and `import.meta.glob`.
+  - **TC-F-001-42, disable comments.** A described disable, a bare block disable and inline config aimed at the boundary rules are all errors.
+- `tooling/repo-scripts/test/check-banned-deps.test.ts` (20):
+  - The real lockfile passes.
+  - A provider two levels down a **dev** closure fails, with the witness path. Optional deps and the root are checked.
+  - `@ai-sdk/react` → `ai` → `@ai-sdk/gateway` fails on all three.
+  - An `npm:` alias fails, both at the top level and inside a dependency.
+  - The gateway may hold providers but not telemetry.
+  - The Agent SDK passes in agent-host, and through agent-host from `apps/cli`. A direct dependency from `apps/cli` fails for the SDK, its peer and its platform package. A bare `@anthropic-ai/sdk` in agent-host fails.
+  - `apps/web` → `packages/ui` → `agent-host` fails for both. Any dependency on ui-lab fails.
+  - Cycles terminate.
+  - It fails closed on a bad lockfile version, an unresolvable entry and a dangling `link:`.
+- `tooling/repo-scripts/test/check-imports.test.ts` (10):
+  - The real repo passes, and so does a clean tree.
+  - **TC-F-001-26:** `apps/web` → `apps/ui-lab` fails, by path and by package name.
+  - `require()`, `import()` and `import type` of banned packages are caught.
+  - Test, script, config and tooling files are scanned.
+  - `packs/**` is scanned, and nothing may import it.
+  - The Agent SDK and the providers are held to their allowed paths.
+  - The four layering rules and the graph-sanity guard are covered.
+- TC-F-001-30 (`packs/*` not a workspace glob) was already covered by T02's `check-workspaces`, which runs in `repo-checks`.
+
 ## Version confirmations (npm registry, 2026-09-25 ~08:20 UTC)
 
 Policy (§2.2): the latest patch of a line GA for at least 30 days, and `minimumReleaseAge` holds back anything under 3 days old. Cut-off for the 3-day rule: 2026-09-22T08:20Z.
