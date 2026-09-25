@@ -15,6 +15,7 @@ The CLI runs on plain Node 24 (type stripping) and needs no installed packages:
 node tooling/dev-stack/src/cli.ts env [--out <file>] [--force] [--github-mask]
 docker compose -f deploy/docker/dev/compose.yaml --env-file deploy/docker/dev/.env up -d --wait
 node tooling/dev-stack/src/cli.ts bootstrap [--env-file <file>]
+node tooling/dev-stack/src/cli.ts mock-idp [control <METHOD> <path> [json]]   # needs pnpm install
 ```
 
 - **`env`** writes `deploy/docker/dev/.env` with `POSTGRES_PASSWORD` and `BAO_DEV_ROOT_TOKEN_ID`:
@@ -45,6 +46,93 @@ node tooling/dev-stack/src/cli.ts bootstrap [--env-file <file>]
 real deployments: one ServiceAccount, one namespace and an audience per role (SEC-F002-22). F-023
 packages it.
 
+## Mock IdP (`@ralysa/dev-stack/mock-idp`, F-002-T09)
+
+An Entra v2-shaped OpenID provider and Microsoft Graph stub on
+[`oidc-provider`](https://github.com/panva/node-oidc-provider) (design §8.3, D-9). Tests start it
+in-process; the compose service and the CLI are for manual runs.
+
+```ts
+import { approveDeviceCode, signInAtAuthorize, startMockIdp } from '@ralysa/dev-stack/mock-idp';
+
+const idp = await startMockIdp({ deviceCodeTtlSeconds: 10, accessGroupId, adminGroupId });
+// idp.issuer, idp.endpoints.*, idp.graphBaseUrl, idp.rtsClientId, idp.cliClientId,
+// idp.clientSecret, idp.control.{url,token}; idp.patchUser(), idp.revokeSessions(),
+// idp.addClientSecret(), idp.setGraphFault(), idp.mintAccessToken(); await idp.close();
+```
+
+- **Per run**: RSA signing key (RS256, `kid` random, never committed), user object ids, the RTS
+  client secret, and the test-control bearer [SEC-F002-13 d, e].
+- **Paths** are Entra's: issuer `<base>/<tenant>/v2.0` (discovery under it),
+  `<base>/<tenant>/oauth2/v2.0/{authorize,token,devicecode,deviceauth}`,
+  `<base>/<tenant>/discovery/v2.0/keys`. Graph is at `<base>/graph/v1.0/…`, so
+  `idp.graph_base_url` is `<base>/graph`.
+- **Clients**: the CLI (public, device code only) and RTS (confidential, `client_secret_post`:
+  authorization code with PKCE S256 required, and client credentials for Graph). Any of the
+  currently valid RTS secrets is accepted, so two can be valid during a rotation.
+- **Tokens**: RS256, header `typ: JWT`, Entra v2 claims (`ver`, `tid`, `oid`, pairwise `sub`,
+  `azp`, `scp`, `uti`, `ipaddr`, `amr`, `acrs`, `name`, `preferred_username`, `groups`). Past 200
+  groups the token carries `_claim_names`/`_claim_sources` instead. Graph app tokens are Entra v1
+  app tokens (issuer `https://sts.windows.net/<tenant>/`, `idtyp: app`, `roles`). `azpacr` is `0`
+  for the CLI and `1` for RTS.
+- **ID tokens** (flow B) are re-issued in Entra's v2 shape: header `typ: JWT`, pairwise `sub`
+  (never the object id), `oid`, `tid`, `uti`, `ver`, and the sign-in's `amr`/`acrs`/`ipaddr`;
+  `nonce` is kept.
+- **One resource per request**, as Entra: asking for the RTS API and Graph together is
+  `invalid_scope`; client credentials accept only `https://graph.microsoft.com/.default`; there
+  are no delegated Graph tokens (`invalid_target`). `aud` comes from the resource.
+- **Device authorization response** as Entra's: `interval` (default 5) and `message`, and no
+  `verification_uri_complete`.
+- **Sign-in** asks for a fixture username only. There is no password field; MFA is implied by the
+  fixture's `amr`. A disabled user is refused with `access_denied`.
+- **Fixtures**: alice (access group), bob (no group), carol (disabled), dora (Graph 404), dana
+  (admin group only), erin (access + admin, `amr: ["fido"]`, `acrs: ["c1"]`), fatima (Arabic name
+  with harakat, Arabic-named group), olga (250 groups: overage), mallory (look-alike group: the
+  access group's name, another object id), sam (synced group emitted as `CONTOSO\Ralysa Users`).
+- **Graph stub**: `GET /v1.0/users/{id}` (`accountEnabled`, `signInSessionsValidFromDateTime`,
+  404), `POST /v1.0/users/{id}/checkMemberGroups`, `POST /v1.0/users/{id}/getMemberObjects`,
+  `GET /v1.0/groups/{id}`; app token required. Faults: `error` (any 4xx/5xx), `hang`, and
+  `latencyMs`.
+- **Headless browser**: `approveDeviceCode()` and `signInAtAuthorize()` play the user's part in
+  flows A and B.
+
+**Test-control API** (127.0.0.1 only, `Authorization: Bearer <per-run token>`, JSON bodies
+validated with zod):
+
+| Route | Effect |
+|---|---|
+| `GET /users` | fixture users (no secrets) |
+| `PATCH /users/:username` | `enabled`, `deletedInGraph`, `groups`, `groupClaimOverride`, `amr`, `acrs`, `ipaddr`, `displayName` |
+| `POST /users/:username/revoke-sessions` | Entra "revoke sessions" |
+| `POST /client-secrets` / `DELETE /client-secrets` | add a secret (returned once) / remove `{ secret }` |
+| `PUT /graph-fault` | `{ mode: "none" \| "error" \| "hang", status?, latencyMs? }` |
+| `POST /tokens` | mint an Entra-shaped token: `{ username, claims?, header?, expiresInSeconds?, signWith?: "idp" \| "foreign" }` |
+
+**Manual runs** use the ids in `deploy/docker/dev/control-plane.serve.dev.yaml`:
+
+```sh
+pnpm --filter @ralysa/dev-stack build
+docker compose -f deploy/docker/dev/compose.yaml --env-file deploy/docker/dev/.env --profile idp up -d --wait mock-idp
+docker compose -f deploy/docker/dev/compose.yaml --env-file deploy/docker/dev/.env exec mock-idp \
+  node tooling/dev-stack/dist/mock-idp/main.js control GET /users
+# or on the host, without Docker:
+node tooling/dev-stack/src/cli.ts mock-idp            # and, in another shell:
+node tooling/dev-stack/src/cli.ts mock-idp control POST /client-secrets
+```
+
+The RTS client secret is per run: get one with `control POST /client-secrets` and write it to
+`kv/ralysa/control-plane/idp-client-secret`.
+
+| Variable (mock IdP process only) | Default | Effect |
+|---|---|---|
+| `MOCK_IDP_HOST` | `127.0.0.1` | IdP and Graph listener. Must be loopback unless `MOCK_IDP_IN_CONTAINER=1` **and** `/.dockerenv` exists |
+| `MOCK_IDP_IN_CONTAINER` | `0` | Set by the compose service so the listener can bind the container's `0.0.0.0` |
+| `MOCK_IDP_PORT` | `59400` | IdP and Graph port (`0`: any free port) |
+| `MOCK_IDP_CONTROL_PORT` | `59401` | Test-control port, always bound to 127.0.0.1 (`0`: any free port; the `control` subcommand then can't find it) |
+| `MOCK_IDP_PUBLIC_BASE_URL` | `http://127.0.0.1:59400` | Issuer base; must be a loopback URL |
+| `MOCK_IDP_DEVICE_CODE_TTL_S` | `900` | Device-code lifetime |
+| `MOCK_IDP_CONTROL_TOKEN_FILE` | `<tmpdir>/ralysa-mock-idp/control-token` | Where the per-run bearer is written (mode 0600; never logged). Its directory must be owned by the current user with mode 0700, or it is refused |
+
 ## Harness for `test:integration`
 
 `@ralysa/dev-stack/harness` (a devDependency of the workspaces with integration tests):
@@ -61,4 +149,4 @@ packages it.
 |---|---|
 | `RALYSA_REQUIRE_DEV_STACK=1` (or `CI=1`/`CI=true`) | A missing or unbootstrapped stack fails the integration tests instead of skipping them. The CI `integration` job sets it. |
 
-No other environment variables are read.
+The harness reads no other environment variables; the mock IdP's are listed above.
