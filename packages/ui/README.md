@@ -45,6 +45,16 @@ Components call `useTranslation('ui')` explicitly; an app's own namespace is its
 | `src/components/text/` | `Text`, `Heading`, and the LTR islands `Code` (`<code dir="ltr">`), `CodeBlock` (`<pre dir="ltr">`, wraps rather than scrolls) and `Ltr` (`<bdi dir="ltr" data-ltr>`), all `translate="no"`. `<T i18nKey values>` renders a translation with each interpolated value in `<bdi>`; `isolate()` / `isolateValues()` wrap values in FSI…PDI for attribute text (`aria-label`, `title`). |
 | `src/examples/` (`@ralysa/ui/examples`) | Every component's `*.examples.tsx`, collected in `ALL_EXAMPLES` for the `apps/ui-lab` gallery. A separate entry point, so apps never bundle them. Examples hold no text: the gallery passes `labels` (`EXAMPLE_LABELS`) from its own `lab` catalog, so example copy stays out of the shipped `ui` catalog. |
 
+## Components (F-001-T10, T11)
+
+Every component takes translated text (or an i18n key), uses semantic token classes only, logical layout only, and shows the shared focus ring (`focus-visible:focus-ring`, defined in `src/styles/tailwind.css`). Each has a `*.examples.tsx` registered in `ALL_EXAMPLES`.
+
+| Group | Components | Notes |
+|---|---|---|
+| Layout | `AppShell`, `SkipLink`, `VisuallyHidden` | `AppShell` renders `header`, a named `nav` (inline-start), `main` (`id="main"`, `tabIndex=-1`) and a named `aside` (inline-end) with flex in reading order, so RTL mirrors them with no extra rule; each region has `data-region`. The skip link is its first focusable element. |
+| Actions | `Button` (`primary`, `secondary`, `ghost`, `danger`; `sm`, `md`, `lg`; optional decorative `icon`), `IconButton` (required typed `labelKey`), `Link` | Native `<button>`/`<a>`. `Button` defaults to `type="button"`. |
+| States | `EmptyState`, `LoadingState`, `ErrorState`, `PermissionDenied` | Default copy from the `ui` catalog. `LoadingState`: `role="status"`, `aria-busy`, spinner only under `motion-safe`. `ErrorState`: `role="alert"`, no error-object prop (raw error text never renders), optional retry and bidi-isolated reference id. `PermissionDenied`: bidi-isolated resource name and an optional "Request access" link (spec §6.1.3). |
+
 ## Scripts
 
 | Script | Does |

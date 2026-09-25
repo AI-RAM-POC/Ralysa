@@ -16,6 +16,17 @@ export const EXAMPLE_LABELS = [
   'identifier',
   'commandLine',
   'iconLabel',
+  // Layout, actions and states (T10)
+  'shellTitle',
+  'navItem',
+  'mainText',
+  'asideText',
+  'save',
+  'cancel',
+  'delete',
+  'linkText',
+  'resource',
+  'reference',
 ] as const;
 
 export type ExampleLabel = (typeof EXAMPLE_LABELS)[number];

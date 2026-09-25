@@ -1,8 +1,40 @@
 {
+  "action": {
+    "close": "إغلاق"
+  },
+  "appShell": {
+    "aside": {
+      "label": "التفاصيل"
+    },
+    "nav": {
+      "label": "التنقل الرئيسي"
+    }
+  },
+  "emptyState": {
+    "description": "ستظهر هنا العناصر التي تضيفها.",
+    "title": "لا يوجد شيء هنا بعد"
+  },
+  "errorState": {
+    "description": "حاول مرة أخرى. إذا استمرت المشكلة، فتواصل مع المسؤول.",
+    "reference": "المرجع: {{id}}",
+    "retry": "حاول مرة أخرى",
+    "title": "حدث خطأ ما"
+  },
+  "loadingState": {
+    "label": "جارٍ التحميل…"
+  },
   "locale": {
     "name": {
       "ar": "العربية",
       "en": "English"
     }
+  },
+  "permissionDenied": {
+    "description": "اطلب من المسؤول صلاحية الوصول إلى {{resource}}.",
+    "requestAccess": "طلب صلاحية الوصول",
+    "title": "ليست لديك صلاحية الوصول"
+  },
+  "skipLink": {
+    "label": "انتقل إلى المحتوى الرئيسي"
   }
 }

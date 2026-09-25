@@ -757,6 +757,32 @@ Licence check: all three `LICENSE` files start "Copyright 2022 The Noto Project 
 - `tooling/eslint-config/test/boundaries.test.ts`: only `packages/ui/src/icons/registry.ts` has the lucide import allowed (checked on the computed config for six other paths, including `registry.tsx`, an app's `registry.ts` and a test); a real lint of a lucide import in `src/icons/Icon.js` and of `export * from 'lucide-react/icons'` reports `no-restricted-imports`.
 - `tooling/repo-scripts/test/check-banned-deps.test.ts`: `lucide-react` through `@ralysa/ui` passes; a direct dependency in `apps/ui-lab` fails with `banned-deps/icon-set`.
 
+## T10: components I (layout, actions, states)
+
+### What landed
+
+- `packages/ui/src/components/layout/`: `AppShell` (banner, named `nav`, `main#main` with `tabIndex=-1`, named `aside`, all with `data-region`), `SkipLink`, `VisuallyHidden`.
+- `src/components/actions/`: `Button` (four variants, three sizes, optional decorative icon, default `type="button"`), `IconButton` (required `labelKey: I18nKey`, so an icon-only button can't be nameless or use an unknown key), `Link`.
+- `src/components/states/`: `EmptyState`, `LoadingState`, `ErrorState`, `PermissionDenied`.
+- `src/styles/tailwind.css`: the `focus-ring` utility (2 px `color.focus.ring` outline, 2 px offset, from the tokens), used as `focus-visible:focus-ring` by every interactive component.
+- 14 `ui` keys in en and ar (`action.close`, `appShell.*`, `skipLink.label`, `emptyState.*`, `loadingState.label`, `errorState.*`, `permissionDenied.*`); every Arabic string is `needs-native-review` in `review.json` (16 open in `packages/ui` now).
+- Examples for all nine components; 10 new example labels.
+- Two contrast pairs: `fg.onAccent` on `status.danger` (danger button) and `link` on `bg.subtle` (links in the nav region). Both pass in both themes.
+
+### Recorded decisions and deviations
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T10-1 | Implementation choice | `VisuallyHidden` is a `sr-only` span, not Radix's `VisuallyHidden`. | T10 is the non-Radix set; the result is the same CSS. |
+| T10-2 | Implementation choice | `ErrorState` has no prop that accepts an error object or message: only translated `title`/`description` and a `referenceId`. | §7.5 "no raw error text": a type error (`@ts-expect-error` test) stops a caller passing `error`. |
+| T10-3 | Implementation choice | `PermissionDenied` shows the "Request access" link only when given `requestAccessHref`. | Spec §6.1.3 makes it a deep link to the web console, which doesn't exist yet. A link with no target would be a dead control. |
+| T10-4 | Scope note | The danger button has no hover colour change (only a shadow). | A darker danger colour would need a new token and its pairs; the design lists none. Brand work can add `status.dangerHover`. |
+| T10-5 | Note for T12/T13 | The `AppShell` example renders its own `main`, `nav` and `aside` inside the gallery page. axe reports landmark nesting and duplicate-landmark rules at **moderate** impact, which AC-10 (serious or critical) doesn't count. | The gallery shows the real component. The E2E harness (T13) should keep the impact filter as designed. |
+
+### Tests added (T10)
+
+`packages/ui/test/components-layout-actions-states.test.tsx` (22, jsdom, test-mode i18n): landmark order and names in en and ar; logical classes only; the skip link is the first focusable element and targets `#main`; `Button` default and submit types, four variants' token classes and focus ring, disabled not operable, decorative icon; `IconButton` named from its key in en and ar, and `@ts-expect-error` for a missing or unknown key (checked by `typecheck`); `Link`; `EmptyState` defaults and action; `LoadingState` status, `aria-live`, `aria-busy`, `motion-safe` spinner; `ErrorState` alert, retry, `<bdi>` reference, no `error` prop; `PermissionDenied` isolated resource and link, and no link without a target. `text.test.tsx` renders the nine new components' examples in en and ar.
+
 ## PR #15 review nits (branch `feat/F-001-components`, 2026-09-25)
 
 | # | Nit | Fix | Tests |
