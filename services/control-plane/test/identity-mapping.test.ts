@@ -99,13 +99,22 @@ describe('untrusted display text (SEC-F002-30)', () => {
   const LRM = String.fromCodePoint(0x200e);
   const ALM = String.fromCodePoint(0x061c);
 
-  it('strips controls, bidi embeddings, overrides, isolates and zero-width characters', () => {
+  it('strips controls, bidi embeddings, overrides, isolates, ZWSP, word joiner and BOM', () => {
+    const WJ = String.fromCodePoint(0x2060);
     expect(
       sanitizeDisplayText(
-        `${RLO}lap${ZWSP}top${String.fromCodePoint(7)}${LRI}x${PDI}${RLE}${ZWJ}${BOM}\u0085`,
+        `${RLO}lap${ZWSP}top${String.fromCodePoint(7)}${LRI}x${PDI}${RLE}${WJ}${BOM}\u0085`,
         64,
       ),
     ).toBe('laptopx');
+  });
+
+  it('keeps ZWNJ in a Persian name and ZWJ in an emoji sequence (review of #29)', () => {
+    const ZWNJ = String.fromCodePoint(0x200c);
+    const persian = `\u0645\u06cc${ZWNJ}\u062e\u0648\u0627\u0647\u0645 \u0632\u0647\u0631\u0627`;
+    expect(sanitizeDisplayText(persian, 64)).toBe(persian);
+    const family = `\u{1F469}${ZWJ}\u{1F467}`;
+    expect(sanitizeDisplayText(`laptop ${family}`, 64)).toBe(`laptop ${family}`);
   });
 
   it('keeps Arabic with harakat and the RLM/LRM/ALM marks, unnormalised', () => {

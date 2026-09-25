@@ -262,8 +262,26 @@ export async function authorizeAndProvision(
     check.sessionsValidFrom !== null &&
     Math.floor(check.sessionsValidFrom.getTime() / 1000) > identity.iat
   ) {
+    // The incident responder's "revoke sessions" also ends what this user already holds here, as
+    // the next refresh would (review of #29, T10-2).
+    const before: StoredEventInput[] = [];
+    if (
+      known !== undefined &&
+      (await env.store.revokeUser(known.id, 'idp_sessions_revoked', false)) > 0
+    ) {
+      before.push(
+        authEvent({
+          action: 'auth.session.revoked',
+          outcome: 'success',
+          traceId: attempt.ctx.traceId,
+          user: { id: known.id, idpSubject: identity.oid },
+          details: { user_id: known.id, revoked_by: 'system', cause: 'idp_sessions_revoked' },
+        }),
+      );
+    }
     throw await attempt.refuse('expired', {
       actor,
+      before,
       details: { ...details, cause: 'idp_sessions_revoked' },
     });
   }
@@ -325,6 +343,7 @@ export async function authorizeAndProvision(
     displayName: identity.name ?? null,
     groupNames,
     membership: [...membership].map(([idpGroupId, source]) => ({ idpGroupId, source })),
+    claimsKnown: identity.groups.kind === 'list',
     configured: { access: accessId, admin: adminId },
     session: {
       flow: attempt.ctx.flow,
@@ -471,6 +490,23 @@ export async function recordSuccess(
       503,
     );
   }
+}
+
+/** auth.session.revoked for a session the system revoked (§3.5; written only when it changed). */
+export function sessionRevokedEvent(
+  traceId: string,
+  actor: Actor,
+  sid: string,
+  cause: string,
+): StoredEventInput {
+  return authEvent({
+    action: 'auth.session.revoked',
+    outcome: 'success',
+    traceId,
+    user: { id: actor.id, idpSubject: actor.idpSubject },
+    sessionId: sid,
+    details: { sid, revoked_by: 'system', cause },
+  });
 }
 
 /** SHA-256 of the IdP token's `uti`: the replay key (§4.4 idp_token_replay). */

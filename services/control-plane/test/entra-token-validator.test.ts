@@ -2,7 +2,7 @@
 // and -24, unit part): header, signature and claim pinning, freshness, the RTS issuer refused,
 // `uti` required, and the group-claim classification.
 import { createHash, generateKeyPairSync, sign as rsaSign } from 'node:crypto';
-import { type JWK, createLocalJWKSet, exportJWK } from 'jose';
+import { type JWK, createLocalJWKSet, errors, exportJWK } from 'jose';
 import { beforeAll, describe, expect, it } from 'vitest';
 import {
   type EntraTokenValidator,
@@ -179,6 +179,28 @@ describe('Entra token validator', () => {
     expect(
       (await validator.validateAccessToken(sign(header(), claims({ exp: NOW - 59 })))).ok,
     ).toBe(true);
+  });
+});
+
+describe('key-set faults are the IdP being unavailable, not a bad token (R29-1)', () => {
+  const withKeys = (keys: () => Promise<never>) =>
+    createEntraTokenValidator({ config, keys, now: () => NOW * 1000 });
+
+  it.each([
+    ['a network failure', () => Promise.reject(new TypeError('fetch failed'))],
+    ['a JWKS timeout', () => Promise.reject(new errors.JWKSTimeout())],
+    ['a malformed JWKS', () => Promise.reject(new errors.JWKSInvalid())],
+    ['a discovery failure', () => Promise.reject(new Error('discovery answered 503'))],
+  ])('%s → idp_unavailable', async (_name, keys) => {
+    const result = await withKeys(keys).validateAccessToken(sign(header(), claims()));
+    expect(result).toMatchObject({ ok: false, reason: 'idp_unavailable', check: 'keys' });
+  });
+
+  it('an unknown kid stays invalid_idp_token', async () => {
+    const result = await withKeys(() =>
+      Promise.reject(new errors.JWKSNoMatchingKey()),
+    ).validateAccessToken(sign(header(), claims()));
+    expect(result).toMatchObject({ ok: false, reason: 'invalid_idp_token', check: 'signature' });
   });
 });
 

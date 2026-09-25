@@ -41,6 +41,12 @@ export interface ProvisionInput {
   groupNames: ReadonlyMap<string, string | null>;
   /** The memberships to hold after this sign-in (idp group object ids). */
   membership: readonly { idpGroupId: string; source: 'token_claim' | 'graph_check' }[];
+  /**
+   * false when the token carried no usable group list (overage, or no `groups` claim): only the
+   * Graph-checked memberships are replaced, and earlier `token_claim` rows are kept, since the
+   * token says nothing about them (review of #29, R29-4).
+   */
+  claimsKnown: boolean;
   configured: { access: string; admin: string };
   session: {
     flow: SignInFlow;
@@ -242,10 +248,12 @@ async function syncGroups(
   const current = await trx
     .selectFrom('cp.group_membership as m')
     .innerJoin('cp.idp_group as g', 'g.id', 'm.group_id')
-    .select(['g.id as groupId', 'g.idp_group_id as idpGroupId'])
+    .select(['g.id as groupId', 'g.idp_group_id as idpGroupId', 'm.source as source'])
     .where('m.user_id', '=', userId)
     .execute();
-  const removed = current.filter((c) => !desired.has(c.idpGroupId));
+  const removed = current.filter(
+    (c) => !desired.has(c.idpGroupId) && (input.claimsKnown || c.source === 'graph_check'),
+  );
   if (removed.length > 0) {
     await trx
       .deleteFrom('cp.group_membership')

@@ -167,7 +167,8 @@ job exits non-zero, saying the migrations were applied but not recorded.
     (UTF-8, not normalised).
   - **Microsoft Graph** (`graph-directory.ts`) at every sign-in and refresh:
     `GET /v1.0/users/{oid}?$select=accountEnabled,signInSessionsValidFromDateTime` and
-    `checkMemberGroups` for exactly `access.access_group_id` and `access.admin_group_id`. Graph
+    `checkMemberGroups` for exactly `access.access_group_id` and `access.admin_group_id`
+    (one `graph_timeout_ms` deadline per check, token and secret read included). Graph
     decides membership, whatever the token's `groups` claim says; non-GUID claim values are
     ignored (`idp_group_claims_ignored_total`) and `_claim_sources` is never followed. `404` is a
     deleted user (denied, and a known user is disabled and revoked). Every call is bounded by
@@ -190,6 +191,13 @@ job exits non-zero, saying the migrations were applied but not recorded.
   - `POST /v1/auth/sign-in-failures`: 10 per minute per client (a throttled report writes
     nothing), idempotent per `attempt_id`, at most 60 events a minute for the org, and identical
     failures per /24 or /64 aggregated past 10 a minute into one event with `suppressed_count`.
+    These limits are **per serve instance** (in memory): N replicas allow up to N × 60 events a
+    minute. A shared limiter needs Redis (F-012).
+  - A tenant key-set fault (discovery or JWKS unreachable) is `error idp_unavailable` with 503;
+    the IdP token is not burned, so the client can retry.
+  - Group memberships: a token with a group list replaces the user's memberships. A token with
+    overage markers or no `groups` claim only updates the Graph-checked ones.
+  - Display text keeps ZWNJ/ZWJ (Persian, Urdu, emoji) and strips ZWSP, the word joiner and BOM.
 - **Sign-in, flow B** (`/login --browser`; F-002-T10; `src/auth/flow-b.ts`,
   `grants/authorization-code.ts`, `idp/oidc-client.ts` on `openid-client`):
   - `/oauth2/authorize` accepts only `client_id=ralysa-cli` and an IP-literal loopback

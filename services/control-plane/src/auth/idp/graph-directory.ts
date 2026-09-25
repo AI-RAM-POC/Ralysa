@@ -4,9 +4,9 @@
 //   GET  /v1.0/users/{oid}?$select=accountEnabled,signInSessionsValidFromDateTime
 //   POST /v1.0/users/{oid}/checkMemberGroups  { groupIds: [access, admin] }  (transitive)
 // Graph is authoritative for the two configured groups, whatever the token's `groups` claim says.
-// `404 Request_ResourceNotFound` means the user was deleted. Every call is bounded by
-// `idp.graph_timeout_ms` (≤ 3 s); after 5 consecutive failures the circuit opens for 30 s and
-// checks answer `unavailable` at once. Only `idp.graph_base_url` is ever called: nothing a token
+// `404 Request_ResourceNotFound` means the user was deleted. A whole check (secret, app token and
+// both calls) is bounded by `idp.graph_timeout_ms` (≤ 3 s); after 5 consecutive failures the
+// circuit opens for 30 s and checks answer `unavailable` at once. Only `idp.graph_base_url` is ever called: nothing a token
 // carries (`_claim_sources`) is dereferenced.
 //
 // Graph is called with an app-only token (client credentials at the pinned tenant's token
@@ -36,6 +36,35 @@ const UserState = z.looseObject({
 });
 const MemberGroups = z.looseObject({ value: z.array(z.string().max(64)).max(20) });
 const GroupName = z.looseObject({ displayName: z.string().max(256).nullable() });
+
+/** Settles with `promise`, or rejects with the signal's reason once it aborts. */
+function withDeadline<T>(promise: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(signal.reason as Error);
+  return new Promise<T>((resolve, reject) => {
+    const abort = () => {
+      reject(signal.reason as Error);
+    };
+    signal.addEventListener('abort', abort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', abort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', abort);
+        reject(error instanceof Error ? error : new Error(String(error)));
+      },
+    );
+  });
+}
+
+const GraphError = z.looseObject({ error: z.looseObject({ code: z.string().max(100) }) });
+
+/** Graph's `Request_ResourceNotFound` (a deleted or unknown object id). Consumes the body. */
+async function isResourceNotFound(response: Response): Promise<boolean> {
+  const parsed = GraphError.safeParse(await response.json().catch(() => undefined));
+  return parsed.success && parsed.data.error.code === 'Request_ResourceNotFound';
+}
 
 class GraphFailure extends Error {
   constructor(reason: string) {
@@ -71,16 +100,17 @@ export function createGraphDirectory(options: GraphDirectoryOptions): GraphDirec
   let appToken: { value: string; until: number } | undefined;
   let secret: Promise<string> | undefined;
 
-  const readSecret = (): Promise<string> => {
+  const readSecret = (signal: AbortSignal): Promise<string> => {
     secret ??= options.secrets.get(idp.client_secret_path).then((s) => s.value);
-    return secret.catch((error: unknown) => {
+    const pending = secret.catch((error: unknown) => {
       secret = undefined;
       throw error;
     });
+    return withDeadline(pending, signal);
   };
 
-  const requestAppToken = async (): Promise<Response> =>
-    doFetch(await options.tokenEndpoint(), {
+  const requestAppToken = async (signal: AbortSignal): Promise<Response> =>
+    doFetch(await withDeadline(options.tokenEndpoint(), signal), {
       method: 'POST',
       headers: {
         'content-type': 'application/x-www-form-urlencoded',
@@ -89,21 +119,21 @@ export function createGraphDirectory(options: GraphDirectoryOptions): GraphDirec
       body: new URLSearchParams({
         grant_type: 'client_credentials',
         client_id: idp.rts_client_id,
-        client_secret: await readSecret(),
+        client_secret: await readSecret(signal),
         scope: GRAPH_SCOPE,
       }).toString(),
       redirect: 'error',
-      signal: AbortSignal.timeout(timeoutMs),
+      signal,
     });
 
-  const fetchToken = async (): Promise<string> => {
-    let response = await requestAppToken();
+  const fetchToken = async (signal: AbortSignal): Promise<string> => {
+    let response = await requestAppToken(signal);
     if (response.status === 401 || response.status === 400) {
       const body = (await response.json().catch(() => ({}))) as { error?: unknown };
       if (body.error !== 'invalid_client')
         throw new GraphFailure(`token ${String(response.status)}`);
       secret = undefined; // rotated: read the current version once
-      response = await requestAppToken();
+      response = await requestAppToken(signal);
     }
     if (!response.ok) throw new GraphFailure(`token ${String(response.status)}`);
     const parsed = TokenResponse.safeParse(await response.json());
@@ -114,30 +144,32 @@ export function createGraphDirectory(options: GraphDirectoryOptions): GraphDirec
     };
     return appToken.value;
   };
-  // Single flight: the two calls of a check start together and share one token request.
+  // Single flight: the two calls of a check start together and share one token request. A
+  // caller that joins a request started by another check still stops at its own deadline.
   let inflight: Promise<string> | undefined;
-  const token = (): Promise<string> => {
+  const token = (signal: AbortSignal): Promise<string> => {
     if (appToken !== undefined && now() < appToken.until) return Promise.resolve(appToken.value);
-    inflight ??= fetchToken().finally(() => {
+    inflight ??= fetchToken(signal).finally(() => {
       inflight = undefined;
     });
-    return inflight;
+    return withDeadline(inflight, signal);
   };
 
   const call = async (
     path: string,
-    init: { method: 'GET' | 'POST'; body?: unknown; timeout?: number },
+    init: { method: 'GET' | 'POST'; body?: unknown },
+    signal: AbortSignal,
   ): Promise<Response> =>
     doFetch(`${base}${path}`, {
       method: init.method,
       headers: {
-        authorization: `Bearer ${await token()}`,
+        authorization: `Bearer ${await token(signal)}`,
         accept: 'application/json',
         ...(init.body === undefined ? {} : { 'content-type': 'application/json' }),
       },
       ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
       redirect: 'error',
-      signal: AbortSignal.timeout(init.timeout ?? timeoutMs),
+      signal,
     });
 
   const succeeded = () => {
@@ -158,29 +190,42 @@ export function createGraphDirectory(options: GraphDirectoryOptions): GraphDirec
     async check({ idpSubject }) {
       if (now() < openUntil) return { kind: 'unavailable', reason: 'circuit_open' };
       const user = encodeURIComponent(idpSubject);
+      // ONE deadline for the whole check: the secret read, the app token and both Graph calls
+      // (review of #29, R29-3), so a cold path can't add up to several timeouts.
+      const deadline = AbortSignal.timeout(timeoutMs);
       try {
         const [state, groups] = await Promise.all([
-          call(`/users/${user}?$select=accountEnabled,signInSessionsValidFromDateTime`, {
-            method: 'GET',
-          }),
-          call(`/users/${user}/checkMemberGroups`, {
-            method: 'POST',
-            body: { groupIds: [access.access_group_id, access.admin_group_id] },
-          }),
+          call(
+            `/users/${user}?$select=accountEnabled,signInSessionsValidFromDateTime`,
+            { method: 'GET' },
+            deadline,
+          ),
+          call(
+            `/users/${user}/checkMemberGroups`,
+            {
+              method: 'POST',
+              body: { groupIds: [access.access_group_id, access.admin_group_id] },
+            },
+            deadline,
+          ),
         ]);
-        if (state.status === 404) {
-          await groups.body?.cancel();
+        // Only Graph's "no such object" is a deletion; any other 404 (a wrong base URL, a proxy)
+        // is a fault, so it can't disable a user.
+        if (state.status === 404 || groups.status === 404) {
+          // A 404 body is read (consumed) by isResourceNotFound; the other one is cancelled.
+          const verdicts = await Promise.all(
+            [state, groups].map(async (response) => {
+              if (response.status === 404) return isResourceNotFound(response);
+              await response.body?.cancel();
+              return true;
+            }),
+          );
+          if (verdicts.includes(false)) throw new GraphFailure('not_found_unexpected');
           succeeded();
           return { kind: 'deleted' };
         }
         if (!state.ok) throw new GraphFailure(`user ${String(state.status)}`);
-        if (!groups.ok) {
-          if (groups.status === 404) {
-            succeeded();
-            return { kind: 'deleted' };
-          }
-          throw new GraphFailure(`checkMemberGroups ${String(groups.status)}`);
-        }
+        if (!groups.ok) throw new GraphFailure(`checkMemberGroups ${String(groups.status)}`);
         const parsedState = UserState.safeParse(await state.json());
         const parsedGroups = MemberGroups.safeParse(await groups.json());
         if (!parsedState.success || !parsedGroups.success) {
@@ -211,10 +256,11 @@ export function createGraphDirectory(options: GraphDirectoryOptions): GraphDirec
     async groupDisplayName(groupId) {
       if (now() < openUntil) return undefined;
       try {
-        const response = await call(`/groups/${encodeURIComponent(groupId)}?$select=displayName`, {
-          method: 'GET',
-          timeout: Math.min(timeoutMs, GROUP_NAME_TIMEOUT_MS),
-        });
+        const response = await call(
+          `/groups/${encodeURIComponent(groupId)}?$select=displayName`,
+          { method: 'GET' },
+          AbortSignal.timeout(Math.min(timeoutMs, GROUP_NAME_TIMEOUT_MS)),
+        );
         if (response.status === 404) {
           await response.body?.cancel();
           return null;
