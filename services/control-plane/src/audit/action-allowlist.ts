@@ -16,9 +16,9 @@ const SERVICE_SOURCES: Readonly<Record<string, Source>> = {
   'model-gateway': 'model-gateway',
   'mcp-gateway': 'mcp-gateway',
   'workspace-runtime': 'workspace-runtime',
-  // The server-side Agent Host (F-003); the local host writes through the client path.
+  // The server-side Agent Host (F-003); the local host writes through the client path. One
+  // name only, so two registered services can never share a source (review of #33, R33-6).
   'agent-host': 'agent-host-server',
-  'agent-host-server': 'agent-host-server',
 };
 
 /** The audit `source` of a registered service, or undefined when it has none. */

@@ -28,6 +28,7 @@ import {
   canonicalSize,
   findReservedKeys,
   iJsonViolations,
+  outcomeAllowed,
 } from '@ralysa/protocol/audit';
 import { uuidv7 } from '@ralysa/protocol/common';
 import {
@@ -64,7 +65,7 @@ import {
   tailGap,
 } from '../client-sessions.js';
 import type { StoredEventInput } from '../columns.js';
-import { AuditUnavailableError } from '../writer.js';
+import { AuditUnavailableError, InvalidAuditEventError } from '../writer.js';
 
 type ResultStatus = 'stored' | 'duplicate';
 
@@ -76,9 +77,16 @@ interface Outcome {
 
 /** A batch the route refuses as a whole (nothing stored, nothing advanced). */
 class Refusal extends Error {
-  constructor(readonly code: 'conflict' | 'rate_limited') {
+  constructor(readonly code: 'conflict' | 'rate_limited' | 'unprocessable') {
     super(code);
   }
+}
+
+/** What the store already holds for an event id of the batch (read with the reader role). */
+export interface StoredFact {
+  action: string;
+  sessionId: string | null;
+  clientSeq: number | null;
 }
 
 /** Nothing could be stored: every intent is answered ack=false. */
@@ -120,6 +128,11 @@ function checkEvents(events: readonly ClientAuditEventInput[]): void {
     }
     if (findReservedKeys(event.client).length > 0) throw new HttpProblem('unprocessable');
     if (iJsonViolations(event.client).length > 0) throw new HttpProblem('unprocessable');
+    // `failure` is for auth.* only [AR-3]: the writer would refuse the event, so refuse the
+    // batch here with 422 instead of failing every retry (review of #33, R33-1).
+    if (!outcomeAllowed(event.action, event.outcome ?? 'success')) {
+      throw new HttpProblem('unprocessable');
+    }
     if (canonicalSize(event) > CLIENT_EVENT_MAX_BYTES) throw new HttpProblem('payload_too_large');
   }
 }
@@ -136,7 +149,7 @@ export function registerClientEvents(app: FastifyInstance, deps: RtsDeps): void 
     request: FastifyRequest,
     sessionIdIn: string | undefined,
     events: readonly ClientAuditEventInput[],
-    existing: ReadonlySet<string>,
+    existing: ReadonlyMap<string, StoredFact>,
   ): Promise<Outcome> =>
     withOrg(deps.db, principal.orgId, async (trx) => {
       // One batch at a time per auth session: the open-session count and each cursor are
@@ -145,7 +158,21 @@ export function registerClientEvents(app: FastifyInstance, deps: RtsDeps): void 
         trx,
       );
       let sessionId = sessionIdIn;
+      // A retried opening batch whose session.started is already stored (its answer was lost):
+      // continue that session if it is this user's under this sid (review of #33, R33-4).
+      const opened = sessionId === undefined ? existing.get(events[0]?.event_id ?? '') : undefined;
+      if (opened?.action === 'session.started' && opened.sessionId !== null) {
+        const mine = await trx
+          .selectFrom('cp.client_audit_cursor')
+          .select('session_id')
+          .where('user_id', '=', principal.userId)
+          .where('session_id', '=', opened.sessionId)
+          .where('sid', '=', principal.sessionId)
+          .executeTakeFirst();
+        if (mine !== undefined) sessionId = mine.session_id;
+      }
       let state: CursorState;
+      let endedBefore = false;
       if (sessionId === undefined) {
         const open = await trx
           .selectFrom('cp.client_audit_cursor')
@@ -179,8 +206,10 @@ export function registerClientEvents(app: FastifyInstance, deps: RtsDeps): void 
         if (cursor?.sid !== principal.sessionId || (cursor.ended_at !== null && !onlyRetries)) {
           throw new Refusal('conflict');
         }
+        endedBefore = cursor.ended_at !== null;
         state = { lastSeq: Number(cursor.last_seq), openGaps: parseMultirange(cursor.open_gaps) };
       }
+      const initial = { lastSeq: state.lastSeq, gaps: formatMultirange(state.openGaps) };
 
       const user = await trx
         .selectFrom('cp.app_user')
@@ -220,14 +249,43 @@ export function registerClientEvents(app: FastifyInstance, deps: RtsDeps): void 
                 ...optional('agentId', clientString(event.client, 'agent_id')),
               })
             : undefined;
-        if (existing.has(event.event_id) || seen.has(event.event_id)) {
-          // A retry of an event already stored: its intent is answered from the current state.
-          if (covering !== undefined) halted = true;
+        const stored = existing.get(event.event_id);
+        if (stored !== undefined || seen.has(event.event_id)) {
+          // A retry of an event already stored. An intent stored as refused stays refused, even
+          // if the switch was lifted since: no tool.call.requested exists for it (R33-2). Other
+          // intents are answered from the current state.
+          const refused = stored?.action === 'tool.call.denied' && event.action === INTENT;
+          if (covering !== undefined || refused) halted = true;
           results.push({
             event_id: event.event_id,
             status: 'duplicate',
-            ...(event.action === INTENT ? { ack: ackFor(covering) } : {}),
+            ...(event.action === INTENT
+              ? {
+                  ack: refused
+                    ? {
+                        event_id: event.event_id,
+                        ack: false,
+                        governance: { epoch, halted: true, reason_category: 'kill_switch' },
+                      }
+                    : ackFor(covering),
+                }
+              : {}),
           });
+          // A stored event of THIS session whose write committed after the batch was answered
+          // 503 (writer.ts: the 250 ms bound): its seq still advances the cursor, so the next
+          // event isn't a false gap (R33-3). A seq the cursor already covers changes nothing.
+          if (!endedBefore && stored?.sessionId === sessionId && stored.clientSeq !== null) {
+            const applied = applySeq(state, stored.clientSeq);
+            if (applied.verdict.kind !== 'conflict') state = applied.state;
+            if (event.action === 'session.ended' && ended === undefined) {
+              const tail =
+                event.final_seq === undefined ? undefined : tailGap(state, event.final_seq);
+              ended = {
+                finalSeq: event.final_seq ?? null,
+                gaps: [...state.openGaps, ...(tail === undefined ? [] : [tail])],
+              };
+            }
+          }
           continue;
         }
         seen.add(event.event_id);
@@ -244,6 +302,8 @@ export function registerClientEvents(app: FastifyInstance, deps: RtsDeps): void 
           halted = true;
           server.kill_switch = { scope: covering.scope, scope_id: covering.scopeId };
           server.requested_action = event.action;
+        } else if (event.outcome === null) {
+          server.outcome_defaulted = true;
         }
         const resourceId = event.resource === null ? null : text(event.resource.id, 128);
         toStore.push({
@@ -300,6 +360,7 @@ export function registerClientEvents(app: FastifyInstance, deps: RtsDeps): void 
           if (result.status === 'stored') result.status = status.get(result.event_id) ?? 'stored';
         }
       } catch (error) {
+        if (error instanceof InvalidAuditEventError) throw new Refusal('unprocessable');
         if (!(error instanceof AuditUnavailableError)) throw error;
         throw new Unavailable(
           events
@@ -311,7 +372,11 @@ export function registerClientEvents(app: FastifyInstance, deps: RtsDeps): void 
             })),
         );
       }
-      if (toStore.length === 0) return { sessionId, results, halted };
+      const changed =
+        toStore.length > 0 ||
+        state.lastSeq !== initial.lastSeq ||
+        formatMultirange(state.openGaps) !== initial.gaps;
+      if (!changed || endedBefore) return { sessionId, results, halted };
       await trx
         .updateTable('cp.client_audit_cursor')
         .set({
@@ -373,18 +438,26 @@ export function registerClientEvents(app: FastifyInstance, deps: RtsDeps): void 
           async (trx) =>
             trx
               .selectFrom('audit.audit_event')
-              .select('event_id')
+              .select(['event_id', 'action', 'session_id', 'client_seq', 'actor_user_id'])
               .where('event_id', 'in', ids)
               .execute(),
           { readOnly: true },
         );
-        outcome = await ingest(
-          principal,
-          request,
-          sessionId,
-          events,
-          new Set(found.map((row) => row.event_id)),
+        const existing = new Map<string, StoredFact>(
+          found.map((row) => [
+            row.event_id,
+            {
+              action: row.action,
+              // Session facts only for the caller's own events.
+              sessionId: row.actor_user_id === principal.userId ? row.session_id : null,
+              clientSeq:
+                row.actor_user_id === principal.userId && row.client_seq !== null
+                  ? Number(row.client_seq)
+                  : null,
+            },
+          ]),
         );
+        outcome = await ingest(principal, request, sessionId, events, existing);
       } catch (error) {
         if (error instanceof Refusal) throw new HttpProblem(error.code);
         if (error instanceof Unavailable) {

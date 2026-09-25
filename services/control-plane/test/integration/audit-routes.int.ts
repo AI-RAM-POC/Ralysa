@@ -230,7 +230,12 @@ describe.skipIf(stack === undefined)('audit endpoints (F-002-T12)', () => {
         : { payload: typeof payload === 'string' ? payload : JSON.stringify(payload) }),
     });
 
-  /** Holds EXCLUSIVE on audit_event (reads pass, inserts wait): the writer's 250 ms bound fails. */
+  /**
+   * Holds EXCLUSIVE on audit_event (reads pass, inserts wait): the writer's 250 ms bound fails.
+   * Before the lock is released, the refused writes are awaited AND the blocked inserts must be
+   * gone (cancelled by their statement_timeout), so none can commit late and race the test's
+   * assertions (review of #33, R33-5).
+   */
   const withAuditLocked = async <T>(fn: () => Promise<T>): Promise<T> => {
     const su = t().superuser;
     await su.query('BEGIN');
@@ -238,6 +243,17 @@ describe.skipIf(stack === undefined)('audit endpoints (F-002-T12)', () => {
     try {
       return await fn();
     } finally {
+      await settled();
+      const waiting = async () =>
+        (
+          await t().superuser.query<{ n: number }>(
+            `select count(*)::int as n from pg_locks
+              where relation = 'audit.audit_event'::regclass and not granted`,
+          )
+        ).rows[0]?.n ?? 0;
+      for (let i = 0; i < 10_000 && (await waiting()) > 0; i++) {
+        // Polls the lock table; the writer's statement_timeout ends each wait within 250 ms.
+      }
       await su.query('ROLLBACK');
     }
   };
@@ -412,6 +428,27 @@ describe.skipIf(stack === undefined)('audit endpoints (F-002-T12)', () => {
         });
       },
     );
+
+    it('R33-7: a service may not write as another service or as the system', async () => {
+      const token = await serviceToken('model-gateway');
+      for (const actor of [
+        { type: 'service', user_id: null, idp_subject: null, service: 'mcp-gateway' },
+        { type: 'system', user_id: null, idp_subject: null, service: 'model-gateway' },
+      ]) {
+        const reply = await inject('POST', '/v1/audit/events', token, {
+          events: [svcEvent(null, { actor })],
+        });
+        expect([actor.type, reply.statusCode]).toEqual([actor.type, 422]);
+      }
+      const own = await inject('POST', '/v1/audit/events', token, {
+        events: [
+          svcEvent(null, {
+            actor: { type: 'service', user_id: null, idp_subject: null, service: 'model-gateway' },
+          }),
+        ],
+      });
+      expect(own.statusCode).toBe(201);
+    });
 
     it('a registered service without an audit source can write nothing', async () => {
       const alice = await seedUser();
@@ -613,6 +650,19 @@ describe.skipIf(stack === undefined)('audit endpoints (F-002-T12)', () => {
       expect([...seen].sort()).toEqual(five.map((e) => e.event_id).sort());
       // The pages are in (ts, event_id) order (fixed-width ISO timestamps and UUIDs sort as text).
       expect(keys).toEqual([...keys].sort());
+    });
+
+    it('R33-8: a non-admin is refused before parameter validation, and the denial is audited', async () => {
+      const bob = await seedUser();
+      const reply = await inject('GET', '/v1/audit/events?from=yesterday', await userToken(bob));
+      expect(reply.statusCode).toBe(403);
+      await settled();
+      const [row] = await rows(`action = 'audit.query' and actor_user_id = $2`, [bob.id]);
+      expect(row).toMatchObject({
+        outcome: 'denied',
+        reason_code: 'not_platform_admin',
+        details: { filters: { invalid: true } },
+      });
     });
 
     it('a non-admin → 403 with audit.query denied not_platform_admin, and that event is itself queryable', async () => {
@@ -885,6 +935,31 @@ describe.skipIf(stack === undefined)('audit endpoints (F-002-T12)', () => {
       await su.query(`update cp.kill_switch set active = false where org_id = $1`, [ORG]);
     });
 
+    it('R33-2: a retry of an intent stored as refused stays refused after the switch is lifted', async () => {
+      const alice = await seedUser();
+      const token = await userToken(alice);
+      const sessionId = await open(token);
+      const su = t().superuser;
+      const id = uuidv7();
+      await su.query(
+        `insert into cp.kill_switch (id, org_id, scope, scope_id, active, reason) values ($1, $2, 'tenant', null, true, 'test')`,
+        [id, ORG],
+      );
+      const intent = cev(2, 'tool.call.requested');
+      expect((await send(token, sessionId, [intent])).statusCode).toBe(423);
+      await su.query(`update cp.kill_switch set active = false where id = $1`, [id]);
+      const retry = await send(token, sessionId, [intent]);
+      expect(retry.statusCode).toBe(423);
+      expect(retry.json<ClientReply>().results[0]).toMatchObject({
+        status: 'duplicate',
+        ack: { ack: false, governance: { halted: true, reason_category: 'kill_switch' } },
+      });
+      // A new intent is acked now that the switch is off.
+      const next = await send(token, sessionId, [cev(3, 'tool.call.requested')]);
+      expect(next.statusCode).toBe(201);
+      expect(next.json<ClientReply>().results[0]?.ack).toMatchObject({ ack: true });
+    });
+
     it('503 with ack=false for every intent when the insert fails; nothing stored or advanced', async () => {
       const alice = await seedUser();
       const token = await userToken(alice);
@@ -901,7 +976,92 @@ describe.skipIf(stack === undefined)('audit endpoints (F-002-T12)', () => {
       // The cursor didn't advance: the same batch goes through afterwards, without a gap.
       const retried = await send(token, sessionId, [a, b]);
       expect(retried.statusCode).toBe(201);
-      expect((await rows('event_id = $2', [a.event_id]))[0]?.details).not.toHaveProperty('server');
+      const [stored] = await rows('event_id = $2', [a.event_id]);
+      expect(stored?.details).toMatchObject({ server: { outcome_defaulted: true } });
+      expect(stored?.details.server).not.toHaveProperty('seq_gap');
+    });
+
+    it('R33-3: stored events whose write committed late still advance the cursor on a retry', async () => {
+      const alice = await seedUser();
+      const token = await userToken(alice);
+      const sessionId = await open(token);
+      const e2 = cev(2);
+      const e3 = cev(3);
+      // As if the batch [e2, e3] had been answered 503 and its insert committed afterwards: the
+      // rows exist, the cursor is still at 1.
+      const late = [e2, e3].map((e) => ({
+        event_id: e.event_id,
+        action: e.action,
+        actor: {
+          type: 'user' as const,
+          user_id: alice.id,
+          idp_subject: `oid-${alice.id.slice(-8)}`,
+          service: null,
+        },
+        outcome: 'success' as const,
+        session_id: sessionId,
+        trace_id: TRACE,
+        details: { client: {} },
+        source: 'agent-host-local' as const,
+        attestation: 'client' as const,
+        client_seq: e.client_seq,
+      }));
+      await writer.write(ORG, late);
+      // The host retries the batch: duplicates, and the cursor moves to 3.
+      const retried = await send(token, sessionId, [e2, e3]);
+      expect(retried.statusCode).toBe(201);
+      expect(retried.json<ClientReply>().results.map((r) => r.status)).toEqual([
+        'duplicate',
+        'duplicate',
+      ]);
+      const e4 = cev(4);
+      expect((await send(token, sessionId, [e4])).statusCode).toBe(201);
+      expect((await rows('event_id = $2', [e4.event_id]))[0]?.details).not.toHaveProperty(
+        'server.seq_gap',
+      );
+      const end = cev(5, 'session.ended', { final_seq: 5 });
+      expect((await send(token, sessionId, [end])).statusCode).toBe(201);
+      expect(
+        await rows(`action = 'audit.client_seq_gap' and session_id = $2`, [sessionId]),
+      ).toEqual([]);
+    });
+
+    it('R33-4: a retried opening batch continues the session it already opened', async () => {
+      const alice = await seedUser();
+      const token = await userToken(alice);
+      const started = cev(1, 'session.started');
+      const first = await send(token, undefined, [started]);
+      expect(first.statusCode).toBe(201);
+      const sessionId = first.json<ClientReply>().session_id;
+      // The answer was lost; the host sends the same batch again.
+      const again = await send(token, undefined, [started, cev(2)]);
+      expect(again.statusCode).toBe(201);
+      expect(again.json<ClientReply>()).toMatchObject({
+        session_id: sessionId,
+        results: [{ status: 'duplicate' }, { status: 'stored' }],
+      });
+      const { rows: cursors } = await t().superuser.query<{ n: number }>(
+        `select count(*)::int as n from cp.client_audit_cursor where user_id = $1`,
+        [alice.id],
+      );
+      expect(cursors[0]?.n).toBe(1);
+      // N6: the stored session.started records that its outcome was defaulted.
+      expect((await rows('event_id = $2', [started.event_id]))[0]?.details).toMatchObject({
+        server: { outcome_defaulted: true },
+      });
+      // Another sign-in (another sid) retrying it gets a new session, not this one.
+      const other = await userToken({ id: alice.id, sid: await newSid(alice.id) });
+      const elsewhere = await send(other, undefined, [started]);
+      expect(elsewhere.json<ClientReply>().session_id).not.toBe(sessionId);
+    });
+
+    it('R33-1: a client outcome of failure outside auth.* is 422, not a stuck 500', async () => {
+      const alice = await seedUser();
+      const token = await userToken(alice);
+      const sessionId = await open(token);
+      const bad = cev(2, 'tool.call.completed', { outcome: 'failure' });
+      expect((await send(token, sessionId, [bad])).statusCode).toBe(422);
+      expect((await send(token, sessionId, [cev(2)])).statusCode).toBe(201);
     });
 
     it('600 events a minute per user, then 429', async () => {

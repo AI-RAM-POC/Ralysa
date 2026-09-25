@@ -59,7 +59,7 @@ function queryEvent(
   deps: RtsDeps,
   request: FastifyRequest,
   principal: VerifiedPrincipal,
-  filters: Filters,
+  filters: Filters | { invalid: true },
   allowed: boolean,
 ): StoredEventInput {
   return {
@@ -107,6 +107,29 @@ async function isPlatformAdmin(deps: RtsDeps, principal: VerifiedPrincipal): Pro
   return row !== undefined && row.roles.includes('platform_admin') && row.adminMember;
 }
 
+/** The parsed query, or undefined when it is invalid (400 for an admin). */
+function validateQuery(raw: unknown) {
+  const parsed = AuditQuery.safeParse(raw);
+  if (!parsed.success) return undefined;
+  const query = parsed.data;
+  const from = new Date(query.from);
+  const to = new Date(query.to);
+  if (!(from < to) || to.getTime() - from.getTime() > MAX_RANGE_MS) return undefined;
+  const after = query.cursor === undefined ? undefined : decodeCursor(query.cursor);
+  if (query.cursor !== undefined && after === undefined) return undefined;
+  const limit = query.limit === undefined ? AUDIT_QUERY_DEFAULT_LIMIT : Number(query.limit);
+  const filters: Filters = {
+    from: from.toISOString(),
+    to: to.toISOString(),
+    ...(query.user_id === undefined ? {} : { user_id: query.user_id }),
+    ...(query.action === undefined ? {} : { action: query.action }),
+    ...(query.outcome === undefined ? {} : { outcome: query.outcome }),
+    limit,
+    ...(after === undefined ? {} : { cursor: true }),
+  };
+  return { query, from, to, after, limit, filters };
+}
+
 export function registerAuditQuery(app: FastifyInstance, deps: RtsDeps): void {
   app.get(
     ROUTES.auditQuery.url,
@@ -114,39 +137,21 @@ export function registerAuditQuery(app: FastifyInstance, deps: RtsDeps): void {
     async (request, reply) => {
       reply.header('cache-control', 'no-store');
       const principal = await authenticate(deps, request, 'user');
-      const parsed = AuditQuery.safeParse(request.query);
-      if (!parsed.success) throw new HttpProblem('invalid_request');
-      const query = parsed.data;
-      const from = new Date(query.from);
-      const to = new Date(query.to);
-      if (!(from < to) || to.getTime() - from.getTime() > MAX_RANGE_MS) {
-        throw new HttpProblem('invalid_request');
-      }
-      const after = query.cursor === undefined ? undefined : decodeCursor(query.cursor);
-      if (query.cursor !== undefined && after === undefined) {
-        throw new HttpProblem('invalid_request');
-      }
-      const limit = query.limit === undefined ? AUDIT_QUERY_DEFAULT_LIMIT : Number(query.limit);
-      const filters: Filters = {
-        from: from.toISOString(),
-        to: to.toISOString(),
-        ...(query.user_id === undefined ? {} : { user_id: query.user_id }),
-        ...(query.action === undefined ? {} : { action: query.action }),
-        ...(query.outcome === undefined ? {} : { outcome: query.outcome }),
-        limit,
-        ...(after === undefined ? {} : { cursor: true }),
-      };
-
+      const valid = validateQuery(request.query);
+      // The role first: a non-admin is refused (and audited) whatever the parameters, so the
+      // answer never tells a non-admin which filters are valid (review of #33, R33-8).
       if (!(await isPlatformAdmin(deps, principal))) {
         try {
           await deps.writer.writeOrSpool(principal.orgId, [
-            queryEvent(deps, request, principal, filters, false),
+            queryEvent(deps, request, principal, valid?.filters ?? { invalid: true }, false),
           ]);
         } catch (error) {
           deps.logger.warn('audit_query_denial_write_failed', { error: String(error) });
         }
         throw new HttpProblem('forbidden');
       }
+      if (valid === undefined) throw new HttpProblem('invalid_request');
+      const { query, from, to, after, limit, filters } = valid;
       const reader = deps.auditReader;
       if (reader === undefined) throw new HttpProblem('temporarily_unavailable');
       // Written and committed before any result is read [SEC-F002-06 c].

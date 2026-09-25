@@ -260,6 +260,7 @@ job exits non-zero, saying the migrations were applied but not recorded.
     `workspace-runtime`, and `agent-host` → `agent-host-server`. A registered service with any
     other name has no audit source: its batches are 403 (`audit.ingest_rejected`,
     `reason_code = no_audit_source`).
+  - A `service` actor must be the calling service itself, and a `system` actor is refused (422).
   - Each event is a plain `INSERT` in a savepoint as `ralysa_audit_writer` (a repeated `event_id`
     is `duplicate`), all within 250 ms, else 503 `audit_unavailable` and nothing is stored.
   - **Rejection reports**: `auth.token_rejected` events from a verifying service (built by
@@ -279,7 +280,8 @@ job exits non-zero, saying the migrations were applied but not recorded.
     (413), 256 KB per body (413).
   - **Sessions:** a batch without `session_id` must start with `session.started` and gets a new
     session bound to the token's `sid`. An unknown, another user's, another `sid`'s or an ended
-    session is 409 (a retry made only of stored events is still answered). At most 20 open
+    session is 409 (a retry made only of stored events is still answered). A retried opening
+    batch whose `session.started` is already stored continues that session. At most 20 open
     sessions per `sid` (429).
   - **`client_seq`** per session: a jump is stored with `details.server.seq_gap` and the range is
     kept open; an event inside an open range is stored with `details.server.late = true`; any
@@ -293,14 +295,18 @@ job exits non-zero, saying the migrations were applied but not recorded.
   - **Fail closed:** if the insert fails or exceeds 250 ms, nothing is stored or advanced and the
     answer is 503 `audit_unavailable` with `acks` (`ack = false` for every intent).
   - 600 events a minute per user (per instance), then 429 with `Retry-After`. A null `outcome`
-    (an intent, a session event) is stored as `success`: the event itself happened.
+    (an intent, a session event) is stored as `success` with `details.server.outcome_defaulted`;
+    a client `failure` outside `auth.*` is 422. A retried event already stored in this session
+    still advances the cursor (its write may have committed after a 503), and a retried intent
+    that was stored as `tool.call.denied` stays refused.
   - **Sweep** (every minute, `FOR UPDATE SKIP LOCKED`): open gaps idle for 15 minutes become final
     `audit.client_seq_gap` events; a session idle for 24 hours without `session.ended` gets
     `audit.client_session_unterminated` and is closed. Event ids are derived from the session and
     range, so a retried pass writes nothing twice.
 - **`GET /v1/audit/events`** (AC-12): `from` and `to` (at most 31 days), `user_id`, `action`,
   `outcome`, `limit` (1–500, default 100), `cursor` (keyset on `ts`, `event_id`). It needs the
-  **session** role `platform_admin` and a current admin-group membership, both read at request
+  **session** role `platform_admin` and a current admin-group membership, checked before the
+  parameters are validated and both read at request
   time. `audit.query success` (the filters and the policy version) is committed **before** any
   result is read; if it can't be, the answer is 503. A non-admin gets 403 after
   `audit.query denied not_platform_admin`. Reads use `ralysa_audit_reader` in a read-only

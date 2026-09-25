@@ -62,6 +62,8 @@ describe('per-service action allow-list (SEC-F002-03)', () => {
     expect(sourceForService('mcp-gateway')).toBe('mcp-gateway');
     expect(sourceForService('workspace-runtime')).toBe('workspace-runtime');
     expect(sourceForService('agent-host')).toBe('agent-host-server');
+    // One name per source (review of #33, R33-6): agent-host-server is not a service name.
+    expect(sourceForService('agent-host-server')).toBeUndefined();
     expect(sourceForService('control-plane')).toBeUndefined();
     expect(sourceForService('agent-host-local')).toBeUndefined();
     expect(sourceForService('toString')).toBeUndefined();

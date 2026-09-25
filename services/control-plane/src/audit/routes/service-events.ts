@@ -124,6 +124,14 @@ export function registerServiceEvents(app: FastifyInstance, deps: RtsDeps): void
       const stored: StoredEventInput[] = [];
       const reports: { event: AuditEventInput; details: TokenRejectedReportDetails }[] = [];
       for (const event of events) {
+        // A service may speak for a user it serves or for itself, never for another service
+        // or as the system (review of #33, R33-7).
+        if (
+          event.actor.type === 'system' ||
+          (event.actor.type === 'service' && event.actor.service !== client.name)
+        ) {
+          throw new HttpProblem('unprocessable');
+        }
         const candidate: StoredEventInput = { ...event, source, attestation: 'server' };
         try {
           validateStoredEvent(candidate);
