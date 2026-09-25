@@ -17,3 +17,6 @@ __pycache__/
 *.tfstate
 *.tfstate.*
 .terraform/
+
+# F-001: downloaded, hash-verified tool binaries (gitleaks)
+.tools/

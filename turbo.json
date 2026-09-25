@@ -1,9 +1,24 @@
 {
-  "$schema": "https://turbo.build/schema.json",
+  "$schema": "https://turborepo.com/schema.json",
+  "globalDependencies": [
+    ".dependency-cruiser.cjs",
+    "tsconfig.json",
+    "prettier.config.js",
+    ".prettierignore",
+    ".nvmrc",
+    "pnpm-workspace.yaml",
+    "tooling/**/*",
+    "!tooling/**/node_modules/**"
+  ],
+  "remoteCache": { "enabled": false },
   "tasks": {
     "build": { "dependsOn": ["^build"], "outputs": ["dist/**"] },
-    "dev": { "cache": false, "persistent": true },
-    "lint": {},
-    "test": { "dependsOn": ["^build"] }
+    "typecheck": { "dependsOn": ["^build"] },
+    "lint": { "dependsOn": ["^build"] },
+    "test": { "dependsOn": ["^build"] },
+    "test:integration": { "dependsOn": ["^build"], "cache": false },
+    "check:generated": { "dependsOn": ["^build"], "cache": false },
+    "e2e": { "dependsOn": ["^build"], "cache": false },
+    "dev": { "cache": false, "persistent": true }
   }
 }

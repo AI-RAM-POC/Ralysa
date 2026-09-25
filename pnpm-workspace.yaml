@@ -1,5 +1,20 @@
+# Workspace packages. packs/* is deliberately NOT a workspace (RF-7, F-001 design §6.4):
+# department packs are content, never part of the build graph.
 packages:
-  - "apps/*"
-  - "packages/*"
-  - "services/*"
-  - "packs/*"
+  - 'apps/*'
+  - 'packages/*'
+  - 'services/*'
+  - 'tooling/*'
+
+# Supply-chain settings (F-001 design §6.4; RF-3, SEC-F001-19, -20).
+# Install fails on any dependency build script that is not reviewed below.
+strictDepBuilds: true
+# Every entry defaults to false. A `true` entry needs a matching reviewed entry in
+# tooling/repo-scripts/allow-builds.json (reason, reviewer, date); check-workspaces enforces it.
+allowBuilds: {}
+# 3 days (pnpm 11 default is 1 day).
+minimumReleaseAge: 4320
+# Transitive dependencies may only come from the registry.
+blockExoticSubdeps: true
+# Refuse a version whose publish provenance is weaker than an earlier version's.
+trustPolicy: no-downgrade

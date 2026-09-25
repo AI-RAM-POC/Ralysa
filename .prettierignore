@@ -1,0 +1,18 @@
+# Generated, vendored or owned by other tools
+pnpm-lock.yaml
+node_modules/
+dist/
+coverage/
+.turbo/
+.tools/
+
+# Documentation and specs are prose; formatting them is out of scope for F-001
+*.md
+requirements/
+docs/
+
+# Agent configuration (human-merge paths, F-001 design §6.3)
+.claude/
+
+# Unchanged by F-001 (hardening deferred with T25, design §11.8)
+.github/workflows/release.yml
