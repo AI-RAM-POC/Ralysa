@@ -514,6 +514,7 @@ The security review of deviation T16-1 is appended verbatim to security.md: **AC
 - **Integration** (`checkpoint.int.ts`): **T10**, flipping `exportable` records one event (`via: audit.record_custody_violation`, both flags); the flag can't be cleared; `allow_plaintext_backup` alone is recorded with that pair.
 - **Integration** (policies): **T8**, the sealer is DENIED on `db/audit_writer`.
 - control-plane integration passed 62/62 twice.
+- **CI found a harness race.** With a fourth integration file, parallel per-file bootstraps collided on `ALTER ROLE` of the shared cluster roles (`XX000 tuple concurrently updated`). `createTestDatabase` now serialises `bootstrap-roles.sql` with an advisory lock held in the shared admin database (advisory locks are per database). 3 consecutive local runs pass 62/62. Production is unaffected: the DBA runs the script once.
 
 ### Conditions and open items (security review §E)
 
