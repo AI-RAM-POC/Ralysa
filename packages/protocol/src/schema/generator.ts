@@ -27,8 +27,10 @@ import {
   AuditQueryResponse,
   ClientEventsRequest,
   ClientEventsResponse,
+  ClientEventsUnavailable,
   ServiceEventsRequest,
   ServiceEventsResponse,
+  TokenRejectedReportDetails,
 } from '../control-plane/audit-api.js';
 import { AuthConfig } from '../control-plane/auth-config.js';
 import { GovernanceState } from '../control-plane/governance.js';
@@ -127,6 +129,18 @@ export const SCHEMA_REGISTRY: readonly RegisteredSchema[] = [
     file: 'audit-service-events-response.v1.json',
     title: 'ServiceEventsResponse',
     schema: ServiceEventsResponse,
+    io: 'output',
+  },
+  {
+    file: 'audit-token-rejected-report-details.v1.json',
+    title: 'TokenRejectedReportDetails',
+    schema: TokenRejectedReportDetails,
+    io: 'input',
+  },
+  {
+    file: 'audit-client-events-unavailable.v1.json',
+    title: 'ClientEventsUnavailable',
+    schema: ClientEventsUnavailable,
     io: 'output',
   },
   {

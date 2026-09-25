@@ -18,7 +18,8 @@
             "type": "string",
             "enum": [
               "stored",
-              "duplicate"
+              "duplicate",
+              "aggregated"
             ]
           }
         },

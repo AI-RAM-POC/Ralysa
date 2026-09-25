@@ -5,11 +5,14 @@ import {
   AuditQuery,
   AuthConfig,
   ClientEventsRequest,
+  ClientEventsUnavailable,
   GovernanceState,
   Me,
   Principal,
   ServiceEventsRequest,
+  ServiceEventsResponse,
   SignInFailureReport,
+  TokenRejectedReportDetails,
 } from '../src/control-plane/index.js';
 
 const uuid = (n: number) => `0192f0a0-7b3c-7d4e-8f00-${n.toString(16).padStart(12, '0')}`;
@@ -190,5 +193,62 @@ describe('audit API', () => {
         org_id: uuid(1),
       }).success,
     ).toBe(false);
+  });
+});
+
+describe('audit API additions (F-002-T12)', () => {
+  it('the service path answers stored, duplicate or aggregated', () => {
+    for (const status of ['stored', 'duplicate', 'aggregated']) {
+      expect(
+        ServiceEventsResponse.safeParse({ results: [{ event_id: uuid(1), status }] }).success,
+      ).toBe(true);
+    }
+    expect(
+      ServiceEventsResponse.safeParse({ results: [{ event_id: uuid(1), status: 'other' }] })
+        .success,
+    ).toBe(false);
+  });
+
+  it('token-rejected report details: an audience, a reason code, optional address and count', () => {
+    expect(
+      TokenRejectedReportDetails.safeParse({
+        audience: 'model-gateway',
+        reason: 'expired',
+        client_ip: '203.0.113.9',
+      }).success,
+    ).toBe(true);
+    expect(
+      TokenRejectedReportDetails.safeParse({
+        audience: 'model-gateway',
+        reason: 'governance_stale',
+        dropped_count: 40,
+      }).success,
+    ).toBe(true);
+    for (const bad of [
+      { audience: 'elsewhere', reason: 'expired' },
+      { audience: 'model-gateway', reason: 'because' },
+      { audience: 'model-gateway', reason: 'expired', dropped_count: 0 },
+      { audience: 'model-gateway', reason: 'expired', token: 'eyJ…' },
+    ]) {
+      expect(TokenRejectedReportDetails.safeParse(bad).success).toBe(false);
+    }
+  });
+
+  it('503 on the client path is a problem with an ack=false per intent', () => {
+    const body = {
+      type: 'urn:ralysa:problem:audit_unavailable',
+      title: 'Audit unavailable',
+      status: 503,
+      code: 'audit_unavailable',
+      acks: [
+        {
+          event_id: uuid(2),
+          ack: false,
+          governance: { epoch: 3, halted: false, reason_category: 'audit_unavailable' },
+        },
+      ],
+    };
+    expect(ClientEventsUnavailable.safeParse(body).success).toBe(true);
+    expect(ClientEventsUnavailable.safeParse({ ...body, acks: undefined }).success).toBe(false);
   });
 });
