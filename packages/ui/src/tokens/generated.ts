@@ -8,6 +8,7 @@ export const TOKEN_CSS_VARS = {
   'color.bg.canvas': '--ralysa-color-bg-canvas',
   'color.bg.subtle': '--ralysa-color-bg-subtle',
   'color.bg.surface': '--ralysa-color-bg-surface',
+  'color.bg.surfaceRaised': '--ralysa-color-bg-surface-raised',
   'color.border.control': '--ralysa-color-border-control',
   'color.border.decor': '--ralysa-color-border-decor',
   'color.fg.default': '--ralysa-color-fg-default',

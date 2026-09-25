@@ -37,6 +37,14 @@
       "800": {
         "$value": { "colorSpace": "srgb", "components": [0.1804, 0.2039, 0.2353], "hex": "#2e343c" }
       },
+      "825": {
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [0.1333, 0.1569, 0.1843],
+          "hex": "#22282f"
+        },
+        "$description": "Raised surfaces (popovers, menus) in the dark theme (F-001-T11)."
+      },
       "850": {
         "$value": { "colorSpace": "srgb", "components": [0.1216, 0.1412, 0.1647], "hex": "#1f242a" }
       },

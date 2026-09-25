@@ -20,6 +20,7 @@
   --color-canvas: var(--ralysa-color-bg-canvas);
   --color-subtle: var(--ralysa-color-bg-subtle);
   --color-surface: var(--ralysa-color-bg-surface);
+  --color-surface-raised: var(--ralysa-color-bg-surface-raised);
   --color-border-control: var(--ralysa-color-border-control);
   --color-border-decor: var(--ralysa-color-border-decor);
   --color-fg: var(--ralysa-color-fg-default);

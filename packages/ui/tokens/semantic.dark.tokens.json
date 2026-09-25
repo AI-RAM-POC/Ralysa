@@ -9,6 +9,10 @@
       "surface": {
         "$value": "{palette.gray.925}"
       },
+      "surfaceRaised": {
+        "$value": "{palette.gray.825}",
+        "$description": "Popovers and menus (Select): a step lighter than the surface (F-001-T11)."
+      },
       "subtle": {
         "$value": "{palette.gray.850}"
       }

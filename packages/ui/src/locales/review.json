@@ -10,12 +10,20 @@
     "ui:errorState.reference": "needs-native-review",
     "ui:errorState.retry": "needs-native-review",
     "ui:errorState.title": "needs-native-review",
+    "ui:field.required": "needs-native-review",
     "ui:loadingState.label": "needs-native-review",
     "ui:locale.name.ar": "needs-native-review",
     "ui:locale.name.en": "needs-native-review",
+    "ui:localeSwitcher.label": "needs-native-review",
     "ui:permissionDenied.description": "needs-native-review",
     "ui:permissionDenied.requestAccess": "needs-native-review",
     "ui:permissionDenied.title": "needs-native-review",
-    "ui:skipLink.label": "needs-native-review"
+    "ui:select.placeholder": "needs-native-review",
+    "ui:skipLink.label": "needs-native-review",
+    "ui:textField.error.required": "needs-native-review",
+    "ui:themeSwitcher.label": "needs-native-review",
+    "ui:themeSwitcher.option.dark": "needs-native-review",
+    "ui:themeSwitcher.option.light": "needs-native-review",
+    "ui:themeSwitcher.option.system": "needs-native-review"
   }
 }

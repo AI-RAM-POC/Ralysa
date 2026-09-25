@@ -27,6 +27,24 @@ export const EXAMPLE_LABELS = [
   'linkText',
   'resource',
   'reference',
+  // Forms (T11)
+  'emailLabel',
+  'emailHint',
+  'emailPlaceholder',
+  'termsLabel',
+  'termsHint',
+  'planLabel',
+  'planBasic',
+  'planPro',
+  'planTeam',
+  'regionLabel',
+  'regionGulf',
+  'regionEurope',
+  'regionAmericas',
+  'tabsLabel',
+  'tabOverview',
+  'tabActivity',
+  'tabSettings',
 ] as const;
 
 export type ExampleLabel = (typeof EXAMPLE_LABELS)[number];

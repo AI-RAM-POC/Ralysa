@@ -36,6 +36,7 @@
     "@radix-ui/react-direction": "catalog:",
     "i18next": "catalog:",
     "lucide-react": "1.34.0",
+    "radix-ui": "catalog:",
     "react-i18next": "catalog:"
   },
   "peerDependencies": {

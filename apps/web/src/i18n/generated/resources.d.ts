@@ -22,6 +22,9 @@ export default interface Resources {
       "retry": "Try again",
       "title": "Something went wrong"
     },
+    "field": {
+      "required": "(required)"
+    },
     "loadingState": {
       "label": "Loading…"
     },
@@ -31,13 +34,32 @@ export default interface Resources {
         "en": "English"
       }
     },
+    "localeSwitcher": {
+      "label": "Language"
+    },
     "permissionDenied": {
       "description": "Ask an administrator for access to {{resource}}.",
       "requestAccess": "Request access",
       "title": "You don’t have access"
     },
+    "select": {
+      "placeholder": "Select an option"
+    },
     "skipLink": {
       "label": "Skip to main content"
+    },
+    "textField": {
+      "error": {
+        "required": "This field is required."
+      }
+    },
+    "themeSwitcher": {
+      "label": "Theme",
+      "option": {
+        "dark": "Dark",
+        "light": "Light",
+        "system": "System"
+      }
     }
   },
   "web": {

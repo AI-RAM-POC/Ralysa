@@ -420,7 +420,7 @@ The full table prints in the `@ralysa/ui:test` log. Exempt: `color.fg.disabled` 
 | T06-2 | Design deviation (small) | `MIN_RATIO` lives in `check-contrast.ts` (repo-scripts), not in `packages/ui/src/contracts/tokens.ts`. There is no `ralysa-repo check-contrast` CLI command: the gate runs inside `@ralysa/ui` `test` (as §7.1.4 says), which passes in its own resolved tokens. | The threshold belongs to the gate. `packages/ui` src must not import a tooling package (AR-3), and repo-scripts can't depend on `@ralysa/ui`. `check-contrast.ts` imports nothing, so the browser-library workspace can import it from source. |
 | T06-3 | Contract detail | `contrast-pairs.json` is `{ pairs, exempt }`. `exempt` entries need a reason of at least 20 characters. A pair that names an exempt token fails. A test fails if any semantic colour token is in neither a pair nor `exempt`. | §3.2 says exempt tokens are "listed with a reason" but gives no shape. The coverage test stops a new colour token from skipping the gate. |
 | T06-4 | Addition | Pairs beyond the §7.1.3 list: `fg.default` and `fg.muted` on `bg.surface`, `link` on `bg.surface`, `accent.default` on `bg.canvas`, `border.control` and `focus.ring` on `bg.canvas`/`bg.surface`, and the status colours on `bg.canvas`/`bg.subtle`. | These are combinations the components will use. All pass. |
-| T06-5 | **Deferred to T11 by decision** (coordinator, standing authorization, 2026-09-25) | `color.bg.surfaceRaised` (§7.1.2 examples) has no value in §7.1.3, so it isn't defined in T06. | Picking a colour is a design decision. T11 adds it, with light and dark values and its contrast pairs, with the first raised component (the `Select` popover). |
+| T06-5 | **Deferred to T11 by decision** (coordinator, standing authorization, 2026-09-25); **done in T11** (see T11) | `color.bg.surfaceRaised` (§7.1.2 examples) has no value in §7.1.3, so it isn't defined in T06. | Picking a colour is a design decision. T11 adds it, with light and dark values and its contrast pairs, with the first raised component (the `Select` popover). |
 | T06-6 | Implementation choice | Tailwind names: the `bg` group and a trailing `default` are dropped (`bg-canvas`, `text-fg`, `bg-accent`, `bg-accent-hover`). `font.*` maps to `font`/`text`/`font-weight`/`leading`/`tracking`; `space.*`, `size.control.*` and `size.icon.*` map to `--spacing-*`; `size.container.*` maps to `--container-*`; `elevation.shadow.*` to `--shadow-*`; `motion.easing.*` to `--ease-*`. Layers, durations and the focus-ring size stay CSS-variable only. The reset list is in `TAILWIND_RESETS`. | §7.1.1 gives one example (`--color-canvas`). The rule has to be mechanical so generated names never collide; the generator fails on a collision. |
 | T06-7 | Implementation choice | Palette primitives aren't emitted as CSS variables. Semantic values are emitted resolved. | "Components use semantic tokens only" (§7.1.1). |
 | T06-8 | Scope note | The §7.2 `:lang(ar)` values are in the token source now, as `$extensions["solutions.ralysa.lang"]`: body line height 1.7, letter spacing 0. The font stacks are the §7.2 stacks. | The generator's `:lang()` support is part of §7.1.1, and the values are known. T09 still owns the font packages and `fonts.css`. |
@@ -783,6 +783,63 @@ Licence check: all three `LICENSE` files start "Copyright 2022 The Noto Project 
 
 `packages/ui/test/components-layout-actions-states.test.tsx` (22, jsdom, test-mode i18n): landmark order and names in en and ar; logical classes only; the skip link is the first focusable element and targets `#main`; `Button` default and submit types, four variants' token classes and focus ring, disabled not operable, decorative icon; `IconButton` named from its key in en and ar, and `@ts-expect-error` for a missing or unknown key (checked by `typecheck`); `Link`; `EmptyState` defaults and action; `LoadingState` status, `aria-live`, `aria-busy`, `motion-safe` spinner; `ErrorState` alert, retry, `<bdi>` reference, no `error` prop; `PermissionDenied` isolated resource and link, and no link without a target. `text.test.tsx` renders the nine new components' examples in en and ar.
 
+## T11: components II (Radix forms, preferences)
+
+### What landed
+
+- `packages/ui/src/components/forms/`: `TextField`, `Checkbox`, `RadioGroup`, `Select`, `Tabs`, and the shared `FieldLabel` (Radix `Label` plus the translated "(required)" marker), `FieldDescription` and `FieldError`.
+- `src/components/preferences/`: `LocaleSwitcher` (a `Select` of the locales, each named in its own language with `lang`) and `ThemeSwitcher` (a horizontal `RadioGroup`).
+- **`color.bg.surfaceRaised`** (the T06-5 deferral): palette `gray.825` = `#22282f` (new) and the semantic token in both themes, with five contrast pairs. The `Select` popover is the first component that uses it.
+- 8 `ui` keys in en and ar (`field.required`, `textField.error.required`, `select.placeholder`, `localeSwitcher.label`, `themeSwitcher.*`). Every Arabic string is `needs-native-review` (**24 open in `packages/ui`**, 1 in `apps/web`).
+- Examples for the seven components; 17 new example labels.
+- `radix-ui` **1.6.7** added to the pnpm catalog and to `@ralysa/ui`.
+
+### `color.bg.surfaceRaised` (placeholder values, OQ-F001-1)
+
+| Theme | Value | Alias | Reasoning |
+|---|---|---|---|
+| light | `#ffffff` | `{palette.gray.0}` | Same as `bg.surface`: in the light theme a popover is raised by `elevation.shadow.md` and its `border.control` border, the usual pattern. |
+| dark | `#22282f` | `{palette.gray.825}` (new) | A step lighter than `bg.surface` (`#171b20`), because shadows barely show on dark backgrounds. Between `gray.850` (`#1f242a`, `bg.subtle`) and `gray.800` (`#2e343c`). Candidates `#20252c` and `#252b33` were computed too; `#22282f` keeps every pair at 4.1:1 or above and is distinct from `bg.subtle`. |
+
+Contrast results from `check-contrast` (`@ralysa/ui` test log; 64 checks in total now, all pass):
+
+| Pair | Kind | Light | Dark |
+|---|---|---|---|
+| `fg.default` on `bg.surfaceRaised` | text ≥ 4.5 | 16.91 | 12.32 |
+| `fg.muted` on `bg.surfaceRaised` | text ≥ 4.5 | 6.77 | 6.55 |
+| `focus.ring` on `bg.surfaceRaised` | focus ≥ 3 | 6.47 | 6.78 |
+| `border.control` on `bg.surfaceRaised` | nonText ≥ 3 | 4.28 | 4.14 |
+| `accent.default` on `bg.surfaceRaised` | nonText ≥ 3 | 6.47 | 6.78 |
+| `fg.onAccent` on `status.danger` (T10) | text ≥ 4.5 | 6.54 | 8.34 |
+| `link` on `bg.subtle` (T10) | text ≥ 4.5 | 5.88 | 8.17 |
+
+The highlighted Select option is `fg.onAccent` on `accent.default`, an existing pair (6.47 / 8.39).
+
+### Recorded decisions and deviations
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T11-1 | **Correction to the brief** | The coordinator's brief says to use Radix "through the `radix-ui` version already in the catalog". The catalog held only `@radix-ui/react-direction` 1.1.4 (T08); `radix-ui` itself was not there. It is added now at **1.6.7**, the design's line (§2.2 "`radix-ui` 1.6.x"). | 1.6.7 was published 2026-07-24 (63 days ago), MIT, and depends on exactly `@radix-ui/react-direction` 1.1.4, so pnpm resolves one `react-direction` instance (checked in `node_modules/.pnpm`) and `LocaleProvider`'s provider reaches the primitives. The `radix-ui` 1.7.0 line is still release candidates. Install passed under `strictDepBuilds`; nothing in the added closure has an install script, and `pnpm peers check` still lists only the known jsx-a11y ESLint peer. |
+| T11-2 | Design detail | `LocaleSwitcher` is a `Select`, `ThemeSwitcher` a horizontal `RadioGroup`. | §7.5 names them but not their control. A Select scales past two locales; three theme options fit a radio group, which shows the current choice without opening anything. |
+| T11-3 | Implementation choice | The highlighted Select option uses `accent`/`onAccent` rather than `bg.subtle`. | In the dark theme `bg.subtle` (`#1f242a`) is darker than `surfaceRaised` (`#22282f`) with only 1.07:1 between them, which would make the keyboard highlight nearly invisible. The accent highlight is a checked pair. Items also keep the focus ring. |
+| T11-4 | Scope note | Space toggling a Checkbox and Select typeahead are not unit-tested. | jsdom doesn't turn a Space keydown into a click on a `<button>` (browsers do), and it has no layout for Radix's typeahead scrolling. The keyboard walker (T13, TC-F-001-24) covers them in real browsers. Arrow keys in RadioGroup and Tabs, Enter and Escape in Select, and clicking labels are tested here. |
+| T11-5 | Implementation note | The test `press()` helper sends keydown, lets one macrotask run, then sends keyup. | Radix's roving focus moves focus in a `setTimeout`, and `RadioGroup` checks the newly focused radio only while an arrow key is down. Releasing the key first made the radio test fail although the component was right. |
+
+### Tests added (T11)
+
+`packages/ui/test/components-forms-preferences.test.tsx` (13, jsdom, with `test/jsdom-polyfills.ts` for `ResizeObserver`, pointer capture and `scrollIntoView`):
+- `TextField`: label `for`, "(required)" in en and ar, `aria-invalid`, and `aria-describedby` → hint and error in order; none of them when absent.
+- `Checkbox`: toggled from its label, `aria-checked` true and `mixed`, description linked.
+- `RadioGroup`: a named radiogroup with labelled options. **Direction-aware arrows:** in `en` ArrowRight moves to and checks the next option and ArrowLeft goes back; in `ar` the reverse.
+- `Tabs`: named list, tab → panel. In `en` ArrowRight activates the next tab, in `ar` ArrowLeft does, and the Radix root carries `dir="rtl"`.
+- `Select`: named combobox with the translated placeholder; Enter opens a listbox on `bg-surface-raised` with `shadow-md` and `dir="rtl"` in `ar`; Escape closes it and focus returns to the trigger; ArrowDown then Enter selects.
+- `LocaleSwitcher`: languages named in themselves with `lang`; choosing العربية sets `<html lang="ar" dir="rtl">`, a `window` marker survives (no reload), and the label re-renders in Arabic.
+- `ThemeSwitcher`: dark and light set `data-theme`; system removes it.
+
+**Mutation check:** with `LocaleProvider` passing `dir="ltr"` to `DirectionProvider`, exactly the three direction-dependent tests fail (RadioGroup `ar`, Tabs `ar`, Select `dir="rtl"`). Restored, all 13 pass.
+
+The token tests (`tokens.test.ts`, `contrast.test.ts`) cover the new token: identical light and dark key sets, and every semantic colour in a pair or exempt.
+
 ## PR #15 review nits (branch `feat/F-001-components`, 2026-09-25)
 
 | # | Nit | Fix | Tests |
@@ -827,6 +884,6 @@ No dependency added by T01 to T03 runs a build script: `allowBuilds` is still `{
 - Bump Turbo, Prettier, Vite and `@eslint-react` to their newest patches once those are outside the 3-day window.
 - **T06 to T08 follow-ups:**
   - Native-speaker review of every `ar` string (3 open, in the two `review.json` files; OQ-D8, still open externally).
-  - `color.bg.surfaceRaised`: deferred to T11 by decision (T06-5).
+  - `color.bg.surfaceRaised`: done in T11 (T06-5).
   - Bump `jsdom` to 30.1.1 once it is outside the 3-day window.
   - TC-F-001-11 (E2E locale switch) and the Playwright console listener for runtime missing keys arrive with T13.

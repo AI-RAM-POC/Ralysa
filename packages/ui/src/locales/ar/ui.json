@@ -20,6 +20,9 @@
     "retry": "حاول مرة أخرى",
     "title": "حدث خطأ ما"
   },
+  "field": {
+    "required": "(مطلوب)"
+  },
   "loadingState": {
     "label": "جارٍ التحميل…"
   },
@@ -29,12 +32,31 @@
       "en": "English"
     }
   },
+  "localeSwitcher": {
+    "label": "اللغة"
+  },
   "permissionDenied": {
     "description": "اطلب من المسؤول صلاحية الوصول إلى {{resource}}.",
     "requestAccess": "طلب صلاحية الوصول",
     "title": "ليست لديك صلاحية الوصول"
   },
+  "select": {
+    "placeholder": "اختر خيارًا"
+  },
   "skipLink": {
     "label": "انتقل إلى المحتوى الرئيسي"
+  },
+  "textField": {
+    "error": {
+      "required": "هذا الحقل مطلوب."
+    }
+  },
+  "themeSwitcher": {
+    "label": "المظهر",
+    "option": {
+      "dark": "داكن",
+      "light": "فاتح",
+      "system": "حسب النظام"
+    }
   }
 }

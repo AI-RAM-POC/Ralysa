@@ -5,6 +5,13 @@ import {
   iconButtonExamples,
   linkExamples,
 } from '../components/actions/actions.examples.js';
+import {
+  checkboxExamples,
+  radioGroupExamples,
+  selectExamples,
+  tabsExamples,
+  textFieldExamples,
+} from '../components/forms/forms.examples.js';
 import { appShellExamples, visuallyHiddenExamples } from '../components/layout/layout.examples.js';
 import {
   emptyStateExamples,
@@ -12,6 +19,10 @@ import {
   loadingStateExamples,
   permissionDeniedExamples,
 } from '../components/states/states.examples.js';
+import {
+  localeSwitcherExamples,
+  themeSwitcherExamples,
+} from '../components/preferences/preferences.examples.js';
 import { headingExamples, ltrExamples, textExamples } from '../components/text/text.examples.js';
 import { iconExamples } from '../icons/icon.examples.js';
 import type { ComponentExamples } from './types.js';
@@ -30,6 +41,13 @@ export const ALL_EXAMPLES: readonly ComponentExamples[] = [
   loadingStateExamples,
   errorStateExamples,
   permissionDeniedExamples,
+  textFieldExamples,
+  checkboxExamples,
+  radioGroupExamples,
+  selectExamples,
+  tabsExamples,
+  localeSwitcherExamples,
+  themeSwitcherExamples,
 ];
 
 export {

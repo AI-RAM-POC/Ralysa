@@ -8,6 +8,7 @@ import {
   type Locale,
   LocaleProvider,
   type NamespaceCatalog,
+  ThemeProvider,
   uiCatalog,
 } from '../src/index.js';
 
@@ -41,7 +42,9 @@ export async function render(
   document.body.append(container);
   const root = createRoot(container);
   const wrap = (child: ReactNode): ReactNode => (
-    <LocaleProvider i18n={instance}>{child}</LocaleProvider>
+    <LocaleProvider i18n={instance}>
+      <ThemeProvider>{child}</ThemeProvider>
+    </LocaleProvider>
   );
   await act(async () => {
     root.render(wrap(node));
@@ -66,7 +69,11 @@ export async function render(
   };
 }
 
-/** Dispatches a keydown (and keyup) the way a browser would, inside act(). */
+/**
+ * A key press the way a browser delivers it, inside act(): keydown, then one macrotask (Radix's
+ * roving focus in RadioGroup and Tabs moves focus in a setTimeout, and a radio is checked on that
+ * focus only while the arrow key is still down), then keyup.
+ */
 export async function press(
   target: Element,
   key: string,
@@ -76,6 +83,7 @@ export async function press(
     target.dispatchEvent(
       new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true, ...init }),
     );
+    await new Promise((resolve) => setTimeout(resolve, 0));
     target.dispatchEvent(
       new KeyboardEvent('keyup', { key, bubbles: true, cancelable: true, ...init }),
     );
