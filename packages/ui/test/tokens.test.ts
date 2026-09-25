@@ -168,7 +168,7 @@ describe('token validation failures', () => {
 describe('generator outputs', () => {
   const outputs = buildTokens(packageDir);
   const tokensCss = outputs['dist/css/tokens.css'];
-  const themeCss = outputs['dist/css/theme.css'];
+  const themeCss = outputs['src/styles/theme.css'];
 
   it('names CSS variables with the --ralysa- prefix in kebab case', () => {
     expect(cssVarName('color.fg.onAccent')).toBe('--ralysa-color-fg-on-accent');
@@ -210,19 +210,33 @@ describe('generator outputs', () => {
     expect(themeCss).toContain('--color-*: initial;');
   });
 
-  it('matches the committed generated.ts (run `pnpm --filter @ralysa/ui build` after a token change)', () => {
-    const committed = readFileSync(join(packageDir, 'src/tokens/generated.ts'), 'utf8');
-    expect(committed).toBe(renderGeneratedTs(validateTokenSet(loadTokenSet(tokensDir))));
+  it('defines the --ralysa-dir-sign helper for LTR and RTL', () => {
+    expect(tokensCss).toContain(":root,\n[dir='ltr'] {\n  --ralysa-dir-sign: 1;\n}");
+    expect(tokensCss).toContain("[dir='rtl'] {\n  --ralysa-dir-sign: -1;\n}");
+  });
+
+  it.each(['src/tokens/generated.ts', 'src/styles/theme.css'] as const)(
+    'matches the committed %s (run `pnpm --filter @ralysa/ui build` after a token change)',
+    (file) => {
+      expect(readFileSync(join(packageDir, file), 'utf8')).toBe(outputs[file]);
+    },
+  );
+  it('renderGeneratedTs is the generated.ts output', () => {
+    expect(outputs['src/tokens/generated.ts']).toBe(
+      renderGeneratedTs(validateTokenSet(loadTokenSet(tokensDir))),
+    );
   });
 });
 
-describe('Tailwind theme (default namespaces reset)', () => {
+describe('Tailwind theme through the real entry point (default namespaces reset)', () => {
+  // A copy of src/styles/ built from the current token source, so the test also covers an
+  // uncommitted token change.
   const dir = mkdtempSync(join(tmpdir(), 'ralysa-ui-tw-'));
   afterAll(() => {
     rmSync(dir, { recursive: true, force: true });
   });
-  writeFileSync(join(dir, 'theme.css'), buildTokens(packageDir)['dist/css/theme.css']);
-  const entry = '@import "tailwindcss";\n@import "./theme.css";\n';
+  writeFileSync(join(dir, 'theme.css'), buildTokens(packageDir)['src/styles/theme.css']);
+  const entry = readFileSync(join(packageDir, 'src/styles/tailwind.css'), 'utf8');
   const build = (classes: string[]): Promise<string> => buildTailwind(entry, dir, classes);
 
   it.each([

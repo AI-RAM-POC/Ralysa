@@ -44,7 +44,7 @@ export const noRawColor = {
   },
   create(context) {
     /**
-     * @param {import('eslint').Rule.Node} node
+     * @param {import('estree').Node} node
      * @param {string} text
      */
     function check(node, text) {

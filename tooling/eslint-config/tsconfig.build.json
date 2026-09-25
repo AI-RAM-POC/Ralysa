@@ -12,6 +12,7 @@
     "isomorphic.js",
     "react-ui.js",
     "rules",
+    "tailwind.js",
     "tests.js",
     "types"
   ]

@@ -1,0 +1,14 @@
+/* Test fixture: a token-backed theme shaped like @ralysa/ui's (default namespaces reset). */
+@import 'tailwindcss';
+
+@theme inline {
+  --color-*: initial;
+  --spacing-*: initial;
+  --radius-*: initial;
+  --color-canvas: var(--ralysa-color-bg-canvas);
+  --color-fg: var(--ralysa-color-fg-default);
+  --spacing-0: var(--ralysa-space-0);
+  --spacing-2: var(--ralysa-space-2);
+  --spacing-4: var(--ralysa-space-4);
+  --radius-md: var(--ralysa-radius-md);
+}

@@ -4,10 +4,12 @@
 //   dist/css/tokens.css      CSS custom properties (--ralysa-*): light on :root and
 //                            [data-theme="light"], dark on [data-theme="dark"] and under
 //                            prefers-color-scheme for :root:not([data-theme]); :lang() overrides;
-//                            durations drop to 0ms under prefers-reduced-motion
-//   dist/css/theme.css       Tailwind v4 `@theme inline`: resets the default namespaces and maps
+//                            durations drop to 0ms under prefers-reduced-motion; the
+//                            --ralysa-dir-sign helper (1 in LTR, -1 in RTL)
+//   src/styles/theme.css     Tailwind v4 `@theme inline`: resets the default namespaces and maps
 //                            Tailwind names to the CSS variables, so default-palette classes
-//                            don't exist
+//                            don't exist. Committed (drift-checked) rather than in dist/, so the
+//                            Tailwind lint rules can load it before anything is built (T07).
 //   src/tokens/generated.ts  typed token names (committed; drift-checked by check:generated)
 // In-house rather than Style Dictionary: one output platform, and the parsed model is reused by
 // the contrast gate (test/contrast.test.ts). Runs on Node 24 type stripping.
@@ -35,6 +37,8 @@ export const TOKEN_FILES = {
   dark: 'semantic.dark.tokens.json',
 } as const;
 export const CSS_PREFIX = '--ralysa-';
+/** The direction sign helper: 1 in LTR, -1 in RTL. Allowed by the translate lint (§7.3.2). */
+export const DIR_SIGN = '--ralysa-dir-sign';
 
 export class TokenError extends Error {
   readonly problems: string[];
@@ -475,6 +479,20 @@ export function renderTokensCss(resolved: Record<Theme, Map<string, ResolvedToke
     for (const t of durations) lines.push(`    ${cssVarName(t.path)}: 0ms;`);
     lines.push('  }', '}');
   }
+
+  // Not a token: the sign for a direction-aware horizontal offset, so CSS can write
+  // `translate: calc(var(--ralysa-dir-sign) * 1rem) 0` (the one translate form the lint allows).
+  lines.push(
+    '',
+    '/* 1 in left-to-right content, -1 in right-to-left content (§7.3.2). */',
+    ":root,\n[dir='ltr'] {",
+    `  ${DIR_SIGN}: 1;`,
+    '}',
+    '',
+    "[dir='rtl'] {",
+    `  ${DIR_SIGN}: -1;`,
+    '}',
+  );
   return `${lines.join('\n')}\n`;
 }
 
@@ -515,7 +533,7 @@ export function renderGeneratedTs(resolved: Record<Theme, Map<string, ResolvedTo
 }
 
 export type BuildOutputs = Record<
-  'dist/css/tokens.css' | 'dist/css/theme.css' | 'src/tokens/generated.ts',
+  'dist/css/tokens.css' | 'src/styles/theme.css' | 'src/tokens/generated.ts',
   string
 >;
 
@@ -523,7 +541,7 @@ export function buildTokens(packageDir: string): BuildOutputs {
   const resolved = validateTokenSet(loadTokenSet(join(packageDir, 'tokens')));
   return {
     'dist/css/tokens.css': renderTokensCss(resolved),
-    'dist/css/theme.css': renderThemeCss(resolved),
+    'src/styles/theme.css': renderThemeCss(resolved),
     'src/tokens/generated.ts': renderGeneratedTs(resolved),
   };
 }

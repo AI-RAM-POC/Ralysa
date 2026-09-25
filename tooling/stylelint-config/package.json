@@ -16,6 +16,9 @@
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json"
   },
+  "dependencies": {
+    "stylelint-plugin-logical-css": "2.1.0"
+  },
   "peerDependencies": {
     "stylelint": "^17.15.0"
   },

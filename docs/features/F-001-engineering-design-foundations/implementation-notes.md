@@ -286,6 +286,59 @@ None of these runs an install script. `allowBuilds` is unchanged in T06.
   - `tooling/eslint-config/test/raw-color.test.ts`: `RuleTester`, 11 valid and 21 invalid cases (hex forms, every colour function, template literals, style objects, `bg-[#fff]`, `text-[rgb(…)]`, `border-[oklch(…)]`); the composed preset reports component code and not test files.
   - `tooling/stylelint-config/test/raw-color.test.ts`: hex, named colours and every colour function report an error; tokens, `color-mix()` over `var()`, `currentcolor`/`transparent` and Tailwind `@theme` with `var()` pass; token and `dist` files are ignored; disable comments must carry a description, and a needless disable is reported.
 
+## T07: logical-layout lint
+
+### What landed
+
+- **Stylelint** (`@ralysa/stylelint-config`):
+  - `stylelint-plugin-logical-css`: `require-logical-properties`, with `ignore` set to the block-axis and sizing properties the plugin maps (`BLOCK_AXIS_PROPERTIES`, taken from the plugin's own property map), and `require-logical-keywords`, with the non-left/right properties ignored.
+  - `declaration-property-value-disallowed-list` catches the forms the plugin can't see: 4-value shorthands (`margin`, `padding`, `inset`, `scroll-margin`, `scroll-padding`, `border-{width,style,color}`) whose right and left values differ, found by a back-reference regex that treats `calc(var(--a) + 1px)` as one value; `border-radius` whose left and right corners differ; `background-position(-x)` and `transform-origin` with `left`/`right`; horizontal `translate`/`translateX`/`translate3d` unless the offset uses `var(--ralysa-dir-sign)`; and `outline: none|0` (§7.7).
+- **ESLint** (`react-ui`):
+  - `eslint-plugin-better-tailwindcss` `enforce-logical-properties`, with block-axis and sizing classes ignored.
+  - `no-restricted-classes` (the list is in `tooling/eslint-config/tailwind.js`) and `no-unknown-classes`. They use the plugin's default selectors, which cover `className`, `class`, `cn`, `clsx`, `cva` and `tv`.
+  - `ralysa/no-physical-inline-style`.
+  - All of these apply to UI source, not tests. `reactUi({ tailwindEntryPoint })` points the plugin at the workspace's Tailwind entry point.
+- **`packages/ui`**:
+  - `src/styles/tailwind.css` is the entry point (`tailwindcss` plus the token theme), exported as `@ralysa/ui/tailwind.css`. `eslint.config.js` passes it to `reactUi`.
+  - `tokens.css` now defines `--ralysa-dir-sign`.
+
+### Recorded decisions and deviations
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T07-1 | **Design deviation** | The Tailwind theme is generated into `packages/ui/src/styles/theme.css` (committed, drift-checked by `check:generated`, and compared with the source by `test/tokens.test.ts`) instead of `dist/css/theme.css`. `@ralysa/ui/theme.css` points there. `tokens.css` stays in `dist/`. | The lint loads the theme through the entry point. With the theme in `dist/`, `packages/ui` `lint` would depend on its own `build`, and every UI workspace's lint and the scaffold test (TC-F-001-46) would depend on build order. The theme holds only `var()` references (no colour values), so keeping it in `src/` doesn't weaken the raw-colour rules. |
+| T07-2 | Implementation choice | Without `tailwindEntryPoint`, `reactUi()` uses `tailwind/no-theme.css`, whose theme is empty (`--*: initial`), so every token-backed class is reported as unknown. | If the entry point were missing, the plugin would fall back to Tailwind's default theme, and `bg-red-500` would pass. With the empty-theme fallback, a forgotten option fails loudly instead. The scaffold templates keep `reactUi()`: their slot components use no classes. |
+| T07-3 | Implementation choice | The mirroring pattern is an `ltr:`/`rtl:` pair: any class with an `ltr:` or `rtl:` variant is exempt from the `translate-x-*`, `bg-left/right*`, `origin-*left/right` and `bg-linear-to-l/r*` restrictions. | §7.3.3 asks the messages to give "the `rtl:` variant pattern". A pair is the only way to write a mirrored directional utility, so it has to pass. |
+| T07-4 | Refinement | `border-radius` values like `4px 4px 0 0` (top corners equal, bottom corners equal) pass. | §7.3.2 says "multi-value `border-radius` unless all values are equal". A value whose top corners match and whose bottom corners match mirrors onto itself, so flagging it would be a false positive on a common pattern (a top-rounded panel). Every value whose left and right corners differ still fails. |
+| T07-5 | Additions | `transform-origin` with `left`/`right`, `scroll-margin`/`scroll-padding` 4-value shorthands, and physical Tailwind arbitrary properties (`[margin-left:…]`, `[text-align:right]`) are errors too. | These are the same physical forms as the listed ones, and the parallel Tailwind or property rule already covers them in another notation. |
+| T07-6 | Scope note | `outline: none` is an error everywhere, not only in `:focus` contexts (§7.7). | `declaration-property-value-disallowed-list` can't scope by selector. The escape hatch is a described disable. |
+| T07-7 | Implementation note | Tailwind 4.3.3 was checked to know every logical replacement class the plugin suggests (`inset-s-*`, `pbs-*`, `rounded-ss-*`, `scroll-ms-*`, and so on). This matters because `enforce-logical-properties` stays silent when its replacement class is unknown. The token theme's spacing reset was checked too: `p-7` doesn't exist, while `p-4` and `p-0.5` do. | Probed with Tailwind's own compiler before wiring. |
+| T07-8 | Note | `--ralysa-dir-sign` is emitted by the token generator into `tokens.css` (`:root, [dir='ltr']` → 1, `[dir='rtl']` → -1). | The translate rule allows only that pattern, so the variable has to exist. |
+
+### Versions (npm registry, 2026-09-25 ~10:10 UTC)
+
+| Package | Design | Pinned | Notes |
+|---|---|---|---|
+| `stylelint-plugin-logical-css` | 2.1.x | **2.1.0** | Published 2026-03-29. MIT, no dependencies, no install scripts; peer `stylelint ^14…^17`. |
+| `eslint-plugin-better-tailwindcss` | 4.7.x | **4.7.0** | Published 2026-07-19. MIT; peer `eslint ^7…^10` (optional), `tailwindcss ^3.3 \|\| ^4.1.17`. No install scripts in its tree (`synckit`, `jiti`, `valibot`, `enhanced-resolve`, `tailwind-csstree`, `tsconfig-paths-webpack-plugin`, `@eslint/css-tree`). |
+| `tailwindcss` | 4.3.x | **4.3.3** (catalog) | Also a dependency of `@ralysa/eslint-config`, so the plugin and the fallback entry point resolve it. |
+| `@types/estree` | (not pinned) | **1.0.9** | Already in the lockfile through ESLint. It is a devDependency of `@ralysa/eslint-config` for the rule JSDoc types. |
+
+### Tests added (T07)
+
+- **TC-F-001-08**, CSS: `tooling/stylelint-config/test/logical.test.ts` (74 cases).
+  - 19 inline-axis properties, each an error, with its logical equivalent passing.
+  - 14 block-axis and sizing properties allowed.
+  - 7 keyword pairs; non-directional keywords allowed.
+  - 22 shorthand and value pairs (4-value shorthands including `calc()` operands, radii, positions, origins, `transform` and `translate`, the `--ralysa-dir-sign` pattern).
+  - Outline removal, with a described disable as the escape hatch.
+  - Tailwind v4 at-rules parse cleanly.
+- **TC-F-001-08**, ESLint: `tooling/eslint-config/test/logical.test.ts` (113 cases).
+  - `RuleTester` for `ralysa/no-physical-inline-style`: every listed key, `textAlign`/`float`/`clear` values, string keys, conditional, `&&`, spread, and `as`/`satisfies` wrappers.
+  - Through the composed preset with a fixture theme: 24 physical Tailwind classes → `enforce-logical-properties`, each logical fix passing; 13 block-axis and sizing classes allowed; 14 restricted forms, each with a passing alternative, including the `ltr:`/`rtl:` pairs; class strings in the `cn`/`clsx`/`cva`/`tv` callees; test files exempt; the empty-theme fallback fails loudly.
+- **TC-F-001-07**, Tailwind part: arbitrary colours (`bg-[#fff]`, `text-[rgb(…)]`, `border-[oklch(…)]`, `bg-[color:#…]`) → `no-restricted-classes`; `bg-red-500`, `text-slate-900`, `bg-white`, `p-7` and `rounded-3xl` → `no-unknown-classes`.
+- A manual check, not a test: `eslint --stdin` in `packages/ui` with the real entry point reported `bg-red-500` (unknown), `ml-4` (logical) and `marginLeft` (inline style). `bg-canvas`, `p-4`, `text-fg-muted` and `h-control-md` passed.
+
 ## Version confirmations (npm registry, 2026-09-25 ~08:20 UTC)
 
 Policy (§2.2): the latest patch of a line GA for at least 30 days, and `minimumReleaseAge` holds back anything under 3 days old. Cut-off for the 3-day rule: 2026-09-22T08:20Z.

@@ -9,7 +9,8 @@
       "default": "./dist/index.js"
     },
     "./tokens.css": "./dist/css/tokens.css",
-    "./theme.css": "./dist/css/theme.css"
+    "./theme.css": "./src/styles/theme.css",
+    "./tailwind.css": "./src/styles/tailwind.css"
   },
   "scripts": {
     "build": "node scripts/build-tokens.ts && tsc -p tsconfig.build.json",

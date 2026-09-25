@@ -1,0 +1,11 @@
+/*
+ * Fallback Tailwind entry point for reactUi() when a workspace doesn't pass `tailwindEntryPoint`.
+ * Every theme namespace is empty, so each token-backed class (colours, spacing, radii, ...) is
+ * reported as unknown. That failure is deliberate: UI workspaces must lint against the Ralysa
+ * theme, `@ralysa/ui/tailwind.css`, never against Tailwind's default palette.
+ */
+@import 'tailwindcss';
+
+@theme {
+  --*: initial;
+}
