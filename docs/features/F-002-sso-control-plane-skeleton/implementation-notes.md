@@ -649,3 +649,72 @@ Self-decided: `null` counts as non-scalar and is refused, because an explicit `n
   - The commit was amended and force-pushed with lease to the feature branch (no PR yet, single author). The branch history scans clean.
   - A GitHub force-push doesn't purge the earlier objects: the old commit stays reachable by SHA until GitHub garbage-collects it. For a fake fixture that's acceptable; for a real secret, rotation at the issuer would be the only remediation (F-001 design §6.2.6).
 - **Process fix.** Local pre-push scans now run without pipes, and the exit code is checked explicitly (`scan > file; S=$?; [ $S -eq 0 ] && git push`). `set -o pipefail` would do the same where a pipe is needed.
+
+## T08: sessions and grants
+
+Branch `feat/F-002-sessions`, based on `main` after #25.
+
+### What landed
+
+- `src/auth/sessions.ts`: sessions (status, flow, roles) as refresh-token families; rotation with one guarded `UPDATE … WHERE status = 'active'`; session and user revocation (`revoked_before` = DB clock + 30 s); authorization-code redemption with tombstones (for T10's grant). Every revocation advances `cp.governance_epoch_seq` in the same transaction.
+- `src/auth/grants/refresh-token.ts`: the `refresh_token` grant with `audience`, reuse detection, the IdP re-check through the `IdpDirectory` port (`src/auth/directory-port.ts`; Graph arrives with T10), and the §6.1 audience rule.
+- `src/auth/grants/client-credentials.ts`: RFC 7523 assertions, verified against non-retired Transit key versions (a per-key cache), with the `jti` replay table.
+- `src/auth/routes/token.ts`: `POST /oauth2/token` and `POST /oauth2/revoke`. The form parser is `src/http/form.ts`.
+- `src/auth/governance-feed.ts`: `GET /v1/internal/governance`. `src/directory/routes.ts`: `GET /v1/me` and `GET /v1/internal/principals/:user_id`.
+- `src/auth/verify-local.ts` and `src/auth/route-auth.ts`: the control plane's own verifier. User tokens are checked against revocation in the database [SEC-F002-18 d]. Rejections go to the `auth.token_rejected` aggregator with the org from config, which closes OI-4 for the control plane.
+- `src/auth/cleanup.ts`: the cleanup job, wired in `serve`.
+- Migration `cp/0005_governance_epoch`: the epoch sequence, plus `DELETE` on `cp.auth_session` for the cleanup job.
+- Five route contracts. The OpenAPI generator now emits path and query parameters and form request bodies.
+- Coordinator nit after #25 merged: every entry point writes one `config_loaded` line with the resolved config path and the override names. The README says production pins the path with a fixed `--config` or a read-only mount (SEC-F002-12).
+
+### Recorded decisions and deviations
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T08-1 | Bug in the design's feed contract, fixed | The feed's `cursor` lags `issued_at` by 60 s (`CURSOR_OVERLAP_S`). | A revocation stamps `revoked_at` inside its transaction and becomes visible only at commit. A poll between the two would move the cursor past a revocation it never saw, and every later `since=` poll would skip it for good. The overlap repeats the last minute, and PEPs de-duplicate. The integration test fails with no lag. T11's `RevocationFeed` must de-duplicate by `sid` and `user_id`. |
+| T08-2 | Interpretation | A **revoked** refresh token (its session was revoked, for example by sign-out) is refused as `revoked`, not as reuse. A **rotated** token is reuse. | §3.2.3 calls both reuse, but TC-F-002-13 and §5.4 require `auth.refresh denied revoked` after sign-out. The session is already revoked, so treating it as reuse would only add a misleading `reuse_detected` event. |
+| T08-3 | Decision (SEC-F002-17) | The losing concurrent refresh is treated as reuse: `invalid_grant` with `reuse_detected`, and the family (the winner's new token included) is revoked. | §3.2.3: "a second refresher on the same device is a defect that surfaces as reuse", with no grace window. It is documented for F-003 and F-005 in both READMEs. |
+| T08-4 | Design gap, filled | Refresh denials that revoke something also write `auth.session.revoked`: cause `user_disabled` or `idp_sessions_revoked` with `user_id`, and cause `not_in_access_group` with `sid`. | §3.5 lists the event but not every refresh cause. `not_in_access_group` is not in its cause list; it is added rather than leaving a revocation without its event. |
+| T08-5 | Implementation choice | A user already `disabled` in `cp.app_user` is refused before the IdP call. | An IdP outage must not turn a known-disabled user into `temporarily_unavailable`. |
+| T08-6 | Implementation choice | The service key cache re-reads a key's version list after 60 s, and on an unknown version at most every 5 s. | The WIP cached versions until a miss, so a retired version would have kept verifying forever (SEC-F002-22). A minute bounds retirement, and the cooldown stops a bad `kid` from hammering OpenBao. |
+| T08-7 | Design gap, filled | Cleanup records `code_not_redeemed` when it revokes the pending session behind an expired, unused code (within a minute of expiry). It deletes the code's tombstone one hour after expiry. | D-38 gives no timing. Revoking the pending session with `UPDATE … WHERE status = 'pending' RETURNING` makes the event exactly-once across replicas without another column. |
+| T08-8 | Deviation from §4.4 | Refresh tokens are purged with their session (30 d after it ends), not individually 30 d after each token's expiry. | `refresh_token.parent_id` chains a family, so a parent row can't go before its children. Only hashes are stored. |
+| T08-9 | Scope | In `serve`, the IdP directory is the unconfigured port until T10, so every refresh answers `temporarily_unavailable` and consumes nothing. `serve` logs `idp_directory_unconfigured`. | Fails closed. T10 wires Graph behind the same port. Tests use a controllable fake. |
+| T08-10 | Scope | TC-F-002-25's code-reuse case is tested on `redeemAuthorizationCode` (second redemption → `reused`, session revoked). The `auth.token.reuse_detected` event for codes is written by T10's `authorization_code` grant. | That grant, and its audit, are T10's. The session revocation (the security effect) is T08's and is tested. |
+| T08-11 | Deviation from §2.1 and T07-2 | There is no `@fastify/formbody`: `src/http/form.ts` parses `application/x-www-form-urlencoded` (16 KB limit) and refuses a repeated parameter (RFC 6749 §3.1). The token and revoke handlers share one file. | About 20 lines, and it adds the repeated-parameter check the plugin lacks. |
+| T08-12 | Implementation choice | `POST /oauth2/revoke` checks `client_id` before validating anything else: an unknown client is `401 invalid_client` (RFC 7009 §2.2.1). A known client with an unknown token gets 200. | RFC 7009. |
+| T08-13 | Implementation choice | `epoch` is a sequence, not a counter row. | It is monotonic and has no row-lock hot spot. Gaps from rolled-back transactions are harmless, because PEPs only compare order. |
+| T08-14 | Implementation choice | `as_of` on a principal is the database clock. | The same clock as every other governance timestamp. |
+
+### Tests (T08)
+
+- **Integration** (`test/integration/sessions.int.ts`, 12, dev stack with real Transit keys per run):
+  - rotation and `/v1/me` (session roles, Arabic names byte-for-byte, hash-only storage);
+  - **TC-F-002-13**:
+    - revoke writes `auth.sign_out` once;
+    - revoking twice, or an unknown token, is still 200, and a wrong client gets 401;
+    - a later refresh is `invalid_grant` with `auth.refresh denied revoked` and the policy version;
+    - `/v1/me` refuses the access token;
+    - the feed lists the `sid` with a higher `epoch` and a fresh `issued_at`, and a fake gateway rejects after the poll;
+  - the feed-cursor race (T08-1);
+  - **TC-F-002-25**:
+    - reuse of a rotated token revokes the family, both tokens fail, and the three events are written;
+    - two concurrent refreshes give exactly one 200 and one `invalid_grant reuse_detected`, and the session is revoked;
+    - a used code's second redemption revokes its session;
+  - the IdP re-check:
+    - unavailable → 503, and the token still works afterwards;
+    - disabled → `revoked_before` (DB clock + 30 s) in the feed and `auth.session.revoked`;
+    - no group, and Entra sessions revoked after sign-in, are refused;
+  - audiences by role;
+  - AC-3 at the token endpoint: `password`, unlisted grants, `client_secret`, Basic auth, JSON bodies and repeated parameters are refused;
+  - **TC-F-002-26, RTS half**:
+    - a valid assertion gives a 5-minute service token that the feed accepts;
+    - a replayed `jti`, another service's key, a wrong `aud` and a trimmed (retired) version are refused;
+    - each refusal is `invalid_client` plus an `auth.token_rejected` under the config org.
+    - The OpenBao policy half is `tooling/dev-stack/test/integration/policies.int.ts` (T02).
+  - token and route separation; principals (404, 400);
+  - cleanup: `code_not_redeemed` exactly once, expired replay rows, a 31-day-old session with its token, and the tombstone after one hour.
+- **Unit**:
+  - `service-key-cache.test.ts`: retirement within the TTL, and the miss cooldown;
+  - `config.test.ts`: the `config_loaded` path and override names;
+  - the OpenAPI document covers the new routes, and still has no password, PIN, OTP or `client_secret`.

@@ -36,14 +36,22 @@ job exits non-zero, saying the migrations were applied but not recorded.
   - refuses a signing key that is `exportable` or allows plaintext backup;
   - creates or checks the Organization (region, residency and deployment model can't change;
     `access.device_code_enabled` is copied into its settings);
-  - polls the signing key, replays the audit spool every 30 s, and listens.
-- **Routes so far:**
+  - polls the signing key, replays the audit spool every 30 s, runs the session cleanup every
+    minute, and listens.
+  - writes one `config_loaded` line with the resolved config file path and the names (never the
+    values) of `RALYSA_CFG__*` overrides. Every entry point writes this line.
+- **Routes:**
 
   | Route | What it returns |
   |---|---|
   | `GET /.well-known/oauth-authorization-server` | RFC 8414 metadata |
   | `GET /.well-known/jwks.json` | Public keys from `cp.signing_key_version`, with `Cache-Control: public, max-age=60, must-revalidate` |
   | `GET /v1/auth/config` | The enabled flows and IdP endpoints |
+  | `POST /oauth2/token` | `refresh_token` and `client_credentials` grants (T08); `authorization_code` and token exchange arrive with T10 |
+  | `POST /oauth2/revoke` | RFC 7009 sign-out: revokes the refresh token's whole session; always 200 |
+  | `GET /v1/me` | The signed-in user, the calling session's roles and the user's groups (user token) |
+  | `GET /v1/internal/principals/:user_id` | A user's status, roles and groups (service token) |
+  | `GET /v1/internal/governance` | Revocations, kill switches and `epoch` for every PEP (service token) |
   | `GET /healthz` | Liveness |
   | `GET /readyz` | Readiness: database, an active and freshly polled signing key, no custody violation |
 
@@ -79,6 +87,48 @@ job exits non-zero, saying the migrations were applied but not recorded.
     the route they reach.
   - Clients are keyed by IP address, and IPv6 clients by /64.
   - The client IP honours `X-Forwarded-For` only from `trust_proxy_cidrs`.
+- **Sessions and grants** (F-002-T08; `src/auth/`):
+  - A session (`sid`) is one refresh-token family. Refresh tokens are `rly_rt_` + 43 characters,
+    stored as SHA-256 hashes only, and expire after `tokens.refresh_idle_s` (12 h) or at the
+    session's absolute expiry (`tokens.refresh_absolute_s`, 7 d).
+  - **Refresh** rotates the token with one guarded statement. Presenting a rotated token is
+    **reuse**: the whole family is revoked (`auth.token.reuse_detected`, `auth.session.revoked`,
+    `auth.refresh denied reuse_detected`) and the answer is `invalid_grant`. There is no grace
+    window.
+  - **One refresher per device** (SEC-F002-17, a contract on F-003 and F-005): only the CLI (or
+    the Desktop main process) refreshes. It hands access tokens to the local Agent Host through
+    the `TokenProvider` over IPC. When two processes refresh the same token, exactly one gets new
+    tokens and the other gets `invalid_grant` with `ralysa_error.code = reuse_detected`, and the
+    family is revoked, so the user signs in again.
+  - Every refresh re-checks the user at the IdP directory. If the directory is unreachable, the
+    answer is `503 temporarily_unavailable` and the token is **not** consumed. A disabled or
+    deleted user, Entra sessions revoked after sign-in, or a user in no configured group is
+    refused, and the session (or the user, with `revoked_before` = DB clock + 30 s) is revoked.
+    **Until T10 wires Microsoft Graph, `serve` has no directory: every refresh answers
+    `temporarily_unavailable`** and logs `idp_directory_unconfigured` at start.
+  - `audience` (default `control-plane`): other audiences need the session role `user`, else
+    `invalid_scope`.
+  - **Services** use `client_credentials` with an RFC 7523 assertion signed through their own
+    Transit key (`kid` = `ralysa-svc-<name>.v<n>`, `aud` = `<public_base_url>/oauth2/token`,
+    `exp` at most 60 s ahead, a fresh `jti`). RTS verifies it only against versions OpenBao
+    still lists. It caches each key's list for 60 s, so a version retired with `trim` stops
+    verifying within a minute. An unknown version re-reads the list at most every 5 s. The
+    answer is a 5-minute service token. A refused assertion is `401 invalid_client` and an
+    aggregated `auth.token_rejected`.
+  - No client secret exists: a `client_secret` parameter or `Authorization: Basic` is
+    `invalid_client`, and `password` and every unlisted grant are `unsupported_grant_type`.
+  - **Governance feed:** `issued_at` is the database clock. `epoch` comes from
+    `cp.governance_epoch_seq`: it never decreases and advances with every revocation. A response
+    is cached for at most 1 s. Without `since`, the feed covers the last 65 minutes (the maximum
+    access-token TTL + 5 min). `cursor` lags `issued_at` by 60 s, so a revocation that commits
+    just after a poll is still delivered. PEPs de-duplicate the overlap.
+  - `/v1/me` checks the user token against revocation in the database, not through the feed.
+  - **Cleanup** (every minute, every replica, one statement per batch):
+    - a pending session whose authorization code expired unused is revoked, and
+      `auth.sign_in failure code_not_redeemed` is written once;
+    - replay keys are deleted at expiry;
+    - `idp_auth_request` rows and code tombstones are deleted one hour after expiry;
+    - sessions that ended more than 30 days ago are purged with their refresh tokens.
 - **Org source** (SEC-F002-31): unauthenticated routes act in `config.org.id`. A header, host,
   path or body never selects the org.
 
@@ -187,7 +237,7 @@ Dev configs: `deploy/docker/dev/control-plane.{serve,migrate,migrate-audit,seale
 
 | Environment variable                    | Read by                    | Effect                                      |
 | --------------------------------------- | -------------------------- | ------------------------------------------- |
-| `RALYSA_CONFIG`                         | every entry point          | Config file path when `--config` is absent. |
+| `RALYSA_CONFIG`                         | every entry point          | Config file path when `--config` is absent. The resolved path is logged at start (`config_loaded`). **Production pins it** (SEC-F002-12): pass a fixed `--config` in the container command, or mount the file read-only at a path the pod spec sets. Nothing that can change at runtime may choose which file is read. |
 | `RALYSA_CFG__<PATH>`                    | every entry point          | Overrides one config value; `__` separates segments (`RALYSA_CFG__DB__HOST=db`). Scalar values only: numbers and `true`/`false` are JSON-parsed, anything else is a string, and a JSON object, array or `null` is **refused**. Validated like the file, so it can't carry a credential. **Refused** for `env`, `vault.auth.*`, `vault.allow_approle`, `trust_proxy_cidrs`, `idp.issuer`, `idp.require_mfa_claim` and `access.mfa_claim_exception_ref`, and for any path above one of them (`RALYSA_CFG__VAULT`, `RALYSA_CFG__IDP`, `RALYSA_CFG__ACCESS`). The names of applied overrides (never the values) are logged at start as `config_overrides`. |
 | the one named by `vault.auth.token_env` | token auth (dev/test only) | The OpenBao token.                          |
 
