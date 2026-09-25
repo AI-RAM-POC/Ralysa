@@ -39,6 +39,64 @@ export function randomFrom(alphabet: string, length: number): string {
   return out;
 }
 
+/** Shannon entropy in bits per character, the measure gitleaks compares with a rule's `entropy`. */
+export function shannonEntropy(text: string): number {
+  const counts = new Map<string, number>();
+  for (const character of text) counts.set(character, (counts.get(character) ?? 0) + 1);
+  let bits = 0;
+  for (const count of counts.values()) {
+    const p = count / text.length;
+    bits -= p * Math.log2(p);
+  }
+  return bits;
+}
+
+/**
+ * The entropy floor of each rule the self-tests plant, from `.gitleaks.toml` and the vendored
+ * gitleaks default config (a test keeps these in step with both). gitleaks drops a match whose
+ * secret has entropy <= the floor.
+ */
+export const RULE_ENTROPY = {
+  'aws-access-token': 3,
+  'github-pat': 3,
+  'azure-openai-key': 3,
+  'litellm-key': 3,
+  'mistral-api-key': 3.5,
+  'groq-api-key': 3.5,
+  'ralysa-selftest-canary': 3,
+} as const;
+
+/** Headroom over a rule's floor, so no float rounding can put a value on the boundary. */
+const ENTROPY_MARGIN = 0.1;
+
+/**
+ * `prefix` plus `length` random characters from `alphabet`, redrawn until gitleaks is sure to
+ * report it: the whole value (what each planted rule measures) clears `minEntropy` with a
+ * margin, and `reject` (a rule's allow-list shape) doesn't match. Plain randomFrom() output
+ * occasionally fell below a floor: `AKIA` + 16 random characters has entropy <= 3 about once in
+ * 6 000 draws, and gitleaks then silently skipped it, failing the CI self-test at random
+ * (PR #20). `draw` is injectable for tests.
+ */
+export function detectable(
+  prefix: string,
+  alphabet: string,
+  length: number,
+  minEntropy: number,
+  {
+    reject,
+    draw = randomFrom,
+  }: { reject?: RegExp; draw?: (alphabet: string, length: number) => string } = {},
+): string {
+  for (let attempt = 0; attempt < 1000; attempt++) {
+    const value = `${prefix}${draw(alphabet, length)}`;
+    if (shannonEntropy(value) >= minEntropy + ENTROPY_MARGIN && !reject?.test(value)) return value;
+  }
+  throw new Error(`no value with entropy >= ${String(minEntropy)} after 1000 draws`);
+}
+
+/** The AWS rule's allow-list: gitleaks ignores any key ending in EXAMPLE. */
+const AWS_ALLOWED = /EXAMPLE$/;
+
 export interface Plant {
   /** The rule gitleaks must report for this line. */
   rule: string;
@@ -59,9 +117,9 @@ export function syntheticSet(): Plant[] {
   return [
     {
       rule: 'aws-access-token',
-      line: `aws_id = "${frag('AK', 'IA')}${randomFrom(`${UPPER}234567`, 16)}"`,
+      line: `aws_id = "${detectable(frag('AK', 'IA'), `${UPPER}234567`, 16, RULE_ENTROPY['aws-access-token'], { reject: AWS_ALLOWED })}"`,
     },
-    { rule: 'github-pat', line: `token = "${frag('gh', 'p_')}${randomFrom(ALNUM, 36)}"` },
+    { rule: 'github-pat', line: `token = "${githubPat()}"` },
     {
       rule: 'anthropic-api-key',
       line: `key = "${frag('sk-', 'ant-', 'api03-')}${randomFrom(`${ALNUM}_-`, 93)}AA"`,
@@ -69,14 +127,20 @@ export function syntheticSet(): Plant[] {
     { rule: 'private-key', line: `pem = "${pem}"` },
     {
       rule: 'azure-openai-key',
-      line: `AZURE_OPENAI_API_KEY = "${randomFrom('0123456789abcdef', 32)}"`,
+      line: `AZURE_OPENAI_API_KEY = "${detectable('', '0123456789abcdef', 32, RULE_ENTROPY['azure-openai-key'])}"`,
     },
     {
       rule: 'litellm-key',
-      line: `LITELLM_MASTER_KEY = "${frag('sk', '-')}${randomFrom(`${ALNUM}_-`, 24)}"`,
+      line: `LITELLM_MASTER_KEY = "${detectable(frag('sk', '-'), `${ALNUM}_-`, 24, RULE_ENTROPY['litellm-key'])}"`,
     },
-    { rule: 'mistral-api-key', line: `MISTRAL_API_KEY = "${randomFrom(ALNUM, 32)}"` },
-    { rule: 'groq-api-key', line: `groq = "${frag('gs', 'k_')}${randomFrom(ALNUM, 52)}"` },
+    {
+      rule: 'mistral-api-key',
+      line: `MISTRAL_API_KEY = "${detectable('', ALNUM, 32, RULE_ENTROPY['mistral-api-key'])}"`,
+    },
+    {
+      rule: 'groq-api-key',
+      line: `groq = "${detectable(frag('gs', 'k_'), ALNUM, 52, RULE_ENTROPY['groq-api-key'])}"`,
+    },
     { rule: 'ralysa-selftest-canary', line: `canary = "${canary()}"` },
   ];
 }
@@ -97,13 +161,22 @@ export const ARTEFACT_SKIP_SHAPES = [
 /** A copied default rule (GitHub PAT) and a custom one (canary), one per line. */
 function shapePlants(): Plant[] {
   return [
-    { rule: 'github-pat', line: `<!-- ${frag('gh', 'p_')}${randomFrom(ALNUM, 36)} -->` },
+    { rule: 'github-pat', line: `<!-- ${githubPat()} -->` },
     { rule: 'ralysa-selftest-canary', line: `<text>${canary()}</text>` },
   ];
 }
 
 export function canary(): string {
-  return `${frag('RALYSA_SELFTEST', '_CANARY_')}${randomFrom(UPPER + DIGITS, 24)}`;
+  return detectable(
+    frag('RALYSA_SELFTEST', '_CANARY_'),
+    UPPER + DIGITS,
+    24,
+    RULE_ENTROPY['ralysa-selftest-canary'],
+  );
+}
+
+function githubPat(): string {
+  return detectable(frag('gh', 'p_'), ALNUM, 36, RULE_ENTROPY['github-pat']);
 }
 
 function plantFile(dir: string, relativePath: string, plants: Plant[]): void {

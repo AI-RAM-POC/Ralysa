@@ -906,6 +906,12 @@ The `quality` job of PR #17 (run 36137033999) failed twice; neither showed up lo
 | 5 | `T.tsx`: literal invisible characters (U+2068, U+2069, U+E000, U+E001). | Written as `\u` escapes, and the marker regex gets the `u` flag. The same fix is applied to the literal controls in `test/text.test.tsx` and `test/font-coverage.test.ts`. A scan of `packages/ui` and both apps finds no others. | The existing `<T>` / `isolate()` and font-coverage tests pass unchanged. |
 | 6 | `workspace-dir.test.ts`: the driver matched lint results to files by index. | Results are keyed by `result.filePath` (absolute; the driver resolves each argument), and a missing result throws. | The same 3 tests pass. |
 
+## T05 follow-up: flaky secret-scan self-test (branch `fix/F-001-gitleaks-selftest-flake`, 2026-09-25)
+
+| # | Finding | Fix | Tests |
+|---|---|---|---|
+| T05-F1 | PR #20's `secret-scan` job failed once with `aws-access-token not reported at src/config.ts:1`, and a rerun passed. The synthetic key was `AKIA` plus 16 random characters. One draw, `AKIAXJXIAGWXFLALLQAA`, has Shannon entropy 2.97, and the AWS rule's floor is 3, so gitleaks correctly skipped it (a match is dropped when its entropy is <= the floor). About 1 draw in 6 000 falls that low: gitleaks missed 1 of 3 000 in a local run. The GitHub PAT, Azure, LiteLLM, Mistral, Groq and canary values had the same exposure, at lower rates. | `detectable(prefix, alphabet, length, floor)` in `secret-scan-selftest.ts` redraws until the whole value (what each planted rule measures) clears the floor by 0.1 and doesn't match the rule's allow-list (the AWS rule ignores keys ending in `EXAMPLE`). It throws after 1 000 draws rather than looping. `RULE_ENTROPY` holds the floors. Every planted value in `syntheticSet()`, the artefact shape plants, `canary()` and the TC-F-001-39 positives now uses it. | New `test/secret-scan-entropy.test.ts` (12): entropy values, including 2.97 for the missed key; a low draw and an allow-listed draw are redrawn (injected `draw`); an impossible floor throws; 2 000 generated sets all clear every floor; `RULE_ENTROPY` equals the floors in `.gitleaks.toml` and the vendored default config. **Mutation check:** with the entropy test removed from `detectable()`, 2 tests fail. |
+
 ## Version confirmations (npm registry, 2026-09-25 ~08:20 UTC)
 
 Policy (§2.2): the latest patch of a line GA for at least 30 days, and `minimumReleaseAge` holds back anything under 3 days old. Cut-off for the 3-day rule: 2026-09-22T08:20Z.
