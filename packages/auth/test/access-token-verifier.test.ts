@@ -53,6 +53,14 @@ describe('createAccessTokenVerifier (TC-F-002-11)', () => {
     jwksFetch = fakeFetch({ [`GET ${JWKS_URL}`]: () => ({ status: 200, body: keys.jwks }) });
   });
 
+  it('accepts the Bearer scheme in any case (RFC 7235) and a bare token', async () => {
+    const token = await keys.mint();
+    for (const value of [`bearer ${token}`, `BEARER ${token}`, `BeArEr ${token}`, token]) {
+      expect((await verifier().verify(value)).ok).toBe(true);
+    }
+    expect(await verifier().verify(`Basic ${token}`)).toEqual({ ok: false, reason: 'malformed' });
+  });
+
   it('accepts a valid token and yields the principal', async () => {
     const result = await verifier().verify(`Bearer ${await keys.mint()}`, { clientIp: '10.0.0.7' });
     expect(result).toEqual({
@@ -178,6 +186,11 @@ describe('createAccessTokenVerifier (TC-F-002-11)', () => {
     ],
     ['missing sid', () => keys.mint({ omit: ['sid'] }), 'malformed'],
     ['missing exp', () => keys.mint({ omit: ['exp'] }), 'malformed'],
+    // Missing or mistyped claims are malformed, not a wrong value (review of #28).
+    ['missing nbf', () => keys.mint({ omit: ['nbf'] }), 'malformed'],
+    ['missing aud', () => keys.mint({ omit: ['aud'] }), 'malformed'],
+    ['missing iss', () => keys.mint({ omit: ['iss'] }), 'malformed'],
+    ['nbf not a number', () => keys.mint({ claims: { nbf: 'soon' } }), 'malformed'],
   ];
 
   it.each(cases)('rejects %s', async (_name, token, reason) => {

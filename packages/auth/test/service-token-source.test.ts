@@ -12,7 +12,6 @@ import {
   createServiceTokenSource,
   createTransitAssertionSigner,
 } from '../src/index.js';
-import { sleep } from '../src/platform.js';
 import { clock, fakeFetch } from './support.js';
 
 const TOKEN_ENDPOINT = 'https://ralysa.example.qa/oauth2/token';
@@ -118,7 +117,6 @@ describe('createServiceTokenSource', () => {
       },
     };
   };
-  const settle = () => sleep(25);
 
   it('posts client_credentials with a jwt-bearer assertion whose aud is RTS’s own token endpoint URL', async () => {
     const { fetch, source } = await setup();
@@ -138,6 +136,7 @@ describe('createServiceTokenSource', () => {
 
   it('renews at 50 % of the TTL (+ jitter), serving the current token meanwhile', async () => {
     const { c, fetch, source } = await setup(0);
+    const settle = () => source.settled();
     expect(await source.getToken()).toBe('svc-1');
     c.advance(149_000);
     expect(await source.getToken()).toBe('svc-1');
@@ -151,6 +150,7 @@ describe('createServiceTokenSource', () => {
 
   it('jitter spreads renewal over 50–60 % of the TTL', async () => {
     const { c, fetch, source } = await setup(0.999);
+    const settle = () => source.settled();
     await source.getToken();
     c.advance(179_000);
     await source.getToken();
@@ -164,6 +164,7 @@ describe('createServiceTokenSource', () => {
 
   it('keeps the current token while renewal fails, retries with backoff, and fails closed after exp', async () => {
     const { c, fetch, source, setDown } = await setup(0);
+    const settle = () => source.settled();
     await source.getToken();
     setDown(true);
     c.advance(150_000);
@@ -174,8 +175,34 @@ describe('createServiceTokenSource', () => {
     expect(fetch.requests).toHaveLength(2);
     c.advance(145_001); // 5 s before exp: no longer handed out
     await expect(source.getToken()).rejects.toBeInstanceOf(ServiceTokenUnavailableError);
+    expect(fetch.requests).toHaveLength(3);
     setDown(false);
+    // Still inside the (now 2 s) backoff: refused without calling OpenBao or RTS.
+    await expect(source.getToken()).rejects.toBeInstanceOf(ServiceTokenUnavailableError);
+    expect(fetch.requests).toHaveLength(3);
+    c.advance(2_000);
     expect(await source.getToken()).toBe('svc-2');
+  });
+
+  it('after exp, an outage does not turn every getToken() into a Transit + RTS call (AR-1)', async () => {
+    const { c, fetch, source, setDown } = await setup(0);
+    await source.getToken();
+    setDown(true);
+    c.advance(296_000); // expired, no renewal attempted yet
+    await expect(source.getToken()).rejects.toBeInstanceOf(ServiceTokenUnavailableError);
+    for (let i = 0; i < 50; i++) {
+      await expect(source.getToken()).rejects.toBeInstanceOf(ServiceTokenUnavailableError);
+    }
+    expect(fetch.requests).toHaveLength(2);
+    // Backoff doubles: 1 s, 2 s, 4 s … capped at 30 s.
+    c.advance(1_000);
+    await expect(source.getToken()).rejects.toBeInstanceOf(ServiceTokenUnavailableError);
+    c.advance(1_000);
+    await expect(source.getToken()).rejects.toBeInstanceOf(ServiceTokenUnavailableError);
+    expect(fetch.requests).toHaveLength(3);
+    c.advance(1_000);
+    await source.getToken().catch(() => undefined);
+    expect(fetch.requests).toHaveLength(4);
   });
 
   it('concurrent callers share one request', async () => {

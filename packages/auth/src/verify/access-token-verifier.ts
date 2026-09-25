@@ -1,7 +1,7 @@
 // The access-token verifier every Ralysa PEP uses (F-002 design §3.2.2, §3.6, §5.5; AC-7).
 //
 // Checks, in order, each with its reason code (TokenRejectReason):
-//   1. shape: a compact JWS, optionally after `Bearer `                     → malformed
+//   1. shape: a compact JWS, optionally after `Bearer ` (any case, RFC 7235) → malformed
 //   2. header: alg ES256 only (not `none`, not HS256)                       → wrong_alg
 //              typ `at+jwt`                                                 → wrong_typ
 //              no `jku`, `jwk`, `x5u`, `x5c` or `crit` [SEC-F002-19]        → forbidden_header
@@ -117,7 +117,7 @@ export function createAccessTokenVerifier(opts: AccessTokenVerifierOptions): Acc
     });
 
   const check = async (bearer: string): Promise<VerifiedPrincipal> => {
-    const token = bearer.startsWith('Bearer ') ? bearer.slice(7) : bearer;
+    const token = /^bearer /i.test(bearer) ? bearer.slice(7) : bearer;
     if (!COMPACT_JWS.test(token)) throw new Rejected('malformed');
     let header;
     try {
@@ -203,6 +203,8 @@ function mapJoseError(error: unknown): Error {
   if (error instanceof errors.JWSSignatureVerificationFailed) return new Rejected('bad_signature');
   if (error instanceof errors.JWTExpired) return new Rejected('expired');
   if (error instanceof errors.JWTClaimValidationFailed) {
+    // A claim that is missing or not the right type is a malformed token, not a wrong value.
+    if (error.reason !== 'check_failed') return new Rejected('malformed');
     switch (error.claim) {
       case 'iss':
         return new Rejected('unknown_issuer');

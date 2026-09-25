@@ -4,6 +4,7 @@ import type { AuthConfig } from '@ralysa/protocol/control-plane';
 import { describe, expect, it } from 'vitest';
 import * as api from '../src/index.js';
 import {
+  ResponseLostError,
   SessionRevokedError,
   TemporarilyUnavailableError,
   type TokenStore,
@@ -156,6 +157,40 @@ describe('createTokenManager', () => {
     expect(s.value()).toBe(rt(0));
     rts.setMode('ok');
     expect(await m.getAccessToken()).toBe('at-control-plane-1');
+  });
+
+  it('a lost refresh answer (RTS rotated, the response never arrived) → ResponseLostError; the retry is reuse → SessionRevokedError, store cleared', async () => {
+    const rts = fakeRts();
+    let dropNext = false;
+    const lossy = Object.assign(async (url: string, init: Parameters<typeof rts.fetch>[1]) => {
+      const reply = await rts.fetch(url, init); // RTS processes (and rotates)…
+      if (dropNext) {
+        dropNext = false;
+        throw new Error('socket hang up'); // …but the answer is lost.
+      }
+      return reply;
+    }, {});
+    const s = memoryStore();
+    const m = createTokenManager({ cfg, store: s.store, fetch: lossy });
+    dropNext = true;
+    const lost = await m.getAccessToken().catch((e: unknown) => e);
+    expect(lost).toBeInstanceOf(ResponseLostError);
+    expect(lost).toBeInstanceOf(TemporarilyUnavailableError);
+    expect((lost as ResponseLostError).lostResponse).toBe(true);
+    expect(s.value()).toBe(rt(0)); // the old token is still all this client has
+    await expect(m.getAccessToken()).rejects.toMatchObject({
+      name: 'SessionRevokedError',
+      reason: 'reuse_detected',
+    });
+    expect(s.value()).toBeNull();
+    expect(await m.hasSession()).toBe(false);
+    // A refusal that DID arrive is not a lost response.
+    rts.setMode('unavailable');
+    const refused = await createTokenManager({ cfg, store: memoryStore().store, fetch: rts.fetch })
+      .getAccessToken()
+      .catch((e: unknown) => e);
+    expect(refused).toBeInstanceOf(TemporarilyUnavailableError);
+    expect((refused as TemporarilyUnavailableError).lostResponse).toBe(false);
   });
 
   it('two managers over one store (a second refresher) end in reuse: the documented defect', async () => {

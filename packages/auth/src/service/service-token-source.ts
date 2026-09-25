@@ -37,12 +37,19 @@ export interface ServiceTokenSourceOptions extends HttpOptions {
   random?: () => number;
 }
 
-/** A token is not handed out in its last seconds, so it can't expire on the way. */
+/** A token is not handed out in its last 5 s, so it can't expire on the way (README). */
 const EXPIRY_MARGIN_MS = 5_000;
 const RETRY_MIN_MS = 1_000;
 const RETRY_MAX_MS = 30_000;
 
-export function createServiceTokenSource(opts: ServiceTokenSourceOptions): ServiceTokenSource {
+/** The source plus a hook that resolves when no renewal is in flight (tests, graceful shutdown). */
+export interface ManagedServiceTokenSource extends ServiceTokenSource {
+  settled(): Promise<void>;
+}
+
+export function createServiceTokenSource(
+  opts: ServiceTokenSourceOptions,
+): ManagedServiceTokenSource {
   if (!/^svc:[a-z][a-z0-9-]{1,40}$/.test(opts.clientId)) {
     throw new Error('clientId must be svc:<name>');
   }
@@ -106,6 +113,13 @@ export function createServiceTokenSource(opts: ServiceTokenSourceOptions): Servi
 
   const valid = () => current !== undefined && now() < current.expiresAt - EXPIRY_MARGIN_MS;
 
+  const unavailable = () =>
+    new ServiceTokenUnavailableError(
+      lastError instanceof NetworkError || lastError instanceof ServiceTokenUnavailableError
+        ? lastError.message
+        : 'signing or transport failed',
+    );
+
   return {
     async getToken() {
       if (valid()) {
@@ -113,13 +127,13 @@ export function createServiceTokenSource(opts: ServiceTokenSourceOptions): Servi
         if (current !== undefined && now() >= current.renewAt && now() >= retryAt) void renew();
         return (current as { token: string }).token;
       }
+      // Expired and the last attempt failed: honour the backoff instead of calling OpenBao and RTS
+      // on every request during an outage [AR-1]. A renewal already in flight is joined.
+      if (renewing === undefined && now() < retryAt) throw unavailable();
       await renew();
       if (valid()) return (current as { token: string }).token;
-      const detail =
-        lastError instanceof NetworkError || lastError instanceof ServiceTokenUnavailableError
-          ? lastError.message
-          : 'signing or transport failed';
-      throw new ServiceTokenUnavailableError(detail);
+      throw unavailable();
     },
+    settled: () => renewing ?? Promise.resolve(),
   };
 }

@@ -90,7 +90,9 @@ export function createRevocationFeed(opts: RevocationFeedOptions): RevocationFee
   let cursor: string | undefined;
   let stopTimer: (() => void) | undefined;
   let running = false;
-  const isRunning = () => running;
+  /** Bumped by every start() and stop(): a poll that finishes for an old generation stops there. */
+  let generation = 0;
+  const current = (g: number) => running && g === generation;
 
   const merge = (state: GovernanceState) => {
     for (const s of state.revoked_sessions) {
@@ -140,7 +142,10 @@ export function createRevocationFeed(opts: RevocationFeedOptions): RevocationFee
           } else {
             epoch = state.epoch;
             cursor = state.cursor;
-            confirmedAt = now();
+            // Credit the answer with no more freshness than it proves: it confirms the state as of
+            // issued_at (never later than our clock), so an answer issued 29 s ago can't keep the
+            // PEP "fresh" for 60 s more. G-1 stays 60 s of data age, not ~90 s (review of #28).
+            confirmedAt = Math.min(now(), issuedAt);
             switches = state.kill_switches.map((k) => ({
               scope: k.scope,
               scopeId: k.scope_id,
@@ -160,10 +165,10 @@ export function createRevocationFeed(opts: RevocationFeedOptions): RevocationFee
 
   const stale = () => confirmedAt === undefined || now() - confirmedAt > staleAfterMs;
 
-  const loop = () => {
+  const loop = (g: number) => {
     stopTimer = startTimer(() => {
       void pollOnce().finally(() => {
-        if (isRunning()) loop();
+        if (current(g)) loop(g);
       });
     }, pollMs);
   };
@@ -181,12 +186,14 @@ export function createRevocationFeed(opts: RevocationFeedOptions): RevocationFee
     async start() {
       if (running) throw new Error('feed already started');
       running = true;
+      const g = ++generation;
       const first = await pollOnce();
-      if (isRunning()) loop();
+      if (current(g)) loop(g);
       return first;
     },
     stop() {
       running = false;
+      generation++;
       stopTimer?.();
       stopTimer = undefined;
     },

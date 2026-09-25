@@ -15,12 +15,16 @@
 // Failures:
 //   - `invalid_grant` (revoked, reuse, expired, user disabled): SessionRevokedError; the stored
 //     refresh token is cleared, and the user signs in again.
-//   - `temporarily_unavailable`, 5xx, 429 or no answer: TemporarilyUnavailableError; the refresh
-//     token is kept. RTS consumes nothing before it answers 200, so a retry after a refusal is
-//     safe. After a LOST answer (the request may have rotated the token), the retry presents the
-//     old token, RTS sees reuse and revokes the session: the retry then fails with
-//     SessionRevokedError and the user signs in again. That is the documented outcome (control-
-//     plane README, review of #26 R26-10); there is no grace window (D-27).
+//   - `temporarily_unavailable`, 5xx or 429: TemporarilyUnavailableError; the refresh token is
+//     kept. RTS consumes nothing before it answers 200, so a retry is safe.
+//   - No answer at all (connection dropped, timeout): ResponseLostError (`lostResponse: true`).
+//     RTS may have rotated the token. The manager keeps the old token, so the next call retries
+//     with it; if RTS did rotate, that is reuse, RTS revokes the session, and the retry fails
+//     with SessionRevokedError (store cleared, sign in again). That is the documented outcome
+//     (control-plane README, review of #26 R26-10); there is no grace window (D-27).
+//   - `store.save()` failing after a successful rotation: the new token is kept in memory and
+//     the error is thrown. This process keeps working, but the store still holds the rotated
+//     token, so the next process start presents it and ends in reuse (F-005 must surface it).
 //
 // The refresh token lives only in the TokenStore (the OS credential store in F-005; there is
 // deliberately no file-backed store) and in memory. Access tokens live in memory only.

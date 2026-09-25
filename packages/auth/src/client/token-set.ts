@@ -4,12 +4,7 @@ import { type Audience, REFRESH_TOKEN_PATTERN, TokenResponse } from '@ralysa/pro
 import type { AuthConfig } from '@ralysa/protocol/control-plane';
 import { type HttpOptions, NetworkError, request } from '../http.js';
 import { rtsEndpoints } from './config.js';
-import {
-  type AuthError,
-  AuthProtocolError,
-  TemporarilyUnavailableError,
-  rtsError,
-} from './errors.js';
+import { type AuthError, AuthProtocolError, ResponseLostError, rtsError } from './errors.js';
 
 export interface TokenSet {
   /** A Ralysa access token (JWT) for `audience`. Keep it in memory only. */
@@ -36,7 +31,8 @@ export async function postTokenGrant(
     reply = await request(options, 'POST', rtsEndpoints(cfg).token, { form, what: 'RTS token' });
   } catch (error) {
     if (error instanceof NetworkError) {
-      throw new TemporarilyUnavailableError(error.message, 'auth.error.idp_unavailable');
+      // No answer: RTS may have rotated the refresh token or burned the grant (ResponseLostError).
+      throw new ResponseLostError(error.message, 'auth.error.idp_unavailable');
     }
     throw error;
   }

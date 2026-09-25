@@ -40,6 +40,7 @@ export {
   createPrincipalResolver,
 } from './verify/principal-resolver.js';
 export {
+  type ManagedServiceTokenSource,
   type ServiceTokenSource,
   type ServiceTokenSourceOptions,
   ServiceTokenUnavailableError,
@@ -85,6 +86,7 @@ export {
   AuthProtocolError,
   DeviceCodeBlockedError,
   DeviceCodeExpiredError,
+  ResponseLostError,
   SessionRevokedError,
   TemporarilyUnavailableError,
 } from './client/errors.js';

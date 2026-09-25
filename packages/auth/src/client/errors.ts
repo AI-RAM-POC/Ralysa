@@ -53,9 +53,25 @@ export class SessionRevokedError extends AuthError {
   readonly code = 'session_revoked';
 }
 
-/** RTS or the IdP is unavailable; nothing was consumed, so retrying later is safe. */
+/**
+ * RTS or the IdP could not serve the request. When the server ANSWERED (`temporarily_unavailable`,
+ * 429, 5xx) nothing was consumed and a retry is safe. When no answer arrived at all, the error is
+ * the ResponseLostError subclass, whose `lostResponse` is true: see there.
+ */
 export class TemporarilyUnavailableError extends AuthError {
   readonly code = 'temporarily_unavailable';
+  /** True when the request may have been processed without its answer reaching us. */
+  readonly lostResponse: boolean = false;
+}
+
+/**
+ * A token request got no answer (connection dropped, timeout). RTS may have processed it. For a
+ * refresh that means the presented refresh token may already be rotated: a retry with it is
+ * reuse, RTS revokes the session, and the retry fails with SessionRevokedError (sign in again).
+ * For a sign-in grant the IdP token or code may already be burned. There is no grace window (D-27).
+ */
+export class ResponseLostError extends TemporarilyUnavailableError {
+  override readonly lostResponse: boolean = true;
 }
 
 /** An answer this client can't use (bad shape, unexpected status, invalid request). */

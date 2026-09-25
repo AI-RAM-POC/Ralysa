@@ -55,6 +55,28 @@ describe('createRevocationFeed', () => {
     expect(f.status().stale).toBe(true);
   });
 
+  it('G-1 counts from issued_at: a 29 s old answer keeps the PEP fresh for 31 s more, not 60 s', async () => {
+    const f = feed();
+    answer = () => ({
+      status: 200,
+      body: state({ issued_at: new Date(c.now() - 29_000).toISOString() }),
+    });
+    expect(await f.pollOnce()).toBe('confirmed');
+    expect(f.status().confirmedAt).toBe(c.now() - 29_000);
+    answer = () => ({ status: 503, body: {} });
+    c.advance(31_000);
+    expect(f.check({ sid: SID, sub: USER, iat: iat() })).toBe('ok');
+    c.advance(1);
+    expect(f.check({ sid: SID, sub: USER, iat: iat() })).toBe('governance_stale');
+    // An issued_at slightly ahead of our clock (DB clock skew) is credited as now, not later.
+    answer = () => ({
+      status: 200,
+      body: state({ issued_at: new Date(c.now() + 10_000).toISOString() }),
+    });
+    expect(await f.pollOnce()).toBe('confirmed');
+    expect(f.status().confirmedAt).toBe(c.now());
+  });
+
   it('an answer whose issued_at is more than 30 s off our clock is no confirmation (replayed or cached)', async () => {
     const f = feed();
     const replayed = state({ issued_at: new Date(c.now() - 31_000).toISOString() });
@@ -207,6 +229,38 @@ describe('createRevocationFeed', () => {
     });
     afterEach(() => {
       vi.useRealTimers();
+    });
+
+    it('stop() then start() while a poll is in flight leaves exactly one loop (generation counter)', async () => {
+      let release = (): void => undefined;
+      let gated = false;
+      const gatedFetch = fakeFetch({
+        [`GET ${FEED}`]: async () => {
+          if (gated) {
+            gated = false;
+            await new Promise<void>((resolve) => {
+              release = resolve;
+            });
+          }
+          return answer();
+        },
+      });
+      const f = createRevocationFeed({ url: FEED, serviceTokens: tokens, fetch: gatedFetch });
+      await f.start(); // poll 1
+      gated = true;
+      await vi.advanceTimersByTimeAsync(5_000); // poll 2 starts and hangs
+      expect(gatedFetch.requests).toHaveLength(2);
+      f.stop();
+      await f.start(); // poll 3 (new generation)
+      release(); // poll 2 finishes for the OLD generation: it must not schedule a loop
+      await vi.advanceTimersByTimeAsync(0);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(gatedFetch.requests).toHaveLength(4);
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(gatedFetch.requests).toHaveLength(6); // one loop: one poll per 5 s
+      f.stop();
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(gatedFetch.requests).toHaveLength(6);
     });
 
     it('polls every 5 s after start() until stop()', async () => {

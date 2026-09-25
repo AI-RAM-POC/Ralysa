@@ -42,6 +42,9 @@ const principals = createPrincipalResolver({ baseUrl: controlPlane, serviceToken
   [SEC-F002-18 e], followed by revocation.
 - If the JWKS can't be fetched at all, `verify` throws `VerifierUnavailableError`. Answer 503, and
   don't record it as a token rejection.
+- An error thrown by the `RevocationSource` (for example the control plane's database source)
+  propagates from `verify` as-is. It is not turned into a rejection reason (T11-3). Treat it like
+  `VerifierUnavailableError`: answer 503 and fail closed.
 - `onReject` never receives the token. Aggregate rejections under the service's **configured**
   org, never the rejected token's `tid`.
 - **G-1.** The feed counts a poll as a confirmation only if all of these hold:
@@ -51,8 +54,11 @@ const principals = createPrincipalResolver({ baseUrl: controlPlane, serviceToken
 
   With no confirmation for more than 60 s, every token is rejected with `governance_stale`.
 - **Service tokens.** They are renewed at 50–60 % of their lifetime (jitter) while the current
-  token stays in use until it expires [AR-1]. When no valid token can be had, `getToken()` throws
-  and the PEP fails closed. OpenBao is therefore in the control-plane HA tier.
+  token stays in use until it expires [AR-1]. A token is not handed out in its **last 5 s**, so it
+  can't expire on the way to the control plane. A failed renewal is retried with a backoff of 1 s,
+  doubling up to 30 s, and the backoff holds after expiry too: during an outage `getToken()`
+  throws `ServiceTokenUnavailableError` without calling OpenBao or RTS again until the backoff
+  ends. The PEP then fails closed. OpenBao is therefore in the control-plane HA tier.
 - **Principals.** They are cached for 30 s. A 404 is `PrincipalNotFoundError`. Any other failure
   throws.
 
@@ -72,7 +78,10 @@ const principals = createPrincipalResolver({ baseUrl: controlPlane, serviceToken
 - `createTokenManager({ cfg, store })` keeps the session: `signedIn(tokens)`,
   `getAccessToken(audience)`, `signOut()`.
 - Errors are typed (`AccessDeniedError`, `DeviceCodeExpiredError`, `DeviceCodeBlockedError`,
-  `SessionRevokedError`, `TemporarilyUnavailableError`, `AuthProtocolError`). Each carries an
+  `SessionRevokedError`, `TemporarilyUnavailableError` and its subclass `ResponseLostError`,
+  `AuthProtocolError`). `TemporarilyUnavailableError` means the server answered that it can't
+  serve now, so a retry is safe. `ResponseLostError` (`lostResponse: true`) means no answer
+  arrived, so the request may have been processed; see the contract below. Each carries an
   `i18nKey` from the protocol's `AUTH_I18N_KEYS`. A key RTS sends is used only when it is one of
   those.
 
@@ -93,8 +102,16 @@ Within one `TokenManager`, refreshes are single flight:
   presented again.
 
 On `invalid_grant` the manager clears the store and throws `SessionRevokedError`. On
-`temporarily_unavailable`, 5xx or no answer, it keeps the refresh token.
+`temporarily_unavailable`, 429 or 5xx it keeps the refresh token and throws
+`TemporarilyUnavailableError`; a retry is safe.
 
-A retry after a **lost** answer presents a token RTS may already have rotated. That is reuse: the
-session is revoked, and the user signs in again. The full rules are in the control-plane README,
+When no answer arrives, it throws `ResponseLostError`. A retry after a **lost** answer presents a
+token RTS may already have rotated. That is reuse: the session is revoked, the retry throws
+`SessionRevokedError`, and the user signs in again.
+
+**For F-005's `TokenStore`.** If `store.save()` fails after a successful rotation, the manager
+keeps the new refresh token in memory and rethrows the store error. This process keeps working,
+but the credential store still holds the **rotated** token. The next process start presents it,
+RTS sees reuse and revokes the session. The CLI should tell the user the sign-in couldn't be
+saved, and at exit it should either retry the save or sign out. The full rules are in the control-plane README,
 under Sessions and grants.
