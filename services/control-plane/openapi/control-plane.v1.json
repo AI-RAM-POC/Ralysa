@@ -1,0 +1,617 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Ralysa control plane",
+    "version": "1.0.0",
+    "description": "Generated from services/control-plane/src/http/contracts.ts. No route accepts a password, PIN, OTP or client secret (AC-3)."
+  },
+  "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
+  "components": {
+    "securitySchemes": {
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT"
+      }
+    }
+  },
+  "paths": {
+    "/.well-known/jwks.json": {
+      "get": {
+        "summary": "Published token verification keys (from signing_key_version)",
+        "tags": [
+          "discovery"
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "JWK set",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "keys": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "kty": {
+                            "type": "string",
+                            "const": "EC"
+                          },
+                          "crv": {
+                            "type": "string",
+                            "const": "P-256"
+                          },
+                          "x": {
+                            "type": "string"
+                          },
+                          "y": {
+                            "type": "string"
+                          },
+                          "kid": {
+                            "type": "string"
+                          },
+                          "alg": {
+                            "type": "string",
+                            "const": "ES256"
+                          },
+                          "use": {
+                            "type": "string",
+                            "const": "sig"
+                          }
+                        },
+                        "required": [
+                          "kty",
+                          "crv",
+                          "x",
+                          "y",
+                          "kid",
+                          "alg",
+                          "use"
+                        ],
+                        "additionalProperties": false
+                      }
+                    }
+                  },
+                  "required": [
+                    "keys"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "pattern": "^urn:ralysa:problem:[a-z_]+$"
+                    },
+                    "title": {
+                      "type": "string",
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "detail": {
+                      "type": "string",
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "maxLength": 200
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "invalid_request",
+                        "unauthorized",
+                        "forbidden",
+                        "not_found",
+                        "conflict",
+                        "locked",
+                        "payload_too_large",
+                        "unprocessable",
+                        "rate_limited",
+                        "audit_unavailable",
+                        "temporarily_unavailable",
+                        "internal"
+                      ]
+                    },
+                    "i18n_key": {
+                      "type": "string",
+                      "maxLength": 100
+                    },
+                    "trace_id": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{32}$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status",
+                    "code"
+                  ],
+                  "additionalProperties": {}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/.well-known/oauth-authorization-server": {
+      "get": {
+        "summary": "RFC 8414 authorization server metadata",
+        "tags": [
+          "discovery"
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "issuer": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "authorization_endpoint": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "token_endpoint": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "revocation_endpoint": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "jwks_uri": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "response_types_supported": {
+                      "type": "array",
+                      "prefixItems": [
+                        {
+                          "type": "string",
+                          "const": "code"
+                        }
+                      ],
+                      "items": false,
+                      "minItems": 1,
+                      "maxItems": 1
+                    },
+                    "grant_types_supported": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "authorization_code",
+                          "refresh_token",
+                          "urn:ietf:params:oauth:grant-type:token-exchange",
+                          "client_credentials"
+                        ]
+                      }
+                    },
+                    "code_challenge_methods_supported": {
+                      "type": "array",
+                      "prefixItems": [
+                        {
+                          "type": "string",
+                          "const": "S256"
+                        }
+                      ],
+                      "items": false,
+                      "minItems": 1,
+                      "maxItems": 1
+                    },
+                    "token_endpoint_auth_methods_supported": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "none",
+                          "private_key_jwt"
+                        ]
+                      }
+                    },
+                    "token_endpoint_auth_signing_alg_values_supported": {
+                      "type": "array",
+                      "prefixItems": [
+                        {
+                          "type": "string",
+                          "const": "ES256"
+                        }
+                      ],
+                      "items": false,
+                      "minItems": 1,
+                      "maxItems": 1
+                    }
+                  },
+                  "required": [
+                    "issuer",
+                    "authorization_endpoint",
+                    "token_endpoint",
+                    "revocation_endpoint",
+                    "jwks_uri",
+                    "response_types_supported",
+                    "grant_types_supported",
+                    "code_challenge_methods_supported",
+                    "token_endpoint_auth_methods_supported",
+                    "token_endpoint_auth_signing_alg_values_supported"
+                  ],
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "pattern": "^urn:ralysa:problem:[a-z_]+$"
+                    },
+                    "title": {
+                      "type": "string",
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "detail": {
+                      "type": "string",
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "maxLength": 200
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "invalid_request",
+                        "unauthorized",
+                        "forbidden",
+                        "not_found",
+                        "conflict",
+                        "locked",
+                        "payload_too_large",
+                        "unprocessable",
+                        "rate_limited",
+                        "audit_unavailable",
+                        "temporarily_unavailable",
+                        "internal"
+                      ]
+                    },
+                    "i18n_key": {
+                      "type": "string",
+                      "maxLength": 100
+                    },
+                    "trace_id": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{32}$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status",
+                    "code"
+                  ],
+                  "additionalProperties": {}
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/healthz": {
+      "get": {
+        "summary": "Liveness",
+        "tags": [
+          "ops"
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Alive",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "const": "ok"
+                    }
+                  },
+                  "required": [
+                    "status"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/readyz": {
+      "get": {
+        "summary": "Readiness: database, an active signing key, no custody violation",
+        "tags": [
+          "ops"
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Ready",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ready",
+                        "unready"
+                      ]
+                    },
+                    "checks": {
+                      "type": "object",
+                      "properties": {
+                        "database": {
+                          "type": "boolean"
+                        },
+                        "signing_key": {
+                          "type": "boolean"
+                        },
+                        "custody": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "database",
+                        "signing_key",
+                        "custody"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "checks"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Not ready",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "status": {
+                      "type": "string",
+                      "enum": [
+                        "ready",
+                        "unready"
+                      ]
+                    },
+                    "checks": {
+                      "type": "object",
+                      "properties": {
+                        "database": {
+                          "type": "boolean"
+                        },
+                        "signing_key": {
+                          "type": "boolean"
+                        },
+                        "custody": {
+                          "type": "boolean"
+                        }
+                      },
+                      "required": [
+                        "database",
+                        "signing_key",
+                        "custody"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "status",
+                    "checks"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/config": {
+      "get": {
+        "summary": "Enabled CLI sign-in flows and IdP endpoints",
+        "tags": [
+          "auth"
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Auth config",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "issuer": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "flows": {
+                      "type": "object",
+                      "properties": {
+                        "idp_device": {
+                          "type": "boolean"
+                        },
+                        "loopback_pkce": {
+                          "type": "boolean",
+                          "const": true
+                        }
+                      },
+                      "required": [
+                        "idp_device",
+                        "loopback_pkce"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "idp": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "type": "string",
+                          "const": "entra"
+                        },
+                        "device_authorization_endpoint": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "token_endpoint": {
+                          "type": "string",
+                          "format": "uri"
+                        },
+                        "cli_client_id": {
+                          "type": "string",
+                          "maxLength": 64
+                        },
+                        "scope": {
+                          "type": "string",
+                          "maxLength": 256
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "device_authorization_endpoint",
+                        "token_endpoint",
+                        "cli_client_id",
+                        "scope"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "cli_client_id": {
+                      "type": "string",
+                      "const": "ralysa-cli"
+                    }
+                  },
+                  "required": [
+                    "issuer",
+                    "flows",
+                    "idp",
+                    "cli_client_id"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Rate limited",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "pattern": "^urn:ralysa:problem:[a-z_]+$"
+                    },
+                    "title": {
+                      "type": "string",
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "detail": {
+                      "type": "string",
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "maxLength": 200
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "invalid_request",
+                        "unauthorized",
+                        "forbidden",
+                        "not_found",
+                        "conflict",
+                        "locked",
+                        "payload_too_large",
+                        "unprocessable",
+                        "rate_limited",
+                        "audit_unavailable",
+                        "temporarily_unavailable",
+                        "internal"
+                      ]
+                    },
+                    "i18n_key": {
+                      "type": "string",
+                      "maxLength": 100
+                    },
+                    "trace_id": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{32}$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status",
+                    "code"
+                  ],
+                  "additionalProperties": {}
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -99,8 +99,11 @@ describe.skipIf(stack === undefined)('audit.record_custody_violation (SEC-F002-3
     expect(await rows()).toEqual([]);
   });
 
-  it('T5: without app.org_id it fails and writes nothing', async () => {
-    expect(await sqlState(call(sealer, [KEY, true, false], null))).toBeDefined();
+  it('T5: without app.org_id it fails with 42704 (current_org(): parameter unset) and writes nothing', async () => {
+    // A fresh connection: on a pooled one where app.org_id was set transaction-locally before,
+    // the placeholder remains as '' and the uuid cast raises 22P02 instead. Both fail closed.
+    const fresh = await t().pool('audit_sealer', 1);
+    expect(await sqlState(call(fresh, [KEY, true, false], null))).toBe('42704');
     expect(await rows()).toEqual([]);
   });
 

@@ -16,6 +16,8 @@ schema and logs in to OpenBao as its own role (SEC-F002-02). So far:
 | --------------------------------- | --------------------------------------------------------------------- | ------------------------------- |
 | `migrate --config <file>`         | `ralysa_migrator`                                                     | `db_credentials.migrator`       |
 | `migrate --audit --config <file>` | `ralysa_audit_migrator` → `SET ROLE ralysa_audit_owner` (break-glass) | `db_credentials.audit_migrator` |
+| `serve --config <file>` | `ralysa_cp_app`, `ralysa_audit_writer` (and `ralysa_audit_reader` from T12) | `db_credentials.*`; signs tokens with Transit `ralysa-rts-signing` |
+| `bootstrap-org --config <file>` (serve config) | `ralysa_cp_app` | `db_credentials.cp_app` |
 | `sealer --config <file>` | `ralysa_audit_sealer` (its own process and deployment) | `db_credentials.audit_sealer`; signs with Transit `ralysa-audit-checkpoint` |
 | `audit-verify --config <file> [--org <uuid>] [--shard <s>] [--log-checkpoints <jsonl>]` | `ralysa_audit_reader` (read-only) | `db_credentials.audit_reader`; reads the checkpoint key's public versions |
 
@@ -23,7 +25,52 @@ Both migrate jobs also write one `db.migration.applied` per applied migration (w
 `migrations.lock.json` checksum) through `db_credentials.audit_writer`. If that write fails the
 job exits non-zero, saying the migrations were applied but not recorded.
 
-`serve` and `bootstrap-org` arrive with F-002-T07.
+## The API (`serve`, F-002-T07)
+
+- **Start-up.** The entry point:
+  - applies the production guards: the common ones, plus `https` for `public_base_url`, an issuer
+    exactly `https://login.microsoftonline.com/<tenant_id>/v2.0`, `graph_base_url`
+    `https://graph.microsoft.com`, no `0.0.0.0/0` or `::/0` in `trust_proxy_cidrs`, the MFA claim
+    required unless `access.mfa_claim_exception_ref` is set, and an OpenBao `sys/seal-status`
+    that is neither in-memory (a dev server) nor sealed;
+  - refuses a signing key that is `exportable` or allows plaintext backup;
+  - creates or checks the Organization (region, residency and deployment model can't change;
+    `access.device_code_enabled` is copied into its settings);
+  - polls the signing key, replays the audit spool every 30 s, and listens.
+- **Routes so far:**
+
+  | Route | What it returns |
+  |---|---|
+  | `GET /.well-known/oauth-authorization-server` | RFC 8414 metadata |
+  | `GET /.well-known/jwks.json` | Public keys from `cp.signing_key_version`, with `Cache-Control: public, max-age=60, must-revalidate` |
+  | `GET /v1/auth/config` | The enabled flows and IdP endpoints |
+  | `GET /healthz` | Liveness |
+  | `GET /readyz` | Readiness: database, an active and freshly polled signing key, no custody violation |
+
+  Every response carries `traceparent`. Errors are `application/problem+json` with a stable
+  `urn:ralysa:problem:*` type (OAuth routes: RFC 6749 errors). `openapi/control-plane.v1.json`
+  is generated from `src/http/contracts.ts` (`check:generated`).
+- **Signing keys** (`src/auth/tokens/signing-keys.ts`), polled every `tokens.key_poll_s`:
+  - a new Transit version is **published** at once (a row in `cp.signing_key_version`, so it is
+    in JWKS);
+  - it is **activated** `tokens.activation_delay_s` later on the database clock (the first key
+    ever is active at once);
+  - the previous version is **retired** from JWKS after `access_ttl_s` + 5 min;
+  - each phase writes `secret.rotated`;
+  - a custody flag stops minting, makes `/readyz` 503 and writes `secret.custody_violation` once;
+  - `tokens.signing_key_pin_version` forces a version (rollback).
+- **Tokens** are minted by `mintAccessToken` with the header exactly `{alg: ES256, typ: at+jwt,
+  kid}`. The claims are validated against the protocol contract before signing.
+- **Logging** (AC-14): one JSON line per request with method, **route template**, status,
+  latency and request id. The URL, query, headers and body are never logged. pino `redact`
+  covers credential headers and body fields, and a scrubber removes JWTs, `rly_rt_`/`rly_ac_`
+  tokens, OpenBao tokens and URL credentials from any record.
+- **Rate limits** (SEC-F002-16): `/oauth2/*`, `/v1/auth/*` and `/.well-known/*` have
+  `rate_limits.per_ip_per_minute` (60) per client IP and `rate_limits.global_per_minute` (1200)
+  per instance. A throttled request gets 429 with `Retry-After`. The client IP honours
+  `X-Forwarded-For` only from `trust_proxy_cidrs`.
+- **Org source** (SEC-F002-31): unauthenticated routes act in `config.org.id`. A header, host,
+  path or body never selects the org.
 
 ## Audit core
 
@@ -106,18 +153,32 @@ vault:
   # auth: { method: token, token_env: BAO_DEV_ROOT_TOKEN_ID }                        # dev/test only
   allow_approle: false
 db: { host: …, port: 5432, database: ralysa, ssl: true }
-db_credentials: # migrate: migrator + audit_writer; migrate --audit: audit_migrator + audit_writer
+db_credentials: # migrate: migrator + audit_writer; migrate --audit: audit_migrator + audit_writer;
+  # sealer: audit_sealer; audit-verify: audit_reader; serve: cp_app + audit_writer + audit_reader
   migrator: kv/ralysa/control-plane/db/migrator
   audit_writer: kv/ralysa/control-plane/db/audit_writer
 ```
 
+The **serve** config adds `public_base_url`, `listen`, `trust_proxy_cidrs`,
+`signing_key: ralysa-rts-signing`, `idp` (Entra tenant, issuer, client ids, scope,
+`client_secret_path`, `graph_base_url`, `require_mfa_claim`), `access` (group object ids,
+`device_code_enabled`, `loopback_ip_mismatch`, `mfa_claim_exception_ref`), `tokens` (TTLs,
+`key_poll_s`, `activation_delay_s`, `signing_key_pin_version`), `rate_limits`, `audit`
+(`spool_dir`, `spool_persistent`), `audit_hmac_path` and `services[]` (name, `svc:` client id,
+`ralysa-svc-<name>` key, allow-listed audit actions). See `src/config/schema.ts`.
+
+After parsing, cross-field checks apply to every entry point: every KV path must start with
+`vault.kv_mount`, and a service may not be allow-listed for reserved audit actions other than
+`auth.token_rejected` and `secret.rotated`.
+
 In production every entry point refuses to start with token auth, AppRole without
-`allow_approle`, a non-`https` vault address or `db.ssl: false`. Dev configs:
-`deploy/docker/dev/control-plane.migrate.dev.yaml` and `…migrate-audit.dev.yaml`.
+`allow_approle`, a non-`https` vault address or `db.ssl: false`, plus the serve guards above.
+Dev configs: `deploy/docker/dev/control-plane.{serve,migrate,migrate-audit,sealer,audit-verify}.dev.yaml`.
 
 | Environment variable                    | Read by                    | Effect                                      |
 | --------------------------------------- | -------------------------- | ------------------------------------------- |
 | `RALYSA_CONFIG`                         | every entry point          | Config file path when `--config` is absent. |
+| `RALYSA_CFG__<PATH>`                    | every entry point          | Overrides one config value; `__` separates segments (`RALYSA_CFG__DB__HOST=db`). JSON-parsed when possible. Validated like the file, so it can't carry a credential. |
 | the one named by `vault.auth.token_env` | token auth (dev/test only) | The OpenBao token.                          |
 
 ## Scripts
@@ -128,6 +189,8 @@ In production every entry point refuses to start with token auth, AppRole withou
 | `test:integration`                 | `test/integration/**/*.int.ts` against the dev stack (`deploy/docker/dev`, see `tooling/dev-stack`). Each file gets its own migrated database. |
 | `migrate`, `migrate:audit`         | The migrate entry points (pass `--config`).                                                                                                    |
 | `migrate:dev`, `migrate:audit:dev` | The same against the dev stack, loading `deploy/docker/dev/.env`.                                                                              |
+| `start`, `start:dev` | The API (`serve`); the dev variant uses `deploy/docker/dev/control-plane.serve.dev.yaml`. |
+| `check:generated` | Builds and rewrites `openapi/control-plane.v1.json`. |
 
 ## Runbook: checkpoint key custody violation
 
