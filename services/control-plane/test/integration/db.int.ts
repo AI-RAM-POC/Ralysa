@@ -275,7 +275,7 @@ describe.skipIf(stack === undefined)('database (F-002-T05)', () => {
       const denials = async (table: string, operation: string) => {
         const { rows } = await t().superuser.query<{ n: string }>(
           `SELECT count(*) AS n FROM audit.audit_event WHERE action = 'audit.modify_denied'
-             AND details->>'table' = $1 AND details->>'operation' = $2 AND (details->>'row_count')::int = $3`,
+             AND details->>'table' = $1 AND details->>'op' = $2 AND actor_service = 'audit-store' AND (details->>'row_count')::int = $3`,
           [table, operation, table === 'audit.audit_checkpoint' ? 2 : 3],
         );
         return Number(rows[0]?.n);
@@ -329,7 +329,8 @@ describe.skipIf(stack === undefined)('database (F-002-T05)', () => {
             (
               await t().superuser.query<{ n: string }>(
                 `SELECT count(*) AS n FROM audit.audit_event WHERE action = 'audit.schema_changed'
-                   AND details->>'tag' = 'ALTER TABLE' AND details->>'db_user' = 'ralysa_audit_migrator'
+                   AND details->>'command_tag' = 'ALTER TABLE' AND details->>'object_identity' = 'audit.audit_event'
+                   AND details->>'session_user' = 'ralysa_audit_migrator' AND details->>'current_user' = 'ralysa_audit_owner'
                    AND org_id = $1`,
                 [ORG_A],
               )

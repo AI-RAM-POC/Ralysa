@@ -176,13 +176,12 @@ export async function up(db: Kysely<unknown>): Promise<void> {
           RETURN NULL;
         END IF;
         PERFORM set_config('app.org_id', org, true);
-        INSERT INTO audit.audit_event (event_id, org_id, action, actor_type, outcome, reason_code,
-                                       trace_id, source, attestation, details)
-        VALUES (gen_random_uuid(), org::uuid, 'audit.modify_denied', 'system', 'denied', 'insert_only',
-                md5(random()::text || clock_timestamp()::text), 'control-plane', 'server',
-                jsonb_build_object('table', TG_TABLE_SCHEMA || '.' || TG_TABLE_NAME,
-                                   'operation', TG_OP, 'row_count', n,
-                                   'db_user', session_user::text));
+        INSERT INTO audit.audit_event (event_id, org_id, action, actor_type, actor_service, outcome,
+                                       reason_code, trace_id, source, attestation, details)
+        VALUES (gen_random_uuid(), org::uuid, 'audit.modify_denied', 'system', 'audit-store', 'denied',
+                'insert_only', md5(random()::text || clock_timestamp()::text), 'control-plane', 'server',
+                jsonb_build_object('op', TG_OP, 'table', TG_TABLE_SCHEMA || '.' || TG_TABLE_NAME,
+                                   'db_role', session_user::text, 'row_count', n));
         PERFORM set_config('app.org_id', coalesce(caller_org, ''), true);
         RETURN NULL;
       END

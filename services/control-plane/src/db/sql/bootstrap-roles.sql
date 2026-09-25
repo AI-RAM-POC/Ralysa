@@ -122,13 +122,22 @@ BEGIN
   IF org IS NULL AND to_regclass('cp.organization') IS NOT NULL THEN
     EXECUTE 'SELECT id::text FROM cp.organization ORDER BY created_at LIMIT 1' INTO org;
   END IF;
-  EXECUTE
-    'INSERT INTO audit.audit_event (event_id, org_id, action, actor_type, outcome, trace_id, source, '
-    '  attestation, details) VALUES (gen_random_uuid(), $1, ''audit.schema_changed'', ''system'', '
-    '  ''success'', md5(random()::text || clock_timestamp()::text), ''control-plane'', ''server'', $2)'
-    USING coalesce(org, '00000000-0000-0000-0000-000000000000')::uuid,
-          jsonb_build_object('event', TG_EVENT, 'tag', TG_TAG, 'objects', objects,
-                             'db_user', session_user::text, 'current_user', current_user::text);
+  -- One event per affected object, with the §3.5 catalogue fields.
+  FOR obj IN SELECT value AS o FROM jsonb_array_elements(objects) LOOP
+    EXECUTE
+      'INSERT INTO audit.audit_event (event_id, org_id, action, actor_type, actor_service, outcome, '
+      '  trace_id, source, attestation, details) VALUES (gen_random_uuid(), $1, ''audit.schema_changed'', '
+      '  ''system'', ''dba-event-trigger'', ''success'', md5(random()::text || clock_timestamp()::text), '
+      '  ''control-plane'', ''server'', $2)'
+      USING coalesce(org, '00000000-0000-0000-0000-000000000000')::uuid,
+            jsonb_build_object('command_tag', obj.o->>'command', 'object_type', obj.o->>'object_type',
+                               'object_identity', obj.o->>'object', 'event', TG_EVENT,
+                               'session_user', session_user::text,
+                               -- SECURITY DEFINER makes current_user the function owner; the
+                               -- caller's effective role is the `role` setting (SET ROLE).
+                               'current_user', coalesce(nullif(current_setting('role'), 'none'),
+                                                        session_user::text));
+  END LOOP;
 END
 $fn$;
 REVOKE ALL ON FUNCTION ralysa_admin.record_audit_schema_ddl() FROM PUBLIC;
