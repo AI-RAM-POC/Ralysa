@@ -197,7 +197,12 @@ describe.skipIf(stack === undefined)('audit core (F-002-T06)', () => {
         `SELECT details->>'suppressed_count' AS suppressed FROM audit.audit_event
           WHERE action = 'auth.token_rejected' AND reason_code = 'bad_signature' ORDER BY ingest_seq`,
       );
-      expect(rows.map((r) => r.suppressed)).toEqual([null, null, '3']);
+      // The emitted writes run concurrently, so ingest order needn't match emit order.
+      expect(rows.map((r) => r.suppressed ?? 'individual').sort()).toEqual([
+        '3',
+        'individual',
+        'individual',
+      ]);
     });
   });
 

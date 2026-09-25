@@ -1,6 +1,15 @@
 // The disk spool (SEC-F002-24): private files and directory, atomic append, replay with
 // details.server.{original_ts, spooled}, stop-and-keep on failure, loss signal when not persistent.
-import { mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, symlinkSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -94,5 +103,38 @@ describe('audit spool', () => {
     const other = createMemoryMetrics();
     await openAuditSpool({ dir: join(base(), 's'), persistent: true, metrics: other });
     expect(other.counter('audit_spool_lost_total')).toBe(0);
+  });
+
+  it('quarantines unparseable or unknown-version files and replays the rest (review of #21)', async () => {
+    const dir = join(base(), 'spool');
+    const metrics = createMemoryMetrics();
+    const spool = await openAuditSpool({ dir, persistent: true, metrics, now: () => new Date(5) });
+    writeFileSync(
+      join(dir, 'spool-0000000000001-00000000-0000-4000-8000-000000000001.json'),
+      '{not json',
+      {
+        mode: 0o600,
+      },
+    );
+    writeFileSync(
+      join(dir, 'spool-0000000000002-00000000-0000-4000-8000-000000000002.json'),
+      JSON.stringify({ version: 9, org_id: ORG, original_ts: 'x', events: [] }),
+      { mode: 0o600 },
+    );
+    await spool.append(ORG, [event(1)]);
+    const result = await spool.replay(() => Promise.resolve([]));
+    expect(result).toEqual({ replayed: 1, pending: 0 });
+    expect(readdirSync(join(dir, 'quarantine'))).toHaveLength(2);
+    expect(metrics.counter('audit_spool_quarantined_total')).toBe(2);
+  });
+
+  it('removes stale temp files left by a crash at start', async () => {
+    const dir = join(base(), 'spool');
+    mkdirSync(dir, { mode: 0o700 });
+    const stale = join(dir, '.spool-0000000000001-00000000-0000-4000-8000-000000000001.json.tmp');
+    writeFileSync(stale, '{"half":', { mode: 0o600 });
+    const spool = await openAuditSpool({ dir, persistent: true });
+    expect(existsSync(stale)).toBe(false);
+    await expect(spool.pending()).resolves.toBe(0);
   });
 });

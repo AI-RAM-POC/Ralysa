@@ -1,8 +1,11 @@
 // Disk spool for denials and non-blocking audit events (F-002 design §5.8, §6.4; SEC-F002-24).
 //
 // - A dedicated directory (default /var/lib/ralysa/audit-spool) with mode 0700, owned by this
-//   process's user and not a symlink; one file per batch, mode 0600, written to a temp name and
-//   renamed so a crash never leaves a half file. Files hold PII (client_ip, identifier HMACs).
+//   process's user and not a symlink; one file per batch, mode 0600, written to a temp name,
+//   fsync'd, renamed, and the directory fsync'd, so a crash leaves either the whole file or none.
+//   Stale temp files from a crash are removed at start. Files hold PII (client_ip, HMACs).
+// - A file that can't be parsed or has an unknown version is moved to quarantine/ (metric
+//   audit_spool_quarantined_total) so it never blocks the replay of the files after it.
 // - Replay stores each event with details.server.original_ts (when it was spooled) and
 //   details.server.spooled = true; a replayed event that was in fact committed before the
 //   failure comes back as `duplicate` (same event_id). A file is deleted only after every event
@@ -10,7 +13,7 @@
 // - Where no persistent volume backs the directory, loss on restart is accepted and
 //   audit_spool_lost_total is emitted at start.
 import { randomUUID } from 'node:crypto';
-import { chmod, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { chmod, lstat, mkdir, open, readFile, readdir, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Logger } from '../observability/logger.js';
 import { type Metrics, noopMetrics } from '../observability/metrics.js';
@@ -25,6 +28,32 @@ interface SpoolFile {
   org_id: string;
   original_ts: string;
   events: StoredEventInput[];
+}
+
+function parseSpoolFile(text: string): SpoolFile | undefined {
+  try {
+    const body = JSON.parse(text) as Partial<SpoolFile>;
+    const ok =
+      body.version === 1 &&
+      typeof body.org_id === 'string' &&
+      typeof body.original_ts === 'string' &&
+      Array.isArray(body.events) &&
+      body.events.every(
+        (e) => typeof e === 'object' && typeof (e as { details?: unknown }).details === 'object',
+      );
+    return ok ? (body as SpoolFile) : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function fsyncPath(path: string, flags: 'r' | 'r+'): Promise<void> {
+  const handle = await open(path, flags);
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
 }
 
 export interface AuditSpool {
@@ -66,6 +95,13 @@ export async function openAuditSpool(options: SpoolOptions): Promise<AuditSpool>
   const files = async (): Promise<string[]> =>
     (await readdir(dir)).filter((name) => FILE.test(name)).sort();
 
+  // A crash between write and rename leaves a temp file: it was never acknowledged as spooled.
+  for (const name of await readdir(dir)) {
+    if (name.startsWith('.spool-') && name.endsWith('.tmp'))
+      await rm(join(dir, name), { force: true });
+  }
+  const quarantine = join(dir, 'quarantine');
+
   if (!options.persistent) {
     metrics.increment('audit_spool_lost_total');
     options.logger?.warn('audit_spool_not_persistent', { dir });
@@ -83,8 +119,15 @@ export async function openAuditSpool(options: SpoolOptions): Promise<AuditSpool>
       };
       const name = `spool-${String(at.getTime()).padStart(13, '0')}-${randomUUID()}.json`;
       const temp = join(dir, `.${name}.tmp`);
-      await writeFile(temp, JSON.stringify(body), { mode: 0o600, flag: 'wx' });
+      const handle = await open(temp, 'wx', 0o600);
+      try {
+        await handle.writeFile(JSON.stringify(body));
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
       await rename(temp, join(dir, name));
+      await fsyncPath(dir, 'r');
     },
 
     async replay(write) {
@@ -92,7 +135,14 @@ export async function openAuditSpool(options: SpoolOptions): Promise<AuditSpool>
       const names = await files();
       for (const [index, name] of names.entries()) {
         const path = join(dir, name);
-        const body = JSON.parse(await readFile(path, 'utf8')) as SpoolFile;
+        const body = parseSpoolFile(await readFile(path, 'utf8'));
+        if (body === undefined) {
+          await mkdir(quarantine, { mode: 0o700, recursive: true });
+          await rename(path, join(quarantine, name));
+          metrics.increment('audit_spool_quarantined_total');
+          options.logger?.error('audit_spool_file_quarantined', { file: name });
+          continue;
+        }
         const events = body.events.map((event) => {
           const server =
             typeof event.details.server === 'object' && event.details.server !== null

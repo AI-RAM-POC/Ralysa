@@ -63,9 +63,7 @@ describe('event builders', () => {
       },
     });
     validateStoredEvent(event!);
-    expect(migrationAppliedEvents('cp', ['9999_x'], checksums)[0]?.details.checksum).toBe(
-      'unknown',
-    );
+    expect(() => migrationAppliedEvents('cp', ['9999_x'], checksums)).toThrow(/no checksum/);
   });
 
   it('auth.token_rejected carries the reason, audience and network; the summary adds suppressed_count', () => {

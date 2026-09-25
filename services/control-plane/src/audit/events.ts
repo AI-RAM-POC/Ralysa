@@ -3,7 +3,7 @@
 import type { Outcome } from '@ralysa/protocol/audit';
 import { newTraceId, uuidv7 } from '@ralysa/protocol/common';
 import type { StoredEventInput } from './columns.js';
-import type { Rejection } from './rejections.js';
+import type { EmittedRejection } from './rejections.js';
 
 export interface SystemEventFields {
   action: string;
@@ -33,9 +33,7 @@ export function systemEvent(fields: SystemEventFields): StoredEventInput {
  * auth.token_rejected (§3.5, §6.4). The caller is unauthenticated, so the actor is an unknown user.
  * `suppressed_count` is present only on the per-minute summary.
  */
-export function tokenRejectedEvent(
-  rejection: Rejection & { network: string; suppressedCount?: number },
-): StoredEventInput {
+export function tokenRejectedEvent(rejection: EmittedRejection): StoredEventInput {
   return {
     event_id: uuidv7(),
     action: 'auth.token_rejected',
@@ -51,24 +49,34 @@ export function tokenRejectedEvent(
       ...(rejection.suppressedCount === undefined
         ? {}
         : { suppressed_count: rejection.suppressedCount }),
+      ...(rejection.networksSuppressed === undefined
+        ? {}
+        : { networks_suppressed: rejection.networksSuppressed }),
     },
     source: 'control-plane',
     attestation: 'server',
   };
 }
 
-/** db.migration.applied, one per applied migration (SR-29), actor.service = migrator. */
+/**
+ * db.migration.applied, one per applied migration (SR-29), actor.service = migrator. A migration
+ * without a compiled-in checksum is a build error (run pnpm migrations:lock), never 'unknown'.
+ */
 export function migrationAppliedEvents(
   set: 'cp' | 'audit',
   applied: readonly string[],
   checksums: Readonly<Record<string, string>>,
 ): StoredEventInput[] {
-  return applied.map((migration) =>
-    systemEvent({
+  return applied.map((migration) => {
+    const checksum = checksums[`${set}/${migration}.ts`];
+    if (checksum === undefined) {
+      throw new Error(`no checksum for migration ${set}/${migration}: run pnpm migrations:lock`);
+    }
+    return systemEvent({
       action: 'db.migration.applied',
       outcome: 'success',
       service: 'migrator',
-      details: { set, migration, checksum: checksums[`${set}/${migration}.ts`] ?? 'unknown' },
-    }),
-  );
+      details: { set, migration, checksum },
+    });
+  });
 }

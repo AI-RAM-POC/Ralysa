@@ -4,6 +4,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  CHECKSUMS_MODULE,
   LOCK_FILE,
   MIGRATIONS_ROOT,
   type MigrationsLock,
@@ -21,7 +22,7 @@ function fixture(files: Record<string, string>): string {
     mkdirSync(join(path, '..'), { recursive: true });
     writeFileSync(path, text);
   }
-  mkdirSync(join(root, 'services/control-plane'), { recursive: true });
+  mkdirSync(join(root, 'services/control-plane/src/db'), { recursive: true });
   return root;
 }
 const noBase = { lock: null, ref: 'origin/main' } as const;
@@ -64,6 +65,7 @@ describe('check-migrations-immutable', () => {
     expect(rules(root).sort()).toEqual([
       `migrations/changed ${MIGRATIONS_ROOT}/cp/0001_a.ts`,
       `migrations/changed ${MIGRATIONS_ROOT}/ddl.ts`,
+      `migrations/checksums-module-stale ${CHECKSUMS_MODULE}`,
       `migrations/missing-file ${MIGRATIONS_ROOT}/cp/0000_gone.ts`,
       `migrations/unlocked ${MIGRATIONS_ROOT}/cp/0002_new.ts`,
     ]);
@@ -106,6 +108,14 @@ describe('check-migrations-immutable', () => {
     expect(checkMigrationsImmutable({ root, base, ci: true }).map((f) => f.rule)).toEqual([
       'migrations/no-base',
     ]);
+  });
+
+  it('the generated checksums module must match the lock (review of #21)', () => {
+    const root = fixture(files);
+    writeMigrationsLock(root);
+    expect(rules(root)).toEqual([]);
+    writeFileSync(join(root, CHECKSUMS_MODULE), 'export const MIGRATION_CHECKSUMS = {};\n');
+    expect(rules(root)).toEqual([`migrations/checksums-module-stale ${CHECKSUMS_MODULE}`]);
   });
 
   it('an invalid lock file is one finding', () => {

@@ -138,6 +138,10 @@ export function createAuditWriter(options: AuditWriterOptions): AuditWriter {
         reject(new AuditUnavailableError(`write exceeded ${String(timeoutMs)} ms`));
       }, timeoutMs);
     });
+    // Design §5.8 (fail closed): a write that misses the 250 ms budget is REPORTED as failed and
+    // the caller refuses (no tokens) or spools, but the transaction may still commit afterwards.
+    // That is safe by construction: the operation it records was refused, and a later replay of
+    // the same event_id (spool, retry) comes back as `duplicate`, never a second row.
     const attempt = insertAll(orgId, events);
     try {
       return await Promise.race([attempt, timeout]);
