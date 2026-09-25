@@ -372,7 +372,8 @@ describe.skipIf(stack === undefined)('audit endpoints (F-002-T12)', () => {
       ).toBe(403);
       await settled();
       const rejected = (await rows(`action = 'auth.token_rejected'`)).slice(before);
-      expect(rejected.map((r) => r.reason_code)).toEqual([
+      // Written fire-and-forget, so compare without order.
+      expect(rejected.map((r) => r.reason_code).sort()).toEqual([
         'malformed',
         'wrong_token_use',
         'wrong_token_use',
@@ -516,6 +517,7 @@ describe.skipIf(stack === undefined)('audit endpoints (F-002-T12)', () => {
     interface Page {
       events: {
         event_id: string;
+        ts: string;
         action: string;
         outcome: string;
         actor: { user_id: string | null };
@@ -548,7 +550,8 @@ describe.skipIf(stack === undefined)('audit endpoints (F-002-T12)', () => {
       expect(reply.statusCode).toBe(200);
       expect(reply.headers['cache-control']).toBe('no-store');
       const page = reply.json<Page>();
-      expect(page.events.map((e) => e.event_id)).toEqual(mine.map((e) => e.event_id));
+      // Events inserted in the same millisecond order by event_id, not by insertion.
+      expect(page.events.map((e) => e.event_id).sort()).toEqual(mine.map((e) => e.event_id).sort());
       expect(page.next_cursor).toBeNull();
 
       // The query that returns audit.query events sees ITSELF: it was committed before the read.
@@ -591,19 +594,25 @@ describe.skipIf(stack === undefined)('audit endpoints (F-002-T12)', () => {
       await sealOnce({ db: createDb<Database>(await t().pool('audit_sealer', 1)), orgId: ORG });
       const danaToken = await userToken(dana);
       const seen: string[] = [];
+      const keys: string[] = [];
       let cursor: string | null = null;
       let pages = 0;
       do {
         const url: string = `/v1/audit/events?${range()}&user_id=${bob.id}&limit=2${cursor === null ? '' : `&cursor=${cursor}`}`;
         const page: Page = (await inject('GET', url, danaToken)).json<Page>();
         seen.push(...page.events.map((e) => e.event_id));
+        keys.push(...page.events.map((e) => `${e.ts}|${e.event_id}`));
         for (const e of page.events)
           expect(e.seal).toMatchObject({ shard: 'model-gateway', seq: expect.any(Number) });
         cursor = page.next_cursor;
         pages++;
       } while (cursor !== null);
       expect(pages).toBe(3);
-      expect(seen).toEqual(five.map((e) => e.event_id));
+      // No gap and no repeat across pages; within one millisecond the order is by event_id.
+      expect(new Set(seen).size).toBe(5);
+      expect([...seen].sort()).toEqual(five.map((e) => e.event_id).sort());
+      // The pages are in (ts, event_id) order (fixed-width ISO timestamps and UUIDs sort as text).
+      expect(keys).toEqual([...keys].sort());
     });
 
     it('a non-admin → 403 with audit.query denied not_platform_admin, and that event is itself queryable', async () => {
