@@ -186,6 +186,17 @@ export async function up(db: Kysely<unknown>): Promise<void> {
         RETURN NULL;
       END
       $fn$`,
+    // The counters live in settings the caller could pre-set (e.g. rows = -1 to cancel the
+    // count). A BEFORE statement trigger resets both, so only this statement's rows count.
+    `CREATE FUNCTION audit.reject_modify_reset() RETURNS trigger
+      LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, audit
+      AS $fn$
+      BEGIN
+        PERFORM set_config('ralysa.modify_denied_rows', '0', true);
+        PERFORM set_config('ralysa.modify_denied_org', '', true);
+        RETURN NULL;
+      END
+      $fn$`,
     `CREATE FUNCTION audit.reject_truncate() RETURNS trigger
       LANGUAGE plpgsql SET search_path = pg_catalog
       AS $fn$
@@ -194,10 +205,12 @@ export async function up(db: Kysely<unknown>): Promise<void> {
           USING ERRCODE = 'insufficient_privilege';
       END
       $fn$`,
-    `REVOKE ALL ON FUNCTION audit.reject_modify_row(), audit.reject_modify_stmt(), audit.reject_truncate() FROM PUBLIC`,
+    `REVOKE ALL ON FUNCTION audit.reject_modify_reset(), audit.reject_modify_row(), audit.reject_modify_stmt(), audit.reject_truncate() FROM PUBLIC`,
     ...TABLES.flatMap((table) => {
       const name = table.split('.')[1] ?? table;
       return [
+        `CREATE TRIGGER ${name}_reject_modify_reset BEFORE UPDATE OR DELETE ON ${table}
+          FOR EACH STATEMENT EXECUTE FUNCTION audit.reject_modify_reset()`,
         `CREATE TRIGGER ${name}_reject_modify_row BEFORE UPDATE OR DELETE ON ${table}
           FOR EACH ROW EXECUTE FUNCTION audit.reject_modify_row()`,
         `CREATE TRIGGER ${name}_reject_modify_stmt AFTER UPDATE OR DELETE ON ${table}
@@ -205,6 +218,7 @@ export async function up(db: Kysely<unknown>): Promise<void> {
         `CREATE TRIGGER ${name}_reject_truncate BEFORE TRUNCATE ON ${table}
           FOR EACH STATEMENT EXECUTE FUNCTION audit.reject_truncate()`,
         // ALWAYS: also under session_replication_role = replica [SEC-F002-25].
+        `ALTER TABLE ${table} ENABLE ALWAYS TRIGGER ${name}_reject_modify_reset`,
         `ALTER TABLE ${table} ENABLE ALWAYS TRIGGER ${name}_reject_modify_row`,
         `ALTER TABLE ${table} ENABLE ALWAYS TRIGGER ${name}_reject_modify_stmt`,
         `ALTER TABLE ${table} ENABLE ALWAYS TRIGGER ${name}_reject_truncate`,

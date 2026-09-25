@@ -317,6 +317,25 @@ describe.skipIf(stack === undefined)('database (F-002-T05)', () => {
         },
       );
 
+      it('pre-set counter settings cannot suppress or misattribute the denial (review of #19)', async () => {
+        const before = await denials('audit.audit_event', 'DELETE');
+        await owner.query('BEGIN');
+        await owner.query(`select set_config('app.org_id', $1, true)`, [ORG_A]);
+        await owner.query(`select set_config('ralysa.modify_denied_rows', '-1', true)`);
+        await owner.query(`select set_config('ralysa.modify_denied_org', $1, true)`, [ORG_B]);
+        const result = await owner.query(
+          `DELETE FROM audit.audit_event WHERE org_id = '${ORG_A}' AND action = 'auth.sign_in'`,
+        );
+        expect(result.rowCount).toBe(0);
+        await owner.query('COMMIT');
+        expect(await denials('audit.audit_event', 'DELETE')).toBe(before + 1);
+        const wrongOrg = await t().superuser.query<{ n: string }>(
+          `SELECT count(*) AS n FROM audit.audit_event WHERE action = 'audit.modify_denied' AND org_id = $1`,
+          [ORG_B],
+        );
+        expect(Number(wrongOrg.rows[0]?.n)).toBe(0);
+      });
+
       // CASCADE gets past the audit_seal → audit_event foreign key (which alone refuses a plain
       // TRUNCATE of audit_event with 0A000), so the guard trigger itself is what refuses.
       it.each(AUDIT_TABLES)('TRUNCATE … CASCADE on audit.%s raises (42501)', async (table) => {

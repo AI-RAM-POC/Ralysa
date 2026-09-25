@@ -25,7 +25,9 @@ const signature = await keys.sign('ralysa-rts-signing', latestVersion, signingIn
   `env=production` unless `allowAppRole`), `token` (refused unless `env` is `dev` or `test`).
   Login tokens are renewed at half their lease. After a 403, the adapter logs in again only when
   `auth/token/lookup-self` says the token itself is invalid, so a policy denial never consumes a
-  single-use `secret_id`.
+  single-use `secret_id`. **Requirement:** the auth role's tokens must keep OpenBao's `default`
+  policy (`token_no_default_policy: false`), which grants `lookup-self`; the dev-stack role
+  templates pin this.
 - **KV v2.** Paths name the mount first (`kv/…`); the entry's `value` field is the secret.
   `watch` polls and reports each new version, not the starting one.
 - **Transit.** `describe` refuses a key with `exportable` or `allow_plaintext_backup` set

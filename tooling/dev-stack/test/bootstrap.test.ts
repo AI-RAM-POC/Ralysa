@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import { passwordVariable, rolesScript, verifiersFor } from '../src/bootstrap-db.ts';
 import {
   DEFAULT_POLICY_CONTEXT,
+  DEV_APPROLE,
   ENTRY_POINT_POLICIES,
   OPERATOR_POLICY,
   denyRules,
@@ -276,5 +277,14 @@ describe('bootstrap completion marker', () => {
   ])('isBootstrapped with status %i is %s', async (status, expected) => {
     const bao: BaoRequest = () => Promise.resolve({ status, body: {} });
     expect(await isBootstrapped(bao)).toBe(expected);
+  });
+});
+
+describe('auth roles keep the default policy (lookup-self, review of PR #19)', () => {
+  it('dev AppRoles and every Kubernetes-auth role set token_no_default_policy: false', () => {
+    expect(DEV_APPROLE.token_no_default_policy).toBe(false);
+    for (const role of kubernetesAuthRoles({ namespace: 'ralysa', audience: 'openbao' })) {
+      expect(role.token_no_default_policy).toBe(false);
+    }
   });
 });

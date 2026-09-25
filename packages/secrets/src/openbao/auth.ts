@@ -86,6 +86,9 @@ export function createAuthedBao(http: BaoHttp, options: AuthOptions): AuthedBao 
       if (reply.status !== 403 || auth.method === 'token') return reply;
       // 403 is both "policy denies this path" and "token invalid or expired". Only the second
       // warrants a new login (a login may consume a single-use secret_id): ask the token itself.
+      // REQUIRES the role's tokens to keep OpenBao's `default` policy (it grants lookup-self):
+      // with token_no_default_policy=true every policy denial would trigger a new login. The
+      // dev-stack role templates pin token_no_default_policy=false and a test asserts it.
       const self = await http.request('GET', 'auth/token/lookup-self', undefined, used);
       if (self.status !== 403) return reply;
       if (current?.token === used) current = undefined;

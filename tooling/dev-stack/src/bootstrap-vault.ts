@@ -143,6 +143,8 @@ export interface KubernetesAuthRole {
   bound_service_account_namespaces: [string];
   audience: string;
   token_policies: [string];
+  /** Always false: see TOKEN_NEEDS_DEFAULT_POLICY. */
+  token_no_default_policy: false;
   token_ttl: string;
   token_max_ttl: string;
 }
@@ -164,6 +166,7 @@ export function kubernetesAuthRoles(options: {
     bound_service_account_namespaces: [options.namespace],
     audience: options.audience,
     token_policies: [name],
+    token_no_default_policy: false,
     token_ttl: '15m',
     token_max_ttl: '1h',
   }));
@@ -174,7 +177,17 @@ export function kubernetesAuthRoles(options: {
  * needs a response-wrapped secret_id with these same bindings (SEC-F002-22, §3.2.7). In dev the
  * source address is the Docker bridge, so the CIDRs are loopback plus the private ranges.
  */
+/**
+ * Every Ralysa auth role (AppRole and Kubernetes) keeps OpenBao's `default` policy on its tokens.
+ * @ralysa/secrets relies on it: after a 403 it calls `auth/token/lookup-self` (granted by
+ * `default`) to tell an invalid token from a policy denial, and logs in again only for the
+ * former. Without `default`, every policy denial would look like an invalid token and trigger a
+ * new login, consuming a single-use secret_id each time (code review of PR #19).
+ */
+export const TOKEN_NEEDS_DEFAULT_POLICY = { token_no_default_policy: false } as const;
+
 export const DEV_APPROLE = {
+  ...TOKEN_NEEDS_DEFAULT_POLICY,
   secret_id_num_uses: 1,
   secret_id_ttl: '10m',
   token_ttl: '15m',
