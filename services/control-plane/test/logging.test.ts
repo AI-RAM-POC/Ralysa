@@ -126,3 +126,25 @@ describe('review of #25: every line is scrubbed', () => {
     expect(lines.join('')).not.toMatch(/eyJzdWIi|hvs\.Ab1/);
   });
 });
+
+describe('re-review of #25: interpolation cannot escape scrubbing', () => {
+  it('app.log.info({}, "interp %o", …) and %j/%s are scrubbed in the final line', async () => {
+    const lines: string[] = [];
+    const { buildApp } = await import('../src/app.js');
+    const { fakeKeys } = await import('./fixtures/fake-keys.js');
+    const { serveConfig } = await import('./fixtures/serve-config.js');
+    const app = await buildApp({
+      config: serveConfig(),
+      keys: (await fakeKeys()).keys,
+      pingDatabase: () => Promise.resolve(true),
+      logger: createPinoLogger('info', { write: (line: string) => lines.push(line) }),
+    });
+    const tok = `rly_rt_${filler(43)}`;
+    app.log.info({}, 'interp %o', { tok });
+    app.log.info('json %j', { tok });
+    app.log.info('str %s', tok);
+    const out = lines.join('');
+    expect(out).not.toContain('rly_rt_Ab1');
+    expect(out.match(/\[REDACTED\]/g)?.length).toBeGreaterThanOrEqual(3);
+  });
+});

@@ -188,7 +188,7 @@ Dev configs: `deploy/docker/dev/control-plane.{serve,migrate,migrate-audit,seale
 | Environment variable                    | Read by                    | Effect                                      |
 | --------------------------------------- | -------------------------- | ------------------------------------------- |
 | `RALYSA_CONFIG`                         | every entry point          | Config file path when `--config` is absent. |
-| `RALYSA_CFG__<PATH>`                    | every entry point          | Overrides one config value; `__` separates segments (`RALYSA_CFG__DB__HOST=db`). JSON-parsed when possible. Validated like the file, so it can't carry a credential. **Refused** for `env`, `vault.auth.*`, `vault.allow_approle`, `trust_proxy_cidrs`, `idp.issuer`, `idp.require_mfa_claim` and `access.mfa_claim_exception_ref`. The names of applied overrides (never the values) are logged at start as `config_overrides`. |
+| `RALYSA_CFG__<PATH>`                    | every entry point          | Overrides one config value; `__` separates segments (`RALYSA_CFG__DB__HOST=db`). Scalar values only: numbers and `true`/`false` are JSON-parsed, anything else is a string, and a JSON object, array or `null` is **refused**. Validated like the file, so it can't carry a credential. **Refused** for `env`, `vault.auth.*`, `vault.allow_approle`, `trust_proxy_cidrs`, `idp.issuer`, `idp.require_mfa_claim` and `access.mfa_claim_exception_ref`, and for any path above one of them (`RALYSA_CFG__VAULT`, `RALYSA_CFG__IDP`, `RALYSA_CFG__ACCESS`). The names of applied overrides (never the values) are logged at start as `config_overrides`. |
 | the one named by `vault.auth.token_env` | token auth (dev/test only) | The OpenBao token.                          |
 
 ## Scripts

@@ -107,6 +107,10 @@ export function loggerOptions(level: string): PinoLoggerOptions {
     },
     // The message string is scrubbed too: formatters.log only sees the merged object.
     hooks: {
+      // Last line of defence: the final serialized line is scrubbed as text, which also covers
+      // printf-style interpolation (`%o`, `%j`, `%s`) that the object and message scrubbing can't
+      // see (re-review of #25).
+      streamWrite: (line: string) => scrubText(line),
       logMethod(args, method) {
         method.apply(
           this,

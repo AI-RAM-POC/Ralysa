@@ -4,7 +4,8 @@
 //
 // Overrides: RALYSA_CFG__<PATH> with `__` between segments, e.g. RALYSA_CFG__DB__HOST=db.internal
 // or RALYSA_CFG__LISTEN__PORT=8443. The value is parsed as JSON when it parses (numbers,
-// booleans), else used as a string. Overrides can only set values the schema then validates, so a
+// booleans), else used as a string. Only scalar values are accepted: JSON objects, arrays and
+// null are refused. Overrides can only set values the schema then validates, so a
 // credential still can't be passed this way (every credential field is a vault path).
 //
 // Security-relevant settings can't be overridden (code review of #25): `env` (one source of truth
@@ -41,8 +42,12 @@ export const PROTECTED_PATHS = [
   'access.mfa_claim_exception_ref',
 ] as const;
 
+/**
+ * A path is protected when it IS a protected path, lies UNDER one, or lies ABOVE one: overriding
+ * `vault` or `idp` as a whole would replace the protected settings inside (re-review of #25).
+ */
 const isProtected = (path: string): boolean =>
-  PROTECTED_PATHS.some((p) => path === p || path.startsWith(`${p}.`));
+  PROTECTED_PATHS.some((p) => path === p || path.startsWith(`${p}.`) || p.startsWith(`${path}.`));
 
 /**
  * Applies RALYSA_CFG__A__B=value overrides onto a parsed YAML document (copy). `applied` receives
@@ -71,11 +76,21 @@ export function applyEnvOverrides(
       if (typeof next !== 'object' || next === null || Array.isArray(next)) node[segment] = {};
       node = node[segment] as Record<string, unknown>;
     }
+    // Scalars only (string, number, boolean): an object or array value could carry whole config
+    // subtrees past the path checks (re-review of #25). A value that isn't JSON is a string.
     let parsed: unknown;
     try {
       parsed = JSON.parse(value);
     } catch {
       parsed = value;
+    }
+    if (
+      parsed === null ||
+      (typeof parsed !== 'string' && typeof parsed !== 'number' && typeof parsed !== 'boolean')
+    ) {
+      throw new ConfigError(
+        `${name} must be a single value (string, number or boolean), not an object or array`,
+      );
     }
     node[path.at(-1) ?? ''] = parsed;
   }

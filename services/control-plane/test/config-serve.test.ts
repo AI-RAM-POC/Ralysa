@@ -276,3 +276,58 @@ describe('review of #25: security-relevant settings cannot be overridden', () =>
     expect(applied).toEqual(['db.host']);
   });
 });
+
+describe('re-review of #25: no override can reach a protected setting', () => {
+  it.each([
+    [
+      'RALYSA_CFG__VAULT',
+      {
+        addr: 'https://bao:8200',
+        auth: { method: 'approle', role_id: 'r', secret_id_path: '/s' },
+        allow_approle: true,
+      },
+    ],
+    ['RALYSA_CFG__IDP', { require_mfa_claim: false }],
+    ['RALYSA_CFG__ACCESS', { mfa_claim_exception_ref: 'fake' }],
+  ])('an object override of %s (an ancestor of protected keys) is refused', (name, value) => {
+    expect(() => applyEnvOverrides(serveConfigInput(), { [name]: JSON.stringify(value) })).toThrow(
+      ConfigError,
+    );
+  });
+
+  it('an ancestor path of a protected key is refused even with a scalar value', () => {
+    for (const name of ['RALYSA_CFG__VAULT', 'RALYSA_CFG__IDP', 'RALYSA_CFG__ACCESS']) {
+      expect(() => applyEnvOverrides(serveConfigInput(), { [name]: 'x' })).toThrow(
+        /can't be overridden/,
+      );
+    }
+  });
+
+  it('an object value is refused even on an unprotected path', () => {
+    expect(() =>
+      applyEnvOverrides(serveConfigInput(), { RALYSA_CFG__DB: '{"ssl": false}' }),
+    ).toThrow(/single value/);
+    expect(() =>
+      applyEnvOverrides(serveConfigInput(), {
+        RALYSA_CFG__RATE_LIMITS: '{"per_ip_per_minute": 1}',
+      }),
+    ).toThrow(/single value/);
+  });
+
+  it('an array or null value is refused', () => {
+    expect(() => applyEnvOverrides(serveConfigInput(), { RALYSA_CFG__SERVICES: '[]' })).toThrow(
+      /single value/,
+    );
+    expect(() => applyEnvOverrides(serveConfigInput(), { RALYSA_CFG__DB__HOST: 'null' })).toThrow(
+      /single value/,
+    );
+  });
+
+  it('a legitimate scalar override still works', () => {
+    const config = parseConfig(
+      ServeConfig,
+      applyEnvOverrides(serveConfigInput(), { RALYSA_CFG__RATE_LIMITS__PER_IP_PER_MINUTE: '30' }),
+    );
+    expect(config.rate_limits.per_ip_per_minute).toBe(30);
+  });
+});
