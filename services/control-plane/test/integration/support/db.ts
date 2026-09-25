@@ -39,6 +39,23 @@ export interface TestDatabase {
   drop(): Promise<void>;
 }
 
+/**
+ * Runs bootstrap-roles.sql on `client` under the cross-file advisory lock. Every run of the script
+ * in a test must go through here: it ALTERs cluster-wide roles, and two concurrent runs fail with
+ * "tuple concurrently updated" (XX000).
+ */
+export async function runBootstrapRoles(stack: DevStack, client: pg.Client): Promise<void> {
+  const lock = new pg.Client({ ...stack.postgres });
+  await lock.connect();
+  try {
+    await lock.query('select pg_advisory_lock($1)', [BOOTSTRAP_LOCK]);
+    await client.query(readFileSync(BOOTSTRAP_ROLES_SQL, 'utf8'));
+  } finally {
+    await lock.query('select pg_advisory_unlock($1)', [BOOTSTRAP_LOCK]).catch(() => undefined);
+    await lock.end();
+  }
+}
+
 export async function createTestDatabase(
   stack: DevStack,
   options: { encoding?: 'UTF8' | 'SQL_ASCII'; bootstrap?: boolean } = {},
@@ -61,15 +78,7 @@ export async function createTestDatabase(
     // bootstrap-roles.sql ALTERs cluster-wide roles; test files run in parallel, and concurrent
     // ALTER ROLE fails with "tuple concurrently updated" (XX000). Advisory locks are per
     // database, so serialise on one held in the shared admin database.
-    const lock = new pg.Client({ ...stack.postgres });
-    await lock.connect();
-    try {
-      await lock.query('select pg_advisory_lock($1)', [BOOTSTRAP_LOCK]);
-      await superuser.query(readFileSync(BOOTSTRAP_ROLES_SQL, 'utf8'));
-    } finally {
-      await lock.query('select pg_advisory_unlock($1)', [BOOTSTRAP_LOCK]).catch(() => undefined);
-      await lock.end();
-    }
+    await runBootstrapRoles(stack, superuser);
   }
   const endpoint: DbEndpoint = {
     host: stack.postgres.host,
