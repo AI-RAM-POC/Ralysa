@@ -1243,3 +1243,39 @@ Branch `feat/F-002-idp-sign-in-browser`, stacked on part 1 (`feat/F-002-idp-sign
 | R30-n3 | A crash after the code was consumed but before the session was activated left a pending session with a used code and no `auth.sign_in`. | Cleanup step 1b: a pending session whose code was used and expired more than 5 minutes ago (`REDEMPTION_GRACE_S`) is revoked (`redemption_incomplete`) with one `UPDATE … WHERE status = 'pending' RETURNING`. `auth.sign_in error internal_error` is written with `details.cause = redemption_incomplete` and `recorded_by: cleanup`, exactly once across replicas. | `sign-in-browser.int.ts`: a used code with a still-pending session is recorded once over two cleanup runs, and the session is revoked. |
 | R30-n4 | The IP normaliser was duplicated. | `src/http/ip.ts` (`normalizeIp`, `sameIp`), used by `sign-in.ts` and the grant. It now strips `::ffff:` only in front of a dotted IPv4 address. | Existing exits tests (the `::ffff:127.0.0.1` case) and the integration IP tests. |
 | R30-n5 | Dual-stack hosts. | **UAT note** (also in status.md): on a host with IPv4 and IPv6, the browser may reach RTS over one family and the CLI over the other (for example through a proxy or VPN that prefers IPv6). The callback IP and the redemption IP then differ, and the default `loopback_ip_mismatch: deny` refuses a genuine sign-in (`denied loopback_ip_mismatch`). IPv4-mapped IPv6 (`::ffff:a.b.c.d`) is already treated as the same address; two different families aren't, because nothing proves they are the same host. If UAT sees this, the tenant setting `alert` is the documented fallback. | — |
+
+## T12: audit endpoints, part 1 (the control plane on `@ralysa/auth`'s verifier)
+
+Branch `feat/F-002-audit-endpoints`, based on `main` after #30 (T10 part 2). T12 lands as two stacked PRs (T12-1): part 1 is the verifier migration the T11 notes deferred to T12 (T11-11) plus the PR #29 follow-ups; part 2 (`feat/F-002-audit-routes`, stacked) adds the three audit routes and the service rejection path (T11-2).
+
+### What landed
+
+- `@ralysa/auth`:
+  - `createServiceTokenVerifier()`: the same shape, header, signature and claim checks as `createAccessTokenVerifier()` (one shared core), for `token_use: service` tokens with `aud: control-plane`. `sub` must equal `client_id` (`svc:<name>`), the org is pinned, and an optional `isRegistered(clientId)` refuses an unregistered client as `wrong_token_use`. It yields `{ clientId, service, orgId, expiresAt, tokenId }`.
+  - The `keySet` option accepts any jose key resolver (`KeyResolver`), not only a remote JWKS. An error it throws that isn't a jose key error is `VerifierUnavailableError`, as for an unreachable JWKS.
+- `services/control-plane`:
+  - `src/auth/verifier.ts` replaces `src/auth/verify-local.ts` (deleted): `createControlPlaneVerifier()` builds both package verifiers over `createOwnKeySet()` (the JWKS rows through `keys.jwks()`, re-read at most once a second, as before) and `createDbRevocationSource()` (session first, then `revoked_before`, read directly from the database [SEC-F002-18 d], as before). Service tokens must belong to a registered service.
+  - `route-auth.ts` requires an `Authorization` header with the Bearer scheme, records every rejection under the config org (OI-4), and answers `503 temporarily_unavailable` when the key set can't be read.
+  - `@ralysa/auth` moves from a devDependency to a dependency.
+- R29 follow-ups:
+  - `createGraphDirectory()` takes an optional `deadline(ms)` factory (default `AbortSignal.timeout`). The two tests that waited on real timers ("one deadline covers the whole check", "a slow secret read") now abort a controller themselves once the request they wait for has been made, and assert that the token request and both Graph calls carry the check's one signal. `times out at graph_timeout_ms` keeps one real-timer check of the default.
+  - `sign-in-exits.test.ts`: a known user whose Entra sessions were revoked after the IdP token was issued ends with `auth.session.revoked` (`cause: idp_sessions_revoked`) and then `auth.sign_in failure expired` (R29-n7).
+
+### Recorded decisions and deviations
+
+Items marked **self-decided** were open questions decided under the standing authorization (CLAUDE.md), taking the recommended option.
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T12-1 | Scope (**self-decided**) | T12 lands as two stacked PRs: this verifier migration, then the audit routes. | The task brief suggested it; the migration touches every authenticated route, so reviewing it apart from the new routes keeps each diff readable. |
+| T12-2 | Design gap, filled (**self-decided**) | `@ralysa/auth` gains `createServiceTokenVerifier()`. | §3.6 lists only the user-token verifier, but the control plane (the only PEP for service tokens) must verify both kinds, and T11-11 moves it onto the package. Sharing one core keeps the two rule sets from drifting. |
+| T12-3 | Behaviour change, deliberate (**self-decided**) | The Bearer scheme is matched case-insensitively at the control plane too (`bearer`, `BEARER`). A bare token without a scheme is still refused as `malformed`. | RFC 7235 makes the scheme case-insensitive, and the package already did so (R28-4). This is the only visible change; the checks, their order, the reasons and the database revocation read are the same as T08's, and the T08–T11 integration suites pass unchanged. |
+| T12-4 | Behaviour change, deliberate | When the JWKS rows can't be read (a database fault in `keys.jwks()`), an authenticated route answers `503 temporarily_unavailable` instead of `500`. | The package reports it as `VerifierUnavailableError` (T11-3). It is not a token rejection, so nothing is recorded. |
+| T12-5 | Implementation choice | Token times and the key-set cache use the process clock, not `RtsServices.now`. | That is what the T08 verifier did. `now` is the tests' clock for in-memory caches (R26-11); stepping it must not expire tokens. |
+| T12-6 | Kept | The service verifier requires `nbf` (the package's `requiredClaims`); T08's didn't. | RTS mints `nbf` on every token, and `ServiceAccessTokenClaims` requires it. |
+
+### Tests (T12 part 1)
+
+- `packages/auth` `service-token-verifier.test.ts` (13): a registered service token yields the service; refused as `wrong_token_use` (a user token, an unregistered service), `malformed` (`client_id` ≠ `sub`, a `sub` that isn't `svc:<name>`), `wrong_audience` (another audience or org), `wrong_typ`, `forbidden_header`, `unknown_kid`, `expired`; no `isRegistered` accepts any authentic service; a throwing local key set is `VerifierUnavailableError` and no rejection. The existing 95 tests pass unchanged.
+- control-plane `verifier.test.ts` (5): registered services only, and each verifier refuses the other token kind; the own key set re-reads the rows at most once a second; a bare token is `malformed`, recorded under the config org (an `X-Org-Id` header is ignored); a lower-case `bearer` passes; an unreadable key set is 503 with no rejection.
+- The control-plane integration suite passes unchanged (9 files, 123 tests), including `/v1/me`, the governance feed, principals and TC-F-002-10's fake gateway.

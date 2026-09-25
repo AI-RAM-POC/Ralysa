@@ -177,6 +177,14 @@ const SCENARIOS: Scenario[] = [
     error: { status: 400, error: 'invalid_grant' },
   },
   {
+    // R29-n7 (unit exit, R29 follow-up): a known user is also revoked, and that is recorded.
+    name: 'Entra sessions revoked after the IdP token was issued, known user',
+    directory: { ...ok, sessionsValidFrom: new Date(Date.now() + 5_000) },
+    knownUser: true,
+    expect: { outcome: 'failure', reason: 'expired' },
+    error: { status: 400, error: 'invalid_grant' },
+  },
+  {
     name: 'in no configured group',
     directory: { ...ok, inAccessGroup: false },
     expect: { outcome: 'denied', reason: 'not_in_access_group' },
@@ -385,6 +393,15 @@ describe('token exchange: every exit writes exactly one auth.sign_in (AC-4)', ()
       }
       if (scenario.knownUser === true && scenario.directory?.kind === 'deleted') {
         expect(all.map((e) => e.action)).toEqual(['auth.session.revoked', 'auth.sign_in']);
+      }
+      if (
+        scenario.knownUser === true &&
+        scenario.directory?.kind === 'ok' &&
+        scenario.directory.sessionsValidFrom !== null
+      ) {
+        expect(all.map((e) => e.action)).toEqual(['auth.session.revoked', 'auth.sign_in']);
+        expect(all[0]?.details).toMatchObject({ cause: 'idp_sessions_revoked' });
+        expect(signIns[0]?.details).toMatchObject({ cause: 'idp_sessions_revoked' });
       }
       if (scenario.mintFails === true || scenario.auditFails === true) {
         expect(revokedSessions).toEqual(['0192f0a0-7b3c-7d4e-8f00-0000000000b1']);

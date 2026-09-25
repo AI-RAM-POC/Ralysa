@@ -81,6 +81,11 @@ export interface GraphDirectoryOptions {
   fetch?: typeof fetch;
   now?: () => number;
   metrics?: Metrics;
+  /**
+   * The abort signal that bounds one check (default `AbortSignal.timeout(ms)`). Tests inject a
+   * controller they abort themselves, so deadline tests don't wait on real time (R29 follow-up).
+   */
+  deadline?: (ms: number) => AbortSignal;
 }
 
 export interface GraphDirectory extends IdpDirectory {
@@ -93,6 +98,7 @@ export function createGraphDirectory(options: GraphDirectoryOptions): GraphDirec
   const doFetch = options.fetch ?? fetch;
   const now = options.now ?? (() => Date.now());
   const metrics = options.metrics ?? noopMetrics;
+  const deadlineAfter = options.deadline ?? ((ms: number) => AbortSignal.timeout(ms));
   const base = `${idp.graph_base_url.replace(/\/+$/, '')}/v1.0`;
   const timeoutMs = idp.graph_timeout_ms;
   let failures = 0;
@@ -192,7 +198,7 @@ export function createGraphDirectory(options: GraphDirectoryOptions): GraphDirec
       const user = encodeURIComponent(idpSubject);
       // ONE deadline for the whole check: the secret read, the app token and both Graph calls
       // (review of #29, R29-3), so a cold path can't add up to several timeouts.
-      const deadline = AbortSignal.timeout(timeoutMs);
+      const deadline = deadlineAfter(timeoutMs);
       try {
         const [state, groups] = await Promise.all([
           call(
@@ -259,7 +265,7 @@ export function createGraphDirectory(options: GraphDirectoryOptions): GraphDirec
         const response = await call(
           `/groups/${encodeURIComponent(groupId)}?$select=displayName`,
           { method: 'GET' },
-          AbortSignal.timeout(Math.min(timeoutMs, GROUP_NAME_TIMEOUT_MS)),
+          deadlineAfter(Math.min(timeoutMs, GROUP_NAME_TIMEOUT_MS)),
         );
         if (response.status === 404) {
           await response.body?.cancel();
