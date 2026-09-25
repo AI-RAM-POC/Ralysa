@@ -16,6 +16,7 @@ import { createDb } from './db/kysely.js';
 import { createPool } from './db/pools.js';
 import type { Database } from './db/types.js';
 import type { Logger } from './observability/logger.js';
+import { createPinoLogger, loggerFromPino } from './observability/pino.js';
 import { ensureOrganization } from './org/bootstrap.js';
 import { openVault } from './secrets/vault.js';
 
@@ -57,8 +58,12 @@ function cpPool(
   );
 }
 
-export async function serveCommand(args: string[], logger: Logger): Promise<number> {
+export async function serveCommand(args: string[]): Promise<number> {
   const config = loadServeConfig(args);
+  // One pino instance for the whole process: Fastify, the key watcher, the spool and start-up
+  // lines all go through the same redaction and scrubber (§6.6).
+  const pinoLogger = createPinoLogger();
+  const logger = loggerFromPino(pinoLogger);
   const refusals = [...serveProductionRefusals(config), ...(await openBaoStorageRefusals(config))];
   if (refusals.length > 0) throw new ConfigError('refusing to start', refusals);
   const { secrets, keys: custody } = openVault(config);
@@ -102,6 +107,7 @@ export async function serveCommand(args: string[], logger: Logger): Promise<numb
   const app = await buildApp({
     config,
     keys,
+    logger: pinoLogger,
     pingDatabase: async () => {
       await sql`select 1`.execute(db);
       return true;

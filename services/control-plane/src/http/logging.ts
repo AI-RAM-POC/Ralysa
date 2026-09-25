@@ -50,10 +50,16 @@ export function scrubText(text: string): string {
   return out;
 }
 
-/** Deep-scrubs every string in a log record. */
+export const MAX_SCRUB_DEPTH = 8;
+
+/**
+ * Deep-scrubs every string in a log record. Anything nested deeper than MAX_SCRUB_DEPTH is
+ * replaced as a whole: it can't be inspected, so it isn't logged (review of #25).
+ */
 export function scrubValue(value: unknown, depth = 0): unknown {
   if (typeof value === 'string') return scrubText(value);
-  if (depth > 8 || value === null || typeof value !== 'object') return value;
+  if (value === null || typeof value !== 'object') return value;
+  if (depth > MAX_SCRUB_DEPTH) return '[REDACTED:depth]';
   if (Array.isArray(value)) return value.map((item) => scrubValue(item, depth + 1));
   const out: Record<string, unknown> = {};
   for (const [key, item] of Object.entries(value)) out[key] = scrubValue(item, depth + 1);
@@ -98,6 +104,17 @@ export function loggerOptions(level: string): PinoLoggerOptions {
         code: typeof error.code === 'string' ? error.code : undefined,
         status: typeof error.statusCode === 'number' ? error.statusCode : undefined,
       }),
+    },
+    // The message string is scrubbed too: formatters.log only sees the merged object.
+    hooks: {
+      logMethod(args, method) {
+        method.apply(
+          this,
+          args.map((arg: unknown) =>
+            typeof arg === 'string' ? scrubText(arg) : arg,
+          ) as Parameters<typeof method>,
+        );
+      },
     },
     timestamp: () => `,"ts":"${new Date().toISOString()}"`,
     messageKey: 'msg',

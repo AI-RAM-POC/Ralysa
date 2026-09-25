@@ -229,7 +229,7 @@ async function auditVerifyCommand(args: string[]): Promise<number> {
 export async function main(argv: string[]): Promise<number> {
   const [command, ...rest] = argv;
   try {
-    if (command === 'serve') return await serveCommand(rest, logger);
+    if (command === 'serve') return await serveCommand(rest);
     if (command === 'bootstrap-org') return await bootstrapOrgCommand(rest, logger);
     if (command === 'migrate') return await migrateCommand(rest);
     if (command === 'sealer') return await sealerCommand(rest);

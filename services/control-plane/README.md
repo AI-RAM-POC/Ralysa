@@ -57,18 +57,28 @@ job exits non-zero, saying the migrations were applied but not recorded.
     ever is active at once);
   - the previous version is **retired** from JWKS after `access_ttl_s` + 5 min;
   - each phase writes `secret.rotated`;
-  - a custody flag stops minting, makes `/readyz` 503 and writes `secret.custody_violation` once;
+  - a custody flag, or a stored version whose public key no longer matches Transit (the key was
+    recreated), stops minting **for the life of the process** and makes `/readyz` 503.
+    `secret.custody_violation` is recorded with every flag and retried until it lands;
   - `tokens.signing_key_pin_version` forces a version (rollback).
 - **Tokens** are minted by `mintAccessToken` with the header exactly `{alg: ES256, typ: at+jwt,
   kid}`. The claims are validated against the protocol contract before signing.
-- **Logging** (AC-14): one JSON line per request with method, **route template**, status,
-  latency and request id. The URL, query, headers and body are never logged. pino `redact`
-  covers credential headers and body fields, and a scrubber removes JWTs, `rly_rt_`/`rly_ac_`
-  tokens, OpenBao tokens and URL credentials from any record.
+- **Logging** (AC-14):
+  - One JSON line per request with method, **route template**, status, latency and request id.
+    A URL the router can't decode gets one line with `route: bad_url`.
+  - The URL, query, headers and body are never logged.
+  - pino `redact` covers credential headers and body fields. A scrubber removes JWTs,
+    `rly_rt_`/`rly_ac_` tokens, OpenBao tokens and URL credentials from every record and from
+    message strings. Anything nested deeper than 8 levels is dropped as `[REDACTED:depth]`.
+  - The whole process (Fastify, the key watcher, the spool, start-up) writes through one pino
+    instance with these rules.
 - **Rate limits** (SEC-F002-16): `/oauth2/*`, `/v1/auth/*` and `/.well-known/*` have
   `rate_limits.per_ip_per_minute` (60) per client IP and `rate_limits.global_per_minute` (1200)
-  per instance. A throttled request gets 429 with `Retry-After`. The client IP honours
-  `X-Forwarded-For` only from `trust_proxy_cidrs`.
+  per instance. A throttled request gets 429 with `Retry-After`.
+  - Limiting is decided on the matched route template, so percent-encoded paths are limited like
+    the route they reach.
+  - Clients are keyed by IP address, and IPv6 clients by /64.
+  - The client IP honours `X-Forwarded-For` only from `trust_proxy_cidrs`.
 - **Org source** (SEC-F002-31): unauthenticated routes act in `config.org.id`. A header, host,
   path or body never selects the org.
 
@@ -178,7 +188,7 @@ Dev configs: `deploy/docker/dev/control-plane.{serve,migrate,migrate-audit,seale
 | Environment variable                    | Read by                    | Effect                                      |
 | --------------------------------------- | -------------------------- | ------------------------------------------- |
 | `RALYSA_CONFIG`                         | every entry point          | Config file path when `--config` is absent. |
-| `RALYSA_CFG__<PATH>`                    | every entry point          | Overrides one config value; `__` separates segments (`RALYSA_CFG__DB__HOST=db`). JSON-parsed when possible. Validated like the file, so it can't carry a credential. |
+| `RALYSA_CFG__<PATH>`                    | every entry point          | Overrides one config value; `__` separates segments (`RALYSA_CFG__DB__HOST=db`). JSON-parsed when possible. Validated like the file, so it can't carry a credential. **Refused** for `env`, `vault.auth.*`, `vault.allow_approle`, `trust_proxy_cidrs`, `idp.issuer`, `idp.require_mfa_claim` and `access.mfa_claim_exception_ref`. The names of applied overrides (never the values) are logged at start as `config_overrides`. |
 | the one named by `vault.auth.token_env` | token auth (dev/test only) | The OpenBao token.                          |
 
 ## Scripts

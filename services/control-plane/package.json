@@ -48,6 +48,7 @@
     "fastify": "5.12.5",
     "kysely": "catalog:",
     "pg": "catalog:",
+    "pino": "10.3.1",
     "yaml": "catalog:",
     "zod": "catalog:"
   },

@@ -12,6 +12,7 @@
 | SEC-F002-35 (b)–(d): checkpoint-key recovery by key epoch (key id or thumbprint in `audit_checkpoint`, payload v2, `retired_checkpoint_keys`); `audit-verify` still verifies the chain with a flagged key (`key_custody_violated`); full "checkpoint key compromised" runbook | **Blocks G6** unless a named human accepts them in writing as F-011 prerequisites | security.md T16-1 review §C/§E; implementation-notes "T16-1 remediation" |
 | SEC-F002-36: pin the checkpoint trust anchor (JWK thumbprints logged by the sealer and pinned in `audit-verify`; separate OpenBao admin from DB superuser) | **Blocks G6** unless a named human accepts it in writing as an F-011 prerequisite | same |
 | SEC-F002-37: detect a checkpoint key recreated under the same name across restarts (thumbprint tracking; the signer already stays stopped in-process) | **Blocks G6** unless a named human accepts it in writing as an F-011 prerequisite | same |
+| RFC 8414 metadata (T07) already advertises the authorize, token and revoke endpoints and all four grants; the token/revoke routes land in T08 and authorize/callback plus the authorization_code and token-exchange grants in T10 | **No release may be cut before T08 and T10 have landed** | T07-4; code review of #25 |
 | SEC-F002-38: without the checkpoint log, tail truncation is invisible (`anchor: none` exit code; require `--log-checkpoints` outside dev; ship the log off-host) | **Blocks any non-dev deployment** | same |
 
 ## Gate log

@@ -6,6 +6,14 @@
 // or RALYSA_CFG__LISTEN__PORT=8443. The value is parsed as JSON when it parses (numbers,
 // booleans), else used as a string. Overrides can only set values the schema then validates, so a
 // credential still can't be passed this way (every credential field is a vault path).
+//
+// Security-relevant settings can't be overridden (code review of #25): `env` (one source of truth
+// for the environment, SEC-F002-12: an override to dev would switch off every production guard),
+// vault.auth.* and vault.allow_approle (how the process authenticates), trust_proxy_cidrs (whose
+// X-Forwarded-For is believed), idp.issuer, idp.require_mfa_claim and
+// access.mfa_claim_exception_ref (who can sign in and how). Settings the production guards
+// already check (vault.addr, db.ssl, public_base_url, graph_base_url) may be overridden; the
+// guards still apply. The NAMES of applied overrides are reported at start, never the values.
 import { readFileSync } from 'node:fs';
 import { parse } from 'yaml';
 import type { z } from 'zod';
@@ -22,10 +30,28 @@ export class ConfigError extends Error {
 
 export const ENV_OVERRIDE_PREFIX = 'RALYSA_CFG__';
 
-/** Applies RALYSA_CFG__A__B=value overrides onto a parsed YAML document (copy). */
+/** Config paths (joined with `.`) that no override may set, or set under. */
+export const PROTECTED_PATHS = [
+  'env',
+  'vault.auth',
+  'vault.allow_approle',
+  'trust_proxy_cidrs',
+  'idp.issuer',
+  'idp.require_mfa_claim',
+  'access.mfa_claim_exception_ref',
+] as const;
+
+const isProtected = (path: string): boolean =>
+  PROTECTED_PATHS.some((p) => path === p || path.startsWith(`${p}.`));
+
+/**
+ * Applies RALYSA_CFG__A__B=value overrides onto a parsed YAML document (copy). `applied` receives
+ * the dotted names of the overrides used (never values).
+ */
 export function applyEnvOverrides(
   raw: unknown,
   env: Readonly<Record<string, string | undefined>>,
+  applied: string[] = [],
 ): unknown {
   const root: Record<string, unknown> =
     typeof raw === 'object' && raw !== null ? structuredClone(raw as Record<string, unknown>) : {};
@@ -35,6 +61,10 @@ export function applyEnvOverrides(
     if (path.some((segment) => !/^[a-z][a-z0-9_]*$/.test(segment))) {
       throw new ConfigError(`invalid override name ${name}`);
     }
+    if (isProtected(path.join('.'))) {
+      throw new ConfigError(`${name} can't be overridden: set it in the config file`);
+    }
+    applied.push(path.join('.'));
     let node = root;
     for (const segment of path.slice(0, -1)) {
       const next = node[segment];
@@ -65,10 +95,20 @@ export function parseConfig<S extends z.ZodType>(schema: S, raw: unknown): z.inf
   return result.data;
 }
 
+/** Reports applied override names at start (one JSON line; names only). */
+export const reportOverridesToStdout = (names: readonly string[]): void => {
+  if (names.length > 0) {
+    process.stdout.write(
+      `${JSON.stringify({ ts: new Date().toISOString(), level: 'info', msg: 'config_overrides', names })}\n`,
+    );
+  }
+};
+
 export function loadConfigFile<S extends z.ZodType>(
   schema: S,
   path: string,
   env: Readonly<Record<string, string | undefined>> = process.env,
+  report: (names: readonly string[]) => void = reportOverridesToStdout,
 ): z.infer<S> {
   let raw: unknown;
   try {
@@ -78,5 +118,8 @@ export function loadConfigFile<S extends z.ZodType>(
       `cannot read config ${path}: ${(error as Error).message.split('\n')[0] ?? ''}`,
     );
   }
-  return parseConfig(schema, applyEnvOverrides(raw, env));
+  const applied: string[] = [];
+  const config = parseConfig(schema, applyEnvOverrides(raw, env, applied));
+  report(applied);
+  return config;
 }

@@ -246,3 +246,33 @@ describe('production guards (TC-F-002-34; SEC-F002-12)', () => {
     ).resolves.toEqual([]);
   });
 });
+
+describe('review of #25: security-relevant settings cannot be overridden', () => {
+  it('RALYSA_CFG__ENV=dev over a production file is refused (SEC-F002-12)', () => {
+    expect(() => applyEnvOverrides(serveConfigInput(), { RALYSA_CFG__ENV: 'dev' })).toThrow(
+      /can't be overridden/,
+    );
+  });
+
+  it.each([
+    'RALYSA_CFG__VAULT__AUTH__METHOD',
+    'RALYSA_CFG__VAULT__AUTH__TOKEN_ENV',
+    'RALYSA_CFG__VAULT__ALLOW_APPROLE',
+    'RALYSA_CFG__TRUST_PROXY_CIDRS',
+    'RALYSA_CFG__IDP__ISSUER',
+    'RALYSA_CFG__IDP__REQUIRE_MFA_CLAIM',
+    'RALYSA_CFG__ACCESS__MFA_CLAIM_EXCEPTION_REF',
+  ])('%s is refused', (name) => {
+    expect(() => applyEnvOverrides(serveConfigInput(), { [name]: 'x' })).toThrow(ConfigError);
+  });
+
+  it('reports the names of applied overrides, never their values', () => {
+    const applied: string[] = [];
+    applyEnvOverrides(
+      serveConfigInput(),
+      { RALYSA_CFG__DB__HOST: 'db.secret-host.internal' },
+      applied,
+    );
+    expect(applied).toEqual(['db.host']);
+  });
+});

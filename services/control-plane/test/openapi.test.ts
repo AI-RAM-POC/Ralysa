@@ -36,6 +36,7 @@ describe('OpenAPI document', () => {
   });
 
   it('no path, parameter or schema property is a password, PIN, OTP or client secret (AC-3)', () => {
-    expect(committed).not.toMatch(/"(pass(word|wd|phrase)|pin|otp|client_secret)"/i);
+    // TC-F-002-05's substring pattern, over the whole document.
+    expect(committed).not.toMatch(/pass(word|wd|phrase)|\bpin\b|otp|client_secret/i);
   });
 });

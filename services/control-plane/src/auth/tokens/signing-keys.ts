@@ -1,9 +1,12 @@
 // RTS signing keys (F-002 design §3.2.4; SEC-F002-11, -33; AC-10).
 //
 // The key watcher polls the Transit key `ralysa-rts-signing` every key_poll_s (30 s):
-// - custody: describe() refuses a key with `exportable` or `allow_plaintext_backup`. Then
-//   signing stops, /readyz goes unready, and ONE secret.custody_violation is written. Signing
-//   resumes when both flags are false again. Startup refuses such a key outright (main.ts);
+// - custody: describe() refuses a key with `exportable` or `allow_plaintext_backup`, and a stored
+//   version whose public key differs from Transit's means the key was recreated under the same
+//   name. Any of these stops signing FOR THE LIFE OF THE PROCESS (Transit can't clear the flags,
+//   SEC-F002-35 a), makes /readyz unready, and records secret.custody_violation with every flag,
+//   retried on each poll until it lands (mirrors the sealer, SEC-F002-39/-40). Startup refuses such
+//   a key outright (serve.ts);
 // - publish: each version not yet in cp.signing_key_version gets a row with its public JWK
 //   (first replica wins: INSERT … ON CONFLICT DO NOTHING RETURNING), which puts it in JWKS at once
 //   and writes secret.rotated phase=published;
@@ -118,6 +121,16 @@ export class SigningUnavailableError extends Error {
   }
 }
 
+interface CustodyState {
+  exportable: boolean;
+  allowPlaintextBackup: boolean;
+  keyReplaced: boolean;
+}
+const pairOf = (s: CustodyState): string =>
+  `${String(s.exportable)}/${String(s.allowPlaintextBackup)}/${String(s.keyReplaced)}`;
+const flagOf = (s: CustodyState): string =>
+  s.keyReplaced ? 'key_replaced' : s.exportable ? 'exportable' : 'allow_plaintext_backup';
+
 const refHash = (key: string): string =>
   createHash('sha256').update(`transit/${key}`).digest('hex');
 
@@ -125,7 +138,9 @@ export function createSigningKeys(options: SigningKeysOptions): SigningKeys {
   const metrics = options.metrics ?? noopMetrics;
   const staleAfterMs = options.staleAfterMs ?? 30_000;
   let active: number | undefined;
-  let violation: string | undefined;
+  /** Terminal once set: Transit can't clear the flags, and replaced material stays replaced. */
+  let violation: CustodyState | undefined;
+  let recordedPair: string | undefined;
   let lastPollOk = 0;
 
   const audit = async (event: Parameters<typeof systemEvent>[0]) => {
@@ -146,9 +161,62 @@ export function createSigningKeys(options: SigningKeysOptions): SigningKeys {
       details: { credential_ref_hash: refHash(options.key), kind: 'signing_key', version, phase },
     });
 
+  /** Records the violation (both flags, SEC-F002-40), retried on every poll until it lands (-39). */
+  const recordViolation = async (state: CustodyState) => {
+    const pair = pairOf(state);
+    if (recordedPair === pair) return;
+    try {
+      await options.writer.writeOrSpool(options.orgId, [
+        systemEvent({
+          action: 'secret.custody_violation',
+          outcome: 'error',
+          service: 'rts',
+          reasonCode: flagOf(state),
+          details: {
+            key: options.key,
+            flag: flagOf(state),
+            exportable: state.exportable,
+            allow_plaintext_backup: state.allowPlaintextBackup,
+            key_replaced: state.keyReplaced,
+          },
+        }),
+      ]);
+      recordedPair = pair;
+    } catch (error) {
+      metrics.increment('secret_custody_violation_record_failures_total', { key: options.key });
+      options.logger.error('secret_custody_violation_not_recorded', {
+        key: options.key,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  };
+  const flagViolation = async (next: CustodyState) => {
+    const merged: CustodyState = {
+      exportable: next.exportable || (violation?.exportable ?? false),
+      allowPlaintextBackup: next.allowPlaintextBackup || (violation?.allowPlaintextBackup ?? false),
+      keyReplaced: next.keyReplaced || (violation?.keyReplaced ?? false),
+    };
+    if (violation === undefined || pairOf(violation) !== pairOf(merged)) {
+      options.logger.error('secret_custody_violation', {
+        key: options.key,
+        exportable: merged.exportable,
+        allow_plaintext_backup: merged.allowPlaintextBackup,
+        key_replaced: merged.keyReplaced,
+      });
+      metrics.gauge('secret_custody_violation', 1, { key: options.key });
+    }
+    violation = merged;
+    await recordViolation(merged);
+  };
+
   const readRows = () =>
     withOrg(options.db, options.orgId, async (trx) => {
-      const rows = await trx.selectFrom('cp.signing_key_version').selectAll().execute();
+      // Only this key's rows (kid = <key>.v<n>): version numbers alone don't identify a key.
+      const rows = await trx
+        .selectFrom('cp.signing_key_version')
+        .selectAll()
+        .where('kid', 'like', `${options.key.replace(/[\\%_]/g, '\\$&')}.v%`)
+        .execute();
       const { rows: clock } = await sql<{ now: Date }>`select clock_timestamp() as now`.execute(
         trx,
       );
@@ -173,31 +241,36 @@ export function createSigningKeys(options: SigningKeysOptions): SigningKeys {
         described = await options.custody.describe(options.key);
       } catch (error) {
         if (error instanceof CustodyViolationError) {
-          const flag = error.exportable ? 'exportable' : 'allow_plaintext_backup';
-          if (violation !== flag) {
-            violation = flag;
-            options.logger.error('secret_custody_violation', { key: options.key, flag });
-            metrics.gauge('secret_custody_violation', 1, { key: options.key });
-            await audit({
-              action: 'secret.custody_violation',
-              outcome: 'error',
-              service: 'rts',
-              reasonCode: flag,
-              details: { key: options.key, flag },
-            });
-          }
+          await flagViolation({
+            exportable: error.exportable,
+            allowPlaintextBackup: error.allowPlaintextBackup,
+            keyReplaced: false,
+          });
           return;
         }
         options.logger.warn('signing_key_describe_failed', {
           key: options.key,
           error: error instanceof Error ? error.message : String(error),
         });
+        if (violation !== undefined) await recordViolation(violation);
         return;
       }
       if (violation !== undefined) {
-        options.logger.info('secret_custody_restored', { key: options.key });
-        metrics.gauge('secret_custody_violation', 0, { key: options.key });
-        violation = undefined;
+        // Terminal (SEC-F002-35 a): a flagged key that reads clean again has been recreated.
+        options.logger.error('signing_key_clean_after_violation', { key: options.key });
+        await recordViolation(violation);
+        return;
+      }
+      // The same version number with different public material = the key was recreated under the
+      // same name (SEC-F002-37): treat it as a custody violation, never sign with it.
+      const stored = await readRows();
+      const replaced = described.versions.some((v) => {
+        const row = stored.rows.find((r) => r.version === v.version);
+        return row !== undefined && (row.public_jwk.x !== v.jwk.x || row.public_jwk.y !== v.jwk.y);
+      });
+      if (replaced) {
+        await flagViolation({ exportable: false, allowPlaintextBackup: false, keyReplaced: true });
+        return;
       }
 
       // Publish every version we don't have yet.
@@ -299,7 +372,7 @@ export function createSigningKeys(options: SigningKeysOptions): SigningKeys {
       return {
         ready: violation === undefined && active !== undefined && fresh,
         activeVersion: active,
-        custodyViolation: violation,
+        custodyViolation: violation === undefined ? undefined : flagOf(violation),
       };
     },
   };

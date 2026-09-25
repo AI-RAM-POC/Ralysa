@@ -49,6 +49,7 @@ describe.skipIf(stack === undefined)('serve app (F-002-T07)', () => {
   let app: FastifyInstance;
   const key = uniqueName('ralysa-test-t07-sign');
   const backupKey = uniqueName('ralysa-test-t07-bak');
+  const replacedKey = uniqueName('ralysa-test-t07-rep');
   const t = (): TestDatabase => {
     if (db === undefined) throw new Error('beforeAll did not create the database');
     return db;
@@ -123,7 +124,7 @@ describe.skipIf(stack === undefined)('serve app (F-002-T07)', () => {
   afterAll(async () => {
     await app.close();
     const root = rootBao(stack!);
-    for (const name of [key, backupKey]) {
+    for (const name of [key, backupKey, replacedKey]) {
       await root('POST', `transit/keys/${name}/config`, { deletion_allowed: true });
       await root('DELETE', `transit/keys/${name}`);
     }
@@ -216,7 +217,22 @@ describe.skipIf(stack === undefined)('serve app (F-002-T07)', () => {
     expect(ready.json()).toMatchObject({ checks: { custody: false } });
     await expect(mintAccessToken(keys, claims())).rejects.toThrow(/signing unavailable/);
     const violations = await events('secret.custody_violation');
-    expect(violations).toEqual([{ details: { key, flag: 'exportable' }, service: 'rts' }]);
+    expect(violations).toEqual([
+      {
+        details: {
+          key,
+          flag: 'exportable',
+          exportable: true,
+          allow_plaintext_backup: false,
+          key_replaced: false,
+        },
+        service: 'rts',
+      },
+    ]);
+    // Terminal (SEC-F002-35 a): more polls change nothing and record nothing more.
+    await keys.poll();
+    expect(keys.status()).toMatchObject({ ready: false, custodyViolation: 'exportable' });
+    expect(await events('secret.custody_violation')).toHaveLength(1);
   });
 
   it('TC-F-002-33: the same for allow_plaintext_backup', async () => {
@@ -236,8 +252,54 @@ describe.skipIf(stack === undefined)('serve app (F-002-T07)', () => {
     });
     await expect(mintAccessToken(other, claims())).rejects.toThrow(/signing unavailable/);
     expect((await events('secret.custody_violation')).at(-1)).toEqual({
-      details: { key: backupKey, flag: 'allow_plaintext_backup' },
+      details: {
+        key: backupKey,
+        flag: 'allow_plaintext_backup',
+        exportable: false,
+        allow_plaintext_backup: true,
+        key_replaced: false,
+      },
       service: 'rts',
     });
+  });
+
+  it('a key recreated under the same name is a custody violation (review of #25, SEC-F002-37)', async () => {
+    const root = rootBao(stack!);
+    expectOk(await root('POST', `transit/keys/${replacedKey}`, { type: 'ecdsa-p256' }), 'key');
+    // cp.signing_key_version is one key per org (UNIQUE (org_id, version)): use a second org.
+    const org2 = uuidv7();
+    await ensureOrganization(cpDb, { ...config, org: { ...config.org, id: org2 } });
+    const watcher = createSigningKeys({
+      db: cpDb,
+      custody,
+      orgId: org2,
+      key: replacedKey,
+      timing: { activationDelayMs: 0, retentionMs: 1_000 },
+      writer: createAuditWriter({ db: createDb<Database>(await t().pool('audit_writer', 1)) }),
+      logger: silentLogger,
+    });
+    await watcher.poll();
+    expect(watcher.status()).toMatchObject({ ready: true, activeVersion: 1 });
+    await root('POST', `transit/keys/${replacedKey}/config`, { deletion_allowed: true });
+    expectOk(await root('DELETE', `transit/keys/${replacedKey}`), 'delete');
+    expectOk(await root('POST', `transit/keys/${replacedKey}`, { type: 'ecdsa-p256' }), 'recreate');
+    await watcher.poll();
+    expect(watcher.status()).toMatchObject({ ready: false, custodyViolation: 'key_replaced' });
+    await expect(mintAccessToken(watcher, claims())).rejects.toThrow(/signing unavailable/);
+    const { rows } = await t().superuser.query<{ details: Record<string, unknown> }>(
+      `SELECT details FROM audit.audit_event WHERE action = 'secret.custody_violation' AND org_id = $1`,
+      [org2],
+    );
+    expect(rows).toEqual([
+      {
+        details: {
+          key: replacedKey,
+          flag: 'key_replaced',
+          exportable: false,
+          allow_plaintext_backup: false,
+          key_replaced: true,
+        },
+      },
+    ]);
   });
 });

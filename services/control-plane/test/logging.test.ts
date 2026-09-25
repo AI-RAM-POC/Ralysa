@@ -1,6 +1,8 @@
 // Logging (§6.6; AC-14; SEC-F002-21): the scrubber and the redaction paths.
 import { describe, expect, it } from 'vitest';
 import { REDACT_PATHS, loggerOptions, scrubText, scrubValue } from '../src/http/logging.js';
+import { createJsonLogger } from '../src/observability/logger.js';
+import { createPinoLogger, loggerFromPino } from '../src/observability/pino.js';
 
 // Token-shaped fixtures are built at runtime from low-entropy filler, so the repository's own
 // secret scanner doesn't read the test data as credentials; the scrubber patterns still match.
@@ -81,5 +83,46 @@ describe('logger options', () => {
       status: undefined,
     });
     expect(JSON.stringify(err)).not.toMatch(/display_name|email/);
+  });
+});
+
+describe('review of #25: every line is scrubbed', () => {
+  const jwt = `eyJhbGciOiJFUzI1NiJ9.eyJzdWIiOiJ4In0.${filler(20)}`;
+
+  it('the message string is scrubbed, not only the fields', () => {
+    const lines: string[] = [];
+    const log = createPinoLogger('info', { write: (line: string) => lines.push(line) });
+    log.info(`token was ${jwt}`);
+    log.info({ note: 'x' }, `refresh rly_rt_${filler(43)}`);
+    expect(lines.join('')).not.toMatch(/eyJzdWIi|rly_rt_Ab1/);
+    expect(lines.join('')).toContain('[REDACTED]');
+  });
+
+  it('values nested beyond the scrub depth are redacted as a whole', () => {
+    let deep: Record<string, unknown> = { token: jwt };
+    for (let i = 0; i < 12; i++) deep = { next: deep };
+    expect(JSON.stringify(scrubValue(deep))).not.toContain('eyJ');
+    expect(JSON.stringify(scrubValue(deep))).toContain('[REDACTED:depth]');
+  });
+
+  it('the Logger port used by the key watcher, spool and start-up goes through the same pino rules', () => {
+    const lines: string[] = [];
+    const logger = loggerFromPino(
+      createPinoLogger('info', { write: (line: string) => lines.push(line) }),
+    );
+    logger.error(`describe failed for ${jwt}`, {
+      error: `postgres://u:${filler(12)}@db/ralysa`,
+      body: { code: 'x' },
+    });
+    const out = lines.join('');
+    expect(out).not.toMatch(/eyJzdWIi|Ab1Ab1Ab1Ab1@/);
+    expect(JSON.parse(lines[0] ?? '{}')).toMatchObject({ body: { code: '[REDACTED]' } });
+  });
+
+  it('the one-shot entry points (JSON logger) scrub message and fields too', () => {
+    const lines: string[] = [];
+    const logger = createJsonLogger((line) => lines.push(line));
+    logger.warn(`bad ${jwt}`, { detail: `hvs.${filler(30)}` });
+    expect(lines.join('')).not.toMatch(/eyJzdWIi|hvs\.Ab1/);
   });
 });

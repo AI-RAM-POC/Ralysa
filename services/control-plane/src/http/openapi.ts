@@ -42,7 +42,7 @@ export function buildOpenApi(): Record<string, unknown> {
       title: 'Ralysa control plane',
       version: CONTROL_PLANE_API_VERSION,
       description:
-        'Generated from services/control-plane/src/http/contracts.ts. No route accepts a password, PIN, OTP or client secret (AC-3).',
+        'Generated from services/control-plane/src/http/contracts.ts. No route accepts a user-held shared secret (AC-3).',
     },
     jsonSchemaDialect: 'https://json-schema.org/draft/2020-12/schema',
     components: {

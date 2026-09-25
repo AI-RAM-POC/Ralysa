@@ -4,6 +4,7 @@ import Fastify from 'fastify';
 import { describe, expect, it } from 'vitest';
 import { buildApp } from '../src/app.js';
 import { createRateLimiter } from '../src/http/rate-limits.js';
+import { createPinoLogger } from '../src/observability/pino.js';
 import { registerRequestContext } from '../src/http/request-context.js';
 import { fakeKeys } from './fixtures/fake-keys.js';
 import { ORG_ID, TENANT, serveConfig } from './fixtures/serve-config.js';
@@ -20,7 +21,7 @@ async function app(options: { ping?: boolean; perIp?: number; global?: number } 
       perIpPerMinute: options.perIp ?? 100,
       globalPerMinute: options.global ?? 1000,
     }),
-    logStream: { write: (line) => lines.push(line) },
+    logger: createPinoLogger('info', { write: (line: string) => lines.push(line) }),
   });
   return { instance, lines, fake };
 }
@@ -167,6 +168,52 @@ describe('cross-cutting behaviour', () => {
     const record = JSON.parse(line!) as Record<string, unknown>;
     expect(record).toMatchObject({ method: 'GET', route: '/v1/auth/config', status: 200 });
     expect(line).not.toMatch(/SECRET|abc123state|eyJ|Bearer|cookie|\?code/);
+  });
+});
+
+describe('review of #25: limits follow the matched route; IPv6 by /64; bad URLs logged once', () => {
+  it.each(['/%2Ewell-known/jwks.json', '/%2ewell-known/jwks.json', '/v1/%61uth/config'])(
+    'a percent-encoded path to a limited route is limited like the route (%s)',
+    async (url) => {
+      const { instance } = await app({ perIp: 1, global: 1000 });
+      const first = await instance.inject({ url, remoteAddress: '10.2.0.1' });
+      expect(first.statusCode).toBe(200); // it reached the real route
+      const second = await instance.inject({ url, remoteAddress: '10.2.0.1' });
+      expect(second.statusCode).toBe(429);
+      expect(second.json()).toMatchObject({ code: 'rate_limited' });
+    },
+  );
+
+  it('an encoded OAuth path gets the OAuth 429 body', async () => {
+    const { instance } = await app({ perIp: 1, global: 1000 });
+    await instance.inject({ url: '/%6Fauth2/token', method: 'POST', remoteAddress: '10.2.0.2' });
+    const limited = await instance.inject({
+      url: '/%6Fauth2/token',
+      method: 'POST',
+      remoteAddress: '10.2.0.2',
+    });
+    expect(limited.statusCode).toBe(429);
+    expect(limited.json()).toMatchObject({ error: 'temporarily_unavailable' });
+  });
+
+  it('IPv6 clients share one limit per /64; another /64 has its own', async () => {
+    const { instance } = await app({ perIp: 2, global: 1000 });
+    const hit = (ip: string) => instance.inject({ url: '/v1/auth/config', remoteAddress: ip });
+    expect((await hit('2001:db8:1:2::1')).statusCode).toBe(200);
+    expect((await hit('2001:db8:1:2::ffff')).statusCode).toBe(200);
+    expect((await hit('2001:db8:1:2:aaaa:bbbb:cccc:dddd')).statusCode).toBe(429);
+    expect((await hit('2001:db8:1:3::1')).statusCode).toBe(200);
+  });
+
+  it('a URL that cannot be decoded answers problem+json and writes exactly one summary line', async () => {
+    const { instance, lines } = await app();
+    const res = await instance.inject('/%E0%A4%A');
+    expect(res.statusCode).toBe(400);
+    expect(res.headers['content-type']).toContain('application/problem+json');
+    const requestLines = lines.filter((l) => l.includes('"msg":"request"'));
+    expect(requestLines).toHaveLength(1);
+    expect(requestLines[0]).toContain('"route":"bad_url"');
+    expect(requestLines[0]).not.toContain('%E0');
   });
 });
 
