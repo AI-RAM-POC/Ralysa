@@ -32,6 +32,7 @@ trustPolicyExclude:
 # One version per shared toolchain package, referenced as "catalog:" (architect review AR-7).
 catalog:
   '@radix-ui/react-direction': 1.1.4
+  '@tailwindcss/vite': 4.3.3
   '@types/node': 24.13.6
   '@types/react': 19.3.0
   '@types/react-dom': 19.3.0
@@ -40,6 +41,7 @@ catalog:
   i18next: 26.4.2
   i18next-cli: 1.74.1
   jsdom: 30.1.0
+  radix-ui: 1.6.7
   react: 19.3.0
   react-dom: 19.3.0
   react-i18next: 17.0.15

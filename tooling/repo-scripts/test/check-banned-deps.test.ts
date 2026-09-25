@@ -246,6 +246,20 @@ describe('check-banned-deps', () => {
     ]);
   });
 
+  it('lucide-react only through @ralysa/ui, the icon registry (§3.4, AC-7)', () => {
+    const doc = lockfile(
+      {
+        'packages/ui': { dependencies: { 'lucide-react': '1.34.0' } },
+        'apps/web': { dependencies: { '@ralysa/ui': 'link:../../packages/ui' } },
+        'apps/ui-lab': {
+          dependencies: { '@ralysa/ui': 'link:../../packages/ui', 'lucide-react': '1.34.0' },
+        },
+      },
+      { 'lucide-react@1.34.0': {} },
+    );
+    expect(summary(doc)).toEqual(['banned-deps/icon-set apps/ui-lab']);
+  });
+
   it('nothing may depend on @ralysa/ui-lab (AC-13)', () => {
     const doc = lockfile({
       'apps/web': { devDependencies: { '@ralysa/ui-lab': 'link:../ui-lab' } },

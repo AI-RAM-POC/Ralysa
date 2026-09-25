@@ -5,6 +5,8 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   REQUIRED_GLOBAL_DEPENDENCIES,
+  TYPECHECK_DEPENDS_ON,
+  TYPECHECK_OUTPUT,
   checkTurboConfig,
   checkTurboConfigFile,
 } from '../src/check-turbo-config.ts';
@@ -16,6 +18,7 @@ const valid = () => ({
   remoteCache: { enabled: false },
   tasks: {
     build: { outputs: ['dist/**'] },
+    typecheck: { dependsOn: ['^build', TYPECHECK_DEPENDS_ON], outputs: [TYPECHECK_OUTPUT] },
     'check:generated': { cache: false },
     'test:integration': { cache: false },
   },
@@ -43,6 +46,16 @@ describe('check-turbo-config', () => {
     const config = valid();
     config.globalDependencies = config.globalDependencies.filter((e) => e !== entry);
     expect(rules(config)).toContain('turbo/global-dependencies');
+  });
+
+  it.each([
+    ['without ^typecheck', { dependsOn: ['^build'], outputs: [TYPECHECK_OUTPUT] }],
+    ['without the .tsc/ output', { dependsOn: ['^build', TYPECHECK_DEPENDS_ON] }],
+    ['missing', undefined],
+  ])('fails when the typecheck task is %s (TS6305 in a clean checkout)', (_, typecheck) => {
+    const config = valid();
+    (config.tasks as Record<string, unknown>).typecheck = typecheck;
+    expect(rules(config)).toContain('turbo/typecheck-order');
   });
 
   it.each([

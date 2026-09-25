@@ -1,0 +1,7 @@
+/*
+ * ui-lab's Tailwind entry point: the Ralysa token theme (and the focus-ring utility) from
+ * @ralysa/ui, plus the sources to scan. @ralysa/ui's components carry their classes in source,
+ * so the app scans that package as well as its own files.
+ */
+@import '@ralysa/ui/tailwind.css';
+@source '../../../packages/ui/src';

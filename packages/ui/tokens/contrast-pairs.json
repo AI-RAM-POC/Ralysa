@@ -20,6 +20,36 @@
       "usage": "Body text in subtle regions (nav, code blocks)"
     },
     {
+      "fg": "color.fg.default",
+      "bg": "color.bg.surfaceRaised",
+      "kind": "text",
+      "usage": "Option text in the Select popover (T11)"
+    },
+    {
+      "fg": "color.fg.muted",
+      "bg": "color.bg.surfaceRaised",
+      "kind": "text",
+      "usage": "Secondary text in popovers (T11)"
+    },
+    {
+      "fg": "color.focus.ring",
+      "bg": "color.bg.surfaceRaised",
+      "kind": "focus",
+      "usage": "Focus ring inside popovers (T11)"
+    },
+    {
+      "fg": "color.border.control",
+      "bg": "color.bg.surfaceRaised",
+      "kind": "nonText",
+      "usage": "Popover boundary and controls inside popovers (T11)"
+    },
+    {
+      "fg": "color.accent.default",
+      "bg": "color.bg.surfaceRaised",
+      "kind": "nonText",
+      "usage": "Checked controls and selection marks inside popovers (T11)"
+    },
+    {
       "fg": "color.fg.muted",
       "bg": "color.bg.canvas",
       "kind": "text",
@@ -49,8 +79,20 @@
       "kind": "text",
       "usage": "Primary button label, hovered"
     },
+    {
+      "fg": "color.fg.onAccent",
+      "bg": "color.status.danger",
+      "kind": "text",
+      "usage": "Danger button label (T10)"
+    },
     { "fg": "color.link", "bg": "color.bg.canvas", "kind": "text", "usage": "Inline links" },
     { "fg": "color.link", "bg": "color.bg.surface", "kind": "text", "usage": "Links in panels" },
+    {
+      "fg": "color.link",
+      "bg": "color.bg.subtle",
+      "kind": "text",
+      "usage": "Links in the navigation region (T10)"
+    },
     {
       "fg": "color.accent.default",
       "bg": "color.bg.surface",

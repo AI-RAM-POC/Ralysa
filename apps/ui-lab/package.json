@@ -1,0 +1,48 @@
+{
+  "name": "@ralysa/ui-lab",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "check:generated": "i18next-cli types --quiet",
+    "dev": "vite",
+    "lint": "eslint . && stylelint \"**/*.css\" --allow-empty-input && i18next-cli extract --ci --dry-run --quiet",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@ralysa/ui": "workspace:*",
+    "i18next": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "react-i18next": "catalog:"
+  },
+  "devDependencies": {
+    "@ralysa/eslint-config": "workspace:*",
+    "@ralysa/repo-scripts": "workspace:*",
+    "@ralysa/stylelint-config": "workspace:*",
+    "@ralysa/tsconfig": "workspace:*",
+    "@ralysa/vitest-config": "workspace:*",
+    "@tailwindcss/vite": "catalog:",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "@vitejs/plugin-react": "catalog:",
+    "eslint": "catalog:",
+    "i18next-cli": "catalog:",
+    "jsdom": "catalog:",
+    "stylelint": "catalog:",
+    "tailwindcss": "catalog:",
+    "typescript": "catalog:",
+    "vite": "catalog:",
+    "vitest": "catalog:"
+  },
+  "ralysa": {
+    "kind": "app",
+    "shipped": false,
+    "ui": true,
+    "artefacts": []
+  }
+}

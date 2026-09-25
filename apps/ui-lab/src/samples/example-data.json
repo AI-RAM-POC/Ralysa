@@ -1,0 +1,20 @@
+{
+  "__RALYSA_DEMO_ONLY__": true,
+  "$description": "Synthetic non-translatable values for the showcase and the component examples: code, file paths, identifiers, a placeholder address and a reference id. They render as LTR islands (F-001 design §7.3.6). check-no-demo fingerprints each (AC-13).",
+  "samples": [
+    { "id": "filePath", "category": "path", "text": "reports/2026/q3-planning-summary.pdf" },
+    { "id": "identifier", "category": "code", "text": "loadDemoWorkspace(demoTenantId)" },
+    {
+      "id": "commandLine",
+      "category": "code",
+      "text": "pnpm --filter @ralysa/ui-lab build\nnode tooling/repo-scripts/src/cli.ts check-no-demo"
+    },
+    { "id": "reference", "category": "id", "text": "REF-DEMO-2026-0042" },
+    { "id": "emailPlaceholder", "category": "placeholder", "text": "demo.user@example.com" },
+    {
+      "id": "sourcePath",
+      "category": "path",
+      "text": "apps/ui-lab/src/samples/arabic-samples.json"
+    }
+  ]
+}

@@ -9,6 +9,10 @@
       "surface": {
         "$value": "{palette.gray.0}"
       },
+      "surfaceRaised": {
+        "$value": "{palette.gray.0}",
+        "$description": "Popovers and menus (Select). Light: white like the surface; the raise is shown by elevation.shadow.md and a border (F-001-T11)."
+      },
       "subtle": {
         "$value": "{palette.gray.50}"
       }

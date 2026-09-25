@@ -1,8 +1,62 @@
 {
+  "action": {
+    "close": "إغلاق"
+  },
+  "appShell": {
+    "aside": {
+      "label": "التفاصيل"
+    },
+    "nav": {
+      "label": "التنقل الرئيسي"
+    }
+  },
+  "emptyState": {
+    "description": "ستظهر هنا العناصر التي تضيفها.",
+    "title": "لا يوجد شيء هنا بعد"
+  },
+  "errorState": {
+    "description": "حاول مرة أخرى. إذا استمرت المشكلة، فتواصل مع المسؤول.",
+    "reference": "المرجع: {{id}}",
+    "retry": "حاول مرة أخرى",
+    "title": "حدث خطأ ما"
+  },
+  "field": {
+    "required": "(مطلوب)"
+  },
+  "loadingState": {
+    "label": "جارٍ التحميل…"
+  },
   "locale": {
     "name": {
       "ar": "العربية",
       "en": "English"
+    }
+  },
+  "localeSwitcher": {
+    "label": "اللغة"
+  },
+  "permissionDenied": {
+    "description": "اطلب من المسؤول صلاحية الوصول إلى {{resource}}.",
+    "requestAccess": "طلب صلاحية الوصول",
+    "title": "ليست لديك صلاحية الوصول"
+  },
+  "select": {
+    "placeholder": "اختر خيارًا"
+  },
+  "skipLink": {
+    "label": "انتقل إلى المحتوى الرئيسي"
+  },
+  "textField": {
+    "error": {
+      "required": "هذا الحقل مطلوب."
+    }
+  },
+  "themeSwitcher": {
+    "label": "المظهر",
+    "option": {
+      "dark": "داكن",
+      "light": "فاتح",
+      "system": "حسب النظام"
     }
   }
 }

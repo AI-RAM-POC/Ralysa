@@ -8,6 +8,14 @@ export {
   tokenVar,
 } from './tokens/index.js';
 export * from './i18n/index.js';
+export * from './icons/index.js';
+export * from './components/text/index.js';
+export * from './components/layout/index.js';
+export * from './components/actions/index.js';
+export * from './components/states/index.js';
+export * from './components/forms/index.js';
+export * from './components/preferences/index.js';
+export { type ClassPart, cn } from './lib/cn.js';
 export {
   applyTheme,
   isThemePreference,

@@ -1,12 +1,12 @@
 // Code review 3: every ralysa.ui workspace's lint runs Stylelint AND ESLint with the react-ui
 // preset; placeholders and non-UI workspaces are not checked. Also runs on the real repository.
 import { describe, expect, it } from 'vitest';
-import { checkUiLint } from '../src/check-ui-lint.ts';
+import { checkUiLint, splitScript, stylelintProblem } from '../src/check-ui-lint.ts';
 import { findRepoRoot } from '../src/lib/core.ts';
 import { makeFixtureRepo, validWorkspacePackage } from './fixture-repo.ts';
 
 const REACT_UI_ESLINT =
-  "import { base, reactUi, tests } from '@ralysa/eslint-config';\nexport default [...base({ tsconfigRootDir: import.meta.dirname }), ...reactUi(), ...tests()];\n";
+  "import { base, reactUi, tests } from '@ralysa/eslint-config';\nexport default [...base({ tsconfigRootDir: import.meta.dirname }), ...reactUi({ workspaceDir: import.meta.dirname }), ...tests()];\n";
 const STYLELINT = "import config from '@ralysa/stylelint-config';\nexport default config;\n";
 const WIRED_LINT = 'eslint . && stylelint "**/*.css" --allow-empty-input';
 
@@ -73,6 +73,96 @@ describe('check-ui-lint', () => {
       }),
     ).toEqual(['ui-lint/react-ui-preset']);
     expect(repo({ eslint: null })).toEqual(['ui-lint/react-ui-preset']);
+  });
+
+  // PR #15 review: mentioning stylelint is not enough; it must lint "**/*.css" and gate the script.
+  describe('the stylelint command lints "**/*.css" (PR #15 review)', () => {
+    it.each([
+      ['double quotes', 'eslint . && stylelint "**/*.css" --allow-empty-input'],
+      ['single quotes', "eslint . && stylelint '**/*.css' --allow-empty-input"],
+      ['backslash-escaped glob', 'eslint . && stylelint \\*\\*/\\*.css --allow-empty-input'],
+      ['first command', 'stylelint "**/*.css" --allow-empty-input && eslint .'],
+      [
+        'the real packages/ui script',
+        'eslint . && stylelint "**/*.css" --allow-empty-input && i18next-cli extract --ci --dry-run --quiet',
+      ],
+      [
+        'a harmless extra option',
+        'eslint . && stylelint "**/*.css" --allow-empty-input --max-warnings 0',
+      ],
+    ])('passes: %s', (_what, lint) => {
+      expect(stylelintProblem(lint)).toBeUndefined();
+      expect(repo({ lint })).toEqual([]);
+    });
+
+    it.each([
+      ['no stylelint at all', 'eslint .'],
+      ['stylelint only in a comment', 'eslint . # stylelint "**/*.css"'],
+      ['stylelint only as an argument', 'eslint . && echo stylelint "**/*.css"'],
+      ['a prefixed name', 'eslint . && stylelint-x "**/*.css"'],
+      ['failure swallowed with ||', 'eslint . && stylelint "**/*.css" || true'],
+      ['run only if something failed', 'eslint . || stylelint "**/*.css"'],
+      ['exit status ignored after ;', 'stylelint "**/*.css"; eslint .'],
+      ['exit status lost in a pipe', 'eslint . && stylelint "**/*.css" | cat'],
+      ['sent to the background', 'stylelint "**/*.css" & eslint .'],
+    ])('fails as not wired: %s', (_what, lint) => {
+      expect(stylelintProblem(lint)?.rule).toBe('ui-lint/stylelint-not-wired');
+    });
+
+    it.each([
+      ['no files', 'eslint . && stylelint --allow-empty-input'],
+      ['version only', 'eslint . && stylelint --version'],
+      ['one folder', 'eslint . && stylelint "src/**/*.css" --allow-empty-input'],
+      ['top-level files only', 'eslint . && stylelint "*.css" --allow-empty-input'],
+      ['another extension', 'eslint . && stylelint "**/*.scss" --allow-empty-input'],
+      ['unquoted: the shell expands ** as *', 'eslint . && stylelint **/*.css --allow-empty-input'],
+      ['half quoted: ** still unquoted', 'eslint . && stylelint **/"*.css" --allow-empty-input'],
+      ['another config', 'eslint . && stylelint "**/*.css" --config other.js'],
+      ['another config, short form', 'eslint . && stylelint "**/*.css" -c other.js'],
+      ['another config, = form', 'eslint . && stylelint "**/*.css" --config=other.js'],
+      ['an ignore pattern', 'eslint . && stylelint "**/*.css" --ignore-pattern "src/**"'],
+      ['an ignore pattern, short form', 'eslint . && stylelint "**/*.css" --ip "src/**"'],
+      ['an ignore file', 'eslint . && stylelint "**/*.css" --ignore-path .gitignore'],
+    ])('fails on scope: %s', (_what, lint) => {
+      expect(stylelintProblem(lint)?.rule).toBe('ui-lint/stylelint-scope');
+      expect(repo({ lint })).toEqual(['ui-lint/stylelint-scope']);
+    });
+
+    it('splits a script the way sh does', () => {
+      const commands = splitScript(`a "b c" 'd' && e\\ f || g; h | i & j # k`);
+      expect(commands.map((c) => [c.words.map((w) => w.text), c.before, c.after])).toEqual([
+        [['a', 'b c', 'd'], undefined, '&&'],
+        [['e f'], '&&', '||'],
+        [['g'], '||', ';'],
+        [['h'], ';', '|'],
+        [['i'], '|', '&'],
+        [['j'], '&', undefined],
+      ]);
+    });
+  });
+
+  it('fails when reactUi() is not given workspaceDir: import.meta.dirname (PR #15 review)', () => {
+    const preset = (call: string): string =>
+      `import { base, reactUi } from '@ralysa/eslint-config';\nexport default [...base({ tsconfigRootDir: import.meta.dirname }), ...${call}];\n`;
+    expect(repo({ eslint: preset('reactUi()') })).toEqual(['ui-lint/react-ui-workspace-dir']);
+    expect(repo({ eslint: preset('reactUi({ tailwindEntryPoint })') })).toEqual([
+      'ui-lint/react-ui-workspace-dir',
+    ]);
+    expect(repo({ eslint: preset('reactUi({ workspaceDir: process.cwd() })') })).toEqual([
+      'ui-lint/react-ui-workspace-dir',
+    ]);
+    expect(
+      repo({
+        eslint: preset('reactUi({ workspaceDir: import.meta.dirname, tailwindEntryPoint })'),
+      }),
+    ).toEqual([]);
+    expect(
+      repo({
+        eslint: preset(
+          'reactUi({\n    tailwindEntryPoint,\n    workspaceDir: import.meta.dirname,\n  })',
+        ),
+      }),
+    ).toEqual([]);
   });
 
   it('ignores non-UI workspaces and placeholders', () => {

@@ -420,7 +420,7 @@ The full table prints in the `@ralysa/ui:test` log. Exempt: `color.fg.disabled` 
 | T06-2 | Design deviation (small) | `MIN_RATIO` lives in `check-contrast.ts` (repo-scripts), not in `packages/ui/src/contracts/tokens.ts`. There is no `ralysa-repo check-contrast` CLI command: the gate runs inside `@ralysa/ui` `test` (as §7.1.4 says), which passes in its own resolved tokens. | The threshold belongs to the gate. `packages/ui` src must not import a tooling package (AR-3), and repo-scripts can't depend on `@ralysa/ui`. `check-contrast.ts` imports nothing, so the browser-library workspace can import it from source. |
 | T06-3 | Contract detail | `contrast-pairs.json` is `{ pairs, exempt }`. `exempt` entries need a reason of at least 20 characters. A pair that names an exempt token fails. A test fails if any semantic colour token is in neither a pair nor `exempt`. | §3.2 says exempt tokens are "listed with a reason" but gives no shape. The coverage test stops a new colour token from skipping the gate. |
 | T06-4 | Addition | Pairs beyond the §7.1.3 list: `fg.default` and `fg.muted` on `bg.surface`, `link` on `bg.surface`, `accent.default` on `bg.canvas`, `border.control` and `focus.ring` on `bg.canvas`/`bg.surface`, and the status colours on `bg.canvas`/`bg.subtle`. | These are combinations the components will use. All pass. |
-| T06-5 | **Deferred to T11 by decision** (coordinator, standing authorization, 2026-09-25) | `color.bg.surfaceRaised` (§7.1.2 examples) has no value in §7.1.3, so it isn't defined in T06. | Picking a colour is a design decision. T11 adds it, with light and dark values and its contrast pairs, with the first raised component (the `Select` popover). |
+| T06-5 | **Deferred to T11 by decision** (coordinator, standing authorization, 2026-09-25); **done in T11** (see T11) | `color.bg.surfaceRaised` (§7.1.2 examples) has no value in §7.1.3, so it isn't defined in T06. | Picking a colour is a design decision. T11 adds it, with light and dark values and its contrast pairs, with the first raised component (the `Select` popover). |
 | T06-6 | Implementation choice | Tailwind names: the `bg` group and a trailing `default` are dropped (`bg-canvas`, `text-fg`, `bg-accent`, `bg-accent-hover`). `font.*` maps to `font`/`text`/`font-weight`/`leading`/`tracking`; `space.*`, `size.control.*` and `size.icon.*` map to `--spacing-*`; `size.container.*` maps to `--container-*`; `elevation.shadow.*` to `--shadow-*`; `motion.easing.*` to `--ease-*`. Layers, durations and the focus-ring size stay CSS-variable only. The reset list is in `TAILWIND_RESETS`. | §7.1.1 gives one example (`--color-canvas`). The rule has to be mechanical so generated names never collide; the generator fails on a collision. |
 | T06-7 | Implementation choice | Palette primitives aren't emitted as CSS variables. Semantic values are emitted resolved. | "Components use semantic tokens only" (§7.1.1). |
 | T06-8 | Scope note | The §7.2 `:lang(ar)` values are in the token source now, as `$extensions["solutions.ralysa.lang"]`: body line height 1.7, letter spacing 0. The font stacks are the §7.2 stacks. | The generator's `:lang()` support is part of §7.1.1, and the values are known. T09 still owns the font packages and `fonts.css`. |
@@ -707,6 +707,205 @@ Notes:
 - **Ordering fix.** `base()` drops the loading ban for `LOADING_EXCEPTIONS` files (empty today). Because `reactUi()` comes after `base()`, its combined entry would have re-enabled the ban there. `reactUi()` now adds a matching block for those files that keeps only the UI selector. It takes `workspace` like `base()` does (default `workspaceOf(process.cwd())`); the one edit to main's `base.js` is exporting `workspaceOf`. A test adds a fixture exception and checks both an excepted and a normal file.
 - **Main's loading ban caught two `createRequire` calls in my test code:** the i18n lint test and `packages/ui/test/tailwind.ts`. Both now use static paths (`import.meta.resolve`, or a path relative to the package).
 
+## T09: fonts, icons and text
+
+Branch `feat/F-001-components` (T09 to T12 and the PR #15 nits, one commit each). Date: 2026-09-25.
+
+### What landed
+
+- **Fonts.** `packages/ui/src/styles/fonts.css` (`@ralysa/ui/fonts.css`) imports each Noto package's `wght.css` and sets the base typography from tokens (sans stack, body line height and letter spacing, re-applied under `:lang(ar)`; mono for `code`/`pre`). The font stacks and the `:lang(ar)` token overrides were already in `core.tokens.json` (T06-8), so that file is unchanged.
+- **Licences.** `scripts/font-licenses.ts`: `FONT_PACKAGES`, the licence check (package `license` = `OFL-1.1`; the licence file is OFL 1.1 with a copyright notice and **no Reserved Font Name in the notice**), `writeFontLicenses()` (run by `build`: `dist/licenses/fonts/<font>/OFL.txt` and `dist/THIRD_PARTY_NOTICES`), and the **`fontLicenses()` Vite plugin**, now in `apps/web`'s build. The plugin emits the same files next to the bundle, turns off data-URI inlining for fonts, and fails the build for a font file from outside `FONT_PACKAGES`. `apps/web` imports `fonts.css`, so its production build carries the fonts and the licences: `apps/web/dist/licenses/fonts/{noto-sans,noto-sans-arabic,noto-sans-mono}/OFL.txt` and `dist/THIRD_PARTY_NOTICES`.
+- **Coverage.** `scripts/font-coverage.ts`: a dependency-free WOFF2 reader (table directory, Brotli stream via `node:zlib`, cmap formats 4 and 12) plus the browser's face selection (family order, then `unicode-range`, then cmap). Default-ignorable code points are skipped.
+- **Icons.** `src/icons/registry.ts` (21 icons: 7 directional, 14 not) and `<Icon>`. The lucide restriction is a new `icon-set` group in `boundaries.js` (see T09-2).
+- **Text.** `Text`, `Heading`, `Code`, `CodeBlock`, `Ltr`, `T`, `isolate`, `isolateValues`, and a `cn` class helper.
+- **Examples contract.** `src/examples/` (`@ralysa/ui/examples`): `ComponentExamples`, `EXAMPLE_LABELS` and `ALL_EXAMPLES`. Text and icon examples are registered.
+
+### Versions (npm registry, 2026-09-25; 3-day cut-off 2026-09-22, 30-day policy cut-off 2026-08-26)
+
+| Package | Design | Pinned | Evidence |
+|---|---|---|---|
+| `@fontsource-variable/noto-sans` | 5.x | **5.3.0** | Published 2026-07-19 (68 days). `license: OFL-1.1`; SLSA provenance; no dependencies, no install scripts. LICENSE sha256 `54ec7b5a…a3009e1`. |
+| `@fontsource-variable/noto-sans-arabic` | 5.x | **5.3.0** | Same dates and properties. LICENSE sha256 `91053c23…487c1fff`. |
+| `@fontsource-variable/noto-sans-mono` | 5.x | **5.3.0** | Same. LICENSE sha256 `9e73c367…f34f361cb`. |
+| `lucide-react` | 1.x | **1.34.0** | ISC; peer `react ^16.5.1 … ^19`; SLSA provenance; no install scripts. lucide ships a minor every few days, so the §2.2 rule was applied per minor line (as T04-1 did): 1.34.0 (2026-08-24) is the newest minor at least 30 days old; 1.35.0 to 1.48.0 are younger. |
+| `vite` | 8.3.x | 8.3.0 (catalog) | New **devDependency** of `@ralysa/ui`, for the plugin's type and the test that builds `fonts.css` for real. |
+
+Licence check: all three `LICENSE` files start "Copyright 2022 The Noto Project Authors (https://github.com/notofonts/…)" then "This Font Software is licensed under the SIL Open Font License, Version 1.1." The notice carries no "Reserved Font Name" clause; the one occurrence of the phrase in each file is the OFL body's own definition. `pnpm install` with `strictDepBuilds` passed with `allowBuilds` unchanged: none of the new packages has a build script.
+
+### Recorded decisions and deviations
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T09-1 | Version | `lucide-react` 1.34.0, not the `latest` 1.48.0. | Per-minor application of the §2.2 30-day rule (T04-1 precedent). |
+| T09-2 | Implementation choice | "The lucide import is restricted to the registry" is a `BANNED_PACKAGE_GROUPS` entry, `icon-set` (`importAllowedIn: ['packages/ui/src/icons/registry.ts']`, `graphAllowedThrough: [['@ralysa/ui']]`), not a second `no-restricted-imports` entry in `packages/ui`. | A later flat-config entry for the same rule replaces the base preset's options, which would drop the boundary bans (the reason `boundaryRules()` exists). As a group, one line covers ESLint, dependency-cruiser **and** the lockfile graph: an app can't add its own direct `lucide-react` dependency either. It is not a security ban, and the group's comment says so. |
+| T09-3 | Design detail | The licence copy is done at **each app's build** (`fontLicenses()` Vite plugin), in addition to `packages/ui`'s own `dist/`. | §7.2 says "the build copies each `OFL.txt` into `dist/licenses/fonts/`". `packages/ui` is `shipped: false`; the licences must travel with the app bundle that contains the fonts (`apps/web/dist`). The plugin also closes two gaps: an unreviewed font file fails the build, and a small font can't slip through as an inlined data URI. |
+| T09-4 | Note | Fontsource ships the OFL text as `LICENSE`; it is copied as `OFL.txt`. | Same content (the test compares bytes). |
+| T09-5 | Scope note | `fonts.css` imports each package's full `wght.css`, so `apps/web/dist` holds every subset (about 1.5 MB of woff2, including Cyrillic, Greek, Vietnamese and Devanagari). | Each `@font-face` has a `unicode-range`, so a browser downloads only what a page uses. Narrowing to the Latin and Arabic subsets would mean hand-written `@font-face` rules to keep in sync with Fontsource. Revisit if install size matters (F-021). |
+| T09-6 | Split | TC-F-001-14 here checks the §7.2 coverage list (Arabic letters, harakat, both digit sets, Arabic punctuation, tatweel, lam-alef forms, Basic Latin, quotes and dashes) for the sans stack and Basic Latin for mono, plus a Hebrew/CJK positive control. The **20 samples** are checked with the same functions in `apps/ui-lab` (T12). | The samples live in ui-lab, and `packages/ui` must not read another workspace. |
+| T09-7 | **Design clarification** | Component examples live in `packages/ui` as designed (`*.examples.tsx`), but carry no text: the gallery passes `labels` translated from its `lab` catalog (`EXAMPLE_LABELS`). They are exported from a separate entry point, `@ralysa/ui/examples`. | Literal text would fail AC-5, and example copy in the `ui` catalog would ship inside every app's bundle (AC-13). `lab:` keys can't be typed or extracted inside `packages/ui`. |
+| T09-8 | Implementation choice | `<T>` is not a thin `Trans` wrapper: it interpolates private-use markers, splits the translated string around them and renders each value in `<bdi>`. | react-i18next `Trans` can't wrap an interpolated **value** in an element without markup in the catalog string. The markers never reach the DOM, and values stay text (a test renders `<img …>` as text). `i18next-cli` still extracts `<T i18nKey>` (it is in `transComponents`). |
+| T09-9 | Note for T13 | Tailwind v4's `rtl:-scale-x-100` sets the CSS `scale` property, so a mirrored icon's computed style is `scale: -1 1`, while `transform` stays `none`. TC-F-001-13 expects `transform: matrix(-1, 0, 0, 1, 0, 0)`. | The mirroring spec in T13 should read `scale` (or the bounding-box geometry) instead. The design class is kept. |
+| T09-10 | Implementation choice | `packages/ui` declares `"sideEffects": ["**/*.css"]`, and `ICON_NAMES` is marked `/* @__PURE__ */`. | Without them the web bundle contained lucide although it renders no icon: the top-level `Object.keys(ICONS)` call kept the registry alive. Checked: `lucide` no longer appears in `apps/web/dist/assets/*.js`. |
+| T09-11 | Scope note | `apps/web` (`vite.config.ts`, `src/main.tsx`) is touched although the T09 row doesn't list it. | It is the shipped build, the place where the fonts and their licences must be (AC-8 "redistributable"), and the target of the artefact scans. Both scans pass on the new output (`secret-scan artefacts`: 0 findings; `check-provider-hosts --artefacts`: pass). |
+
+### Tests added (T09)
+
+- `packages/ui/test/font-licence.test.ts` (15), **TC-F-001-17**: the three packages are `OFL-1.1` with Noto copyright notices and no RFN; `licenseProblems` rejects an RFN in the notice, another licence, a missing licence field, a non-OFL text and a missing notice, and accepts the OFL body's own definition of the term; `readFontLicenses` fails on a bad package; `writeFontLicenses` writes byte-identical `OFL.txt` files and notices; `fontPackageOf` ignores look-alikes (`noto-sans-jp`, a local `src/fonts/…`). **A real, offline `vite build` of `fonts.css` with the plugin** emits the Latin, Arabic and mono woff2, the three licences and the notices, and every `url()` in the CSS is local. A fixture `@font-face` pointing at a local woff2 fails the build. `fonts.css` imports exactly the reviewed packages and has no remote URL; every Fontsource `@font-face` uses `font-display: swap` and a local file.
+- `packages/ui/test/font-coverage.test.ts` (16), **TC-F-001-14** (coverage list part): the nine §7.2 groups draw with 0 missing code points; mono draws Basic Latin; Arabic comes from Noto Sans Arabic and Latin from Noto Sans; bidi controls and joiners are skipped; positive controls (Hebrew, CJK, Arabic against the mono stack) are reported missing; a synthetic format-12 cmap ignores `.notdef`.
+- `packages/ui/test/icons.test.tsx` (23): the directional set is exactly back, forward, chevronStart, chevronEnd, send, undo and redo; each of the 21 icons carries `rtl:-scale-x-100` only if directional; decorative and labelled forms.
+- `packages/ui/test/text.test.tsx` (15): LTR islands in an RTL page; `<T>` in en and ar, values as text, a missing key throws; `isolate`; `Text`/`Heading`; every registered example renders in en and ar.
+- `tooling/eslint-config/test/boundaries.test.ts`: only `packages/ui/src/icons/registry.ts` has the lucide import allowed (checked on the computed config for six other paths, including `registry.tsx`, an app's `registry.ts` and a test); a real lint of a lucide import in `src/icons/Icon.js` and of `export * from 'lucide-react/icons'` reports `no-restricted-imports`.
+- `tooling/repo-scripts/test/check-banned-deps.test.ts`: `lucide-react` through `@ralysa/ui` passes; a direct dependency in `apps/ui-lab` fails with `banned-deps/icon-set`.
+
+## T10: components I (layout, actions, states)
+
+### What landed
+
+- `packages/ui/src/components/layout/`: `AppShell` (banner, named `nav`, `main#main` with `tabIndex=-1`, named `aside`, all with `data-region`), `SkipLink`, `VisuallyHidden`.
+- `src/components/actions/`: `Button` (four variants, three sizes, optional decorative icon, default `type="button"`), `IconButton` (required `labelKey: I18nKey`, so an icon-only button can't be nameless or use an unknown key), `Link`.
+- `src/components/states/`: `EmptyState`, `LoadingState`, `ErrorState`, `PermissionDenied`.
+- `src/styles/tailwind.css`: the `focus-ring` utility (2 px `color.focus.ring` outline, 2 px offset, from the tokens), used as `focus-visible:focus-ring` by every interactive component.
+- 14 `ui` keys in en and ar (`action.close`, `appShell.*`, `skipLink.label`, `emptyState.*`, `loadingState.label`, `errorState.*`, `permissionDenied.*`); every Arabic string is `needs-native-review` in `review.json` (16 open in `packages/ui` now).
+- Examples for all nine components; 10 new example labels.
+- Two contrast pairs: `fg.onAccent` on `status.danger` (danger button) and `link` on `bg.subtle` (links in the nav region). Both pass in both themes.
+
+### Recorded decisions and deviations
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T10-1 | Implementation choice | `VisuallyHidden` is a `sr-only` span, not Radix's `VisuallyHidden`. | T10 is the non-Radix set; the result is the same CSS. |
+| T10-2 | Implementation choice | `ErrorState` has no prop that accepts an error object or message: only translated `title`/`description` and a `referenceId`. | §7.5 "no raw error text": a type error (`@ts-expect-error` test) stops a caller passing `error`. |
+| T10-3 | Implementation choice | `PermissionDenied` shows the "Request access" link only when given `requestAccessHref`. | Spec §6.1.3 makes it a deep link to the web console, which doesn't exist yet. A link with no target would be a dead control. |
+| T10-4 | Scope note | The danger button has no hover colour change (only a shadow). | A darker danger colour would need a new token and its pairs; the design lists none. Brand work can add `status.dangerHover`. |
+| T10-5 | Note for T12/T13 | The `AppShell` example renders its own `main`, `nav` and `aside` inside the gallery page. axe reports landmark nesting and duplicate-landmark rules at **moderate** impact, which AC-10 (serious or critical) doesn't count. | The gallery shows the real component. The E2E harness (T13) should keep the impact filter as designed. |
+
+### Tests added (T10)
+
+`packages/ui/test/components-layout-actions-states.test.tsx` (22, jsdom, test-mode i18n): landmark order and names in en and ar; logical classes only; the skip link is the first focusable element and targets `#main`; `Button` default and submit types, four variants' token classes and focus ring, disabled not operable, decorative icon; `IconButton` named from its key in en and ar, and `@ts-expect-error` for a missing or unknown key (checked by `typecheck`); `Link`; `EmptyState` defaults and action; `LoadingState` status, `aria-live`, `aria-busy`, `motion-safe` spinner; `ErrorState` alert, retry, `<bdi>` reference, no `error` prop; `PermissionDenied` isolated resource and link, and no link without a target. `text.test.tsx` renders the nine new components' examples in en and ar.
+
+## T11: components II (Radix forms, preferences)
+
+### What landed
+
+- `packages/ui/src/components/forms/`: `TextField`, `Checkbox`, `RadioGroup`, `Select`, `Tabs`, and the shared `FieldLabel` (Radix `Label` plus the translated "(required)" marker), `FieldDescription` and `FieldError`.
+- `src/components/preferences/`: `LocaleSwitcher` (a `Select` of the locales, each named in its own language with `lang`) and `ThemeSwitcher` (a horizontal `RadioGroup`).
+- **`color.bg.surfaceRaised`** (the T06-5 deferral): palette `gray.825` = `#22282f` (new) and the semantic token in both themes, with five contrast pairs. The `Select` popover is the first component that uses it.
+- 8 `ui` keys in en and ar (`field.required`, `textField.error.required`, `select.placeholder`, `localeSwitcher.label`, `themeSwitcher.*`). Every Arabic string is `needs-native-review` (**24 open in `packages/ui`**, 1 in `apps/web`).
+- Examples for the seven components; 17 new example labels.
+- `radix-ui` **1.6.7** added to the pnpm catalog and to `@ralysa/ui`.
+
+### `color.bg.surfaceRaised` (placeholder values, OQ-F001-1)
+
+| Theme | Value | Alias | Reasoning |
+|---|---|---|---|
+| light | `#ffffff` | `{palette.gray.0}` | Same as `bg.surface`: in the light theme a popover is raised by `elevation.shadow.md` and its `border.control` border, the usual pattern. |
+| dark | `#22282f` | `{palette.gray.825}` (new) | A step lighter than `bg.surface` (`#171b20`), because shadows barely show on dark backgrounds. Between `gray.850` (`#1f242a`, `bg.subtle`) and `gray.800` (`#2e343c`). Candidates `#20252c` and `#252b33` were computed too; `#22282f` keeps every pair at 4.1:1 or above and is distinct from `bg.subtle`. |
+
+Contrast results from `check-contrast` (`@ralysa/ui` test log; 64 checks in total now, all pass):
+
+| Pair | Kind | Light | Dark |
+|---|---|---|---|
+| `fg.default` on `bg.surfaceRaised` | text ≥ 4.5 | 16.91 | 12.32 |
+| `fg.muted` on `bg.surfaceRaised` | text ≥ 4.5 | 6.77 | 6.55 |
+| `focus.ring` on `bg.surfaceRaised` | focus ≥ 3 | 6.47 | 6.78 |
+| `border.control` on `bg.surfaceRaised` | nonText ≥ 3 | 4.28 | 4.14 |
+| `accent.default` on `bg.surfaceRaised` | nonText ≥ 3 | 6.47 | 6.78 |
+| `fg.onAccent` on `status.danger` (T10) | text ≥ 4.5 | 6.54 | 8.34 |
+| `link` on `bg.subtle` (T10) | text ≥ 4.5 | 5.88 | 8.17 |
+
+The highlighted Select option is `fg.onAccent` on `accent.default`, an existing pair (6.47 / 8.39).
+
+### Recorded decisions and deviations
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T11-1 | **Correction to the brief** | The coordinator's brief says to use Radix "through the `radix-ui` version already in the catalog". The catalog held only `@radix-ui/react-direction` 1.1.4 (T08); `radix-ui` itself was not there. It is added now at **1.6.7**, the design's line (§2.2 "`radix-ui` 1.6.x"). | 1.6.7 was published 2026-07-24 (63 days ago), MIT, and depends on exactly `@radix-ui/react-direction` 1.1.4, so pnpm resolves one `react-direction` instance (checked in `node_modules/.pnpm`) and `LocaleProvider`'s provider reaches the primitives. The `radix-ui` 1.7.0 line is still release candidates. Install passed under `strictDepBuilds`; nothing in the added closure has an install script, and `pnpm peers check` still lists only the known jsx-a11y ESLint peer. |
+| T11-2 | Design detail | `LocaleSwitcher` is a `Select`, `ThemeSwitcher` a horizontal `RadioGroup`. | §7.5 names them but not their control. A Select scales past two locales; three theme options fit a radio group, which shows the current choice without opening anything. |
+| T11-3 | Implementation choice | The highlighted Select option uses `accent`/`onAccent` rather than `bg.subtle`. | In the dark theme `bg.subtle` (`#1f242a`) is darker than `surfaceRaised` (`#22282f`) with only 1.07:1 between them, which would make the keyboard highlight nearly invisible. The accent highlight is a checked pair. Items also keep the focus ring. |
+| T11-4 | Scope note | Space toggling a Checkbox and Select typeahead are not unit-tested. | jsdom doesn't turn a Space keydown into a click on a `<button>` (browsers do), and it has no layout for Radix's typeahead scrolling. The keyboard walker (T13, TC-F-001-24) covers them in real browsers. Arrow keys in RadioGroup and Tabs, Enter and Escape in Select, and clicking labels are tested here. |
+| T11-5 | Implementation note | The test `press()` helper sends keydown, lets one macrotask run, then sends keyup. | Radix's roving focus moves focus in a `setTimeout`, and `RadioGroup` checks the newly focused radio only while an arrow key is down. Releasing the key first made the radio test fail although the component was right. |
+
+### Tests added (T11)
+
+`packages/ui/test/components-forms-preferences.test.tsx` (13, jsdom, with `test/jsdom-polyfills.ts` for `ResizeObserver`, pointer capture and `scrollIntoView`):
+- `TextField`: label `for`, "(required)" in en and ar, `aria-invalid`, and `aria-describedby` → hint and error in order; none of them when absent.
+- `Checkbox`: toggled from its label, `aria-checked` true and `mixed`, description linked.
+- `RadioGroup`: a named radiogroup with labelled options. **Direction-aware arrows:** in `en` ArrowRight moves to and checks the next option and ArrowLeft goes back; in `ar` the reverse.
+- `Tabs`: named list, tab → panel. In `en` ArrowRight activates the next tab, in `ar` ArrowLeft does, and the Radix root carries `dir="rtl"`.
+- `Select`: named combobox with the translated placeholder; Enter opens a listbox on `bg-surface-raised` with `shadow-md` and `dir="rtl"` in `ar`; Escape closes it and focus returns to the trigger; ArrowDown then Enter selects.
+- `LocaleSwitcher`: languages named in themselves with `lang`; choosing العربية sets `<html lang="ar" dir="rtl">`, a `window` marker survives (no reload), and the label re-renders in Arabic.
+- `ThemeSwitcher`: dark and light set `data-theme`; system removes it.
+
+**Mutation check:** with `LocaleProvider` passing `dir="ltr"` to `DirectionProvider`, exactly the three direction-dependent tests fail (RadioGroup `ar`, Tabs `ar`, Select `dir="rtl"`). Restored, all 13 pass.
+
+The token tests (`tokens.test.ts`, `contrast.test.ts`) cover the new token: identical light and dark key sets, and every semantic colour in a pair or exempt.
+
+## T12: `apps/ui-lab` and `check-no-demo`
+
+### What landed
+
+- **`apps/ui-lab`**, created with `pnpm scaffold apps/ui-lab --kind app` (so the `app` template, now with `reactUi({ workspaceDir })`, is proven again in the real repo), then set to `ralysa.shipped: false` with no artefacts.
+  - Views (query-parameter router): `showcase` (the demo screen: AppShell with header switchers, nav, main and aside; the request form; both icon strips; the 20-sample Arabic panel; code, paths and identifiers as LTR islands; the four states), `components[&c=]` (every `@ralysa/ui` example: 20 components, 30 examples) and `tokens` (live values and contrast on canvas). `lang` and `theme` parameters, kept in every link.
+  - The `lab` catalogs (70 keys, en and ar; every Arabic string `needs-native-review`), typed keys, and `i18next-cli extract --ci` in `lint`. i18n runs in **test mode** in every ui-lab build, so a missing key throws.
+  - Tailwind through `@tailwindcss/vite`, scanning the app and `packages/ui/src`; fonts and `fontLicenses()` as in `apps/web`.
+  - **Sentinel:** `data-demo-sentinel="__RALYSA_DEMO_ONLY__"` on the app root, a `ralysa-demo` meta tag, and `"__RALYSA_DEMO_ONLY__": true` in both sample files.
+  - **Samples:** `src/samples/arabic-samples.json` (the 20 strings) and `src/samples/example-data.json` (six synthetic code, path, identifier, placeholder and reference values). All synthetic.
+- **`check-no-demo`** (`tooling/repo-scripts/src/check-no-demo.ts`, `ralysa-repo check-no-demo`) and a new `quality` step after the artefact scans, outside Turbo. On the local builds: `✓ check-no-demo` (0 findings in `apps/web/dist`; the positive control found all 26 fingerprints in `apps/ui-lab/dist`).
+- Checked in a browser (`vite preview` of the production build): showcase in en/light and ar/dark, tokens in dark, components in ar. No console errors, so no missing key in either locale. RTL mirrors the regions and the directional icons, and the Arabic samples shape with harakat, lam-alef and tatweel.
+
+### `@tailwindcss/vite` (npm registry, 2026-09-25)
+
+| Package | Design | Pinned | Evidence |
+|---|---|---|---|
+| `@tailwindcss/vite` | Tailwind 4.3.x "with `@tailwindcss/vite`" (§2.2) | **4.3.3** (catalog) | Published 2026-07-16, the same release as the catalog's `tailwindcss` 4.3.3. MIT, SLSA provenance, peer `vite ^5.2 … ^8`. Its closure (`@tailwindcss/node`, `@tailwindcss/oxide` with platform binaries as optional dependencies, `lightningcss`) has no install scripts: `@tailwindcss/oxide` ships prebuilt binaries per platform, so `allowBuilds` is unchanged and install passed under `strictDepBuilds`. A devDependency of ui-lab only. |
+
+### Recorded decisions and deviations
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T12-1 | Design detail | Fingerprints are the sentinel plus every sample `text` of 12 characters or more from **every** `apps/ui-lab/src/samples/*.json`, including the example-data file. Each is searched as UTF-8 and as the JS string-literal form (`\n`, `\"`), each raw and with non-ASCII as `\uXXXX` in both cases. | §7.6 says "sample-string fingerprints" without a form. The positive control makes the choice safe: if Vite starts emitting another form, the control fails before a leak could pass. The first run proved it matters: `commandLine` holds a newline, which a bundle stores as `\n`, and the control failed until the string-literal form was added. Short strings are skipped so a common word can't cause a false positive; values that could appear in real code were replaced with plainly synthetic ones (`loadDemoWorkspace(demoTenantId)`, `demo.user@example.com`). |
+| T12-2 | Implementation choice | `check-no-demo` is a separate CLI command and CI step, not part of `repo-check`. | It needs the builds (the shipped ones and the ui-lab control), like `secret-scan artefacts` and `check-provider-hosts --artefacts`, next to which it runs. |
+| T12-3 | Implementation choice | `apps/ui-lab` always creates i18n in `mode: 'test'`. | It is a test harness that never ships; §7.4.5 wants missing keys to fail the E2E runs rather than fall back to English. |
+| T12-4 | Scope note (AR-3) | ui-lab's tokens view imports `contrastRatio` from `@ralysa/repo-scripts/check-contrast` (a devDependency). | AR-3 forbids tooling packages in **shipped** source. ui-lab is unshipped, and reusing the gate's own function avoids a second WCAG implementation. `check-workspaces`, `check-imports` and `check-banned-deps` pass. |
+| T12-5 | **Fix in a T10 file** | The state components mark themselves with `data-state-pattern` instead of `data-state`. | Radix writes `data-state` on its own elements (checkbox, radio, select, tabs), so `[data-state]` matched 15 elements on the showcase instead of 4. Found by the ui-lab test; tests and harnesses can now select the patterns unambiguously. |
+| T12-6 | Fix in a T11 file | The shared form-control classes no longer include `rounded-md`; each control sets its own radius. | Found in the browser check: `rounded-md` won over the radio's `rounded-full` (Tailwind orders utilities itself, not by class order), so radios rendered square. |
+| T12-7 | Implementation choice | `apps/ui-lab/tsconfig.json` adds `node` to `types`. | The sample coverage test reads the woff2 files through `@ralysa/ui/font-coverage`. Node types leak into ui-lab's source scope, which is acceptable for an unshipped harness. |
+| T12-8 | Note for T13 | The components view nests each example in the page's `main`, so the `AppShell` example adds a second set of landmarks (moderate axe findings; see T10-5). The keyboard walker should also expect the gallery's many focusable controls. | As designed: the gallery shows the real components. |
+| T12-9 | Open (OQ-D8) | Every Arabic string needs a native speaker's review: 24 in `ui`, 1 in `web`, 70 in `lab` (all `needs-native-review` in the `review.json` registers) and the 20 samples (marked in the samples file's `$description`; they are data, not catalog strings). | Machine-assisted placeholder Arabic, marked for review in the PR as §7.4.3 and T12's definition of done require. |
+
+### Tests added (T12)
+
+- `tooling/repo-scripts/test/check-no-demo.test.ts` (17), **TC-F-001-27**: a clean fixture passes; the sentinel, a sample as UTF-8, and as lower- and upper-case `\u` escapes in a shipped file each fail with the fingerprint named; source maps, HTML, JSON and `node_modules` inside an artefact are scanned; one finding per fingerprint; short strings aren't fingerprints; a missing shipped artefact fails; **positive control**: a missing ui-lab build fails, and a ui-lab build holding a sample only in an unknown form (HTML entities) fails with `no-demo/control-missed`; sample-file contract (sentinel field, JSON, samples, text); `encodings()` including surrogate pairs and the `\n`/`\"` literal form; a multi-line sample is found the way a bundle stores it; the real sample files yield 20 Arabic fingerprints.
+- `apps/ui-lab/test/samples.test.ts` (25): the 8/6/3/3 composition and unique ids; every shaping case §7.6 lists (harakat, lam-alef, tatweel, a paragraph over 150 characters, URL, code identifier, email-like placeholder, parentheses and quotes, Latin at the start and at the end, date, percentage, version, Arabic-Indic and Extended Arabic-Indic digits); Arabic script in every sample; the sentinel in both files; **TC-F-001-14 for the 20 samples**: 0 missing glyphs each in the sans stack, and the code values in the mono stack.
+- `apps/ui-lab/test/App.test.tsx` (11): in en and ar (test mode), the showcase's sentinel, region order, form controls, icon strips (no directional icon in the non-directional strip), 20 samples with `lang="ar" dir="rtl"`, LTR islands and four states; every component example; one component and an unknown one; a swatch per colour token including `surfaceRaised`; the router; the `lab` catalogs hold exactly the translatable `EXAMPLE_LABELS`.
+
+## PR #15 review nits (branch `feat/F-001-components`, 2026-09-25)
+
+| # | Nit | Fix | Tests |
+|---|---|---|---|
+| N-1 | `react-ui.js`: `reactUi()` derived its workspace from `process.cwd()`. `eslint packages/ui/src/…` run from the repo root placed the `LOADING_EXCEPTIONS` globs relative to the root, so an exception silently disappeared (the loading ban came back), while `eslint .` inside the workspace kept it. | `reactUi({ workspaceDir })`, mirroring `base({ tsconfigRootDir })`: the workspace comes from `workspaceOf(workspaceDir)`. It is required: without `workspaceDir` (or an explicit `workspace`, for tests) `reactUi()` throws. `packages/ui`, `apps/web`, the `app` and `library` templates and the README pass `workspaceDir: import.meta.dirname`. `check-ui-lint` now also fails (`ui-lint/react-ui-workspace-dir`) when a UI workspace's ESLint config calls `reactUi` without `workspaceDir: import.meta.dirname`. | `tooling/eslint-config/test/workspace-dir.test.ts` (3): a throwaway repo with `pnpm-workspace.yaml` and `packages/x/eslint.config.js` written like a real UI workspace's, with a fixture exception. The **real ESLint CLI** runs in a subprocess from the repo root and from `packages/x`: `--print-config` gives the same `no-restricted-syntax` entry from both, the excepted file keeps only the UI selector, and linting reports the non-literal `import()` in the normal file only, from both places. **Mutation check:** with the default put back to `workspaceOf(process.cwd())`, both behavioural tests fail; restored, they pass. |
+| N-2 | `check-ui-lint.ts:35` accepted any lint script that mentioned `stylelint`. | `stylelintProblem()` splits the script the way sh does (`splitScript`: words, quotes, escapes, `#` comments, `&&`, `\|\|`, `;`, `\|`, `&`). A Stylelint run counts only if its first word is `stylelint` and it is chained with `&&` on both sides (after `\|\|`, `;`, a pipe or `&` its exit status doesn't fail the script): otherwise `ui-lint/stylelint-not-wired`. It must also have the argument `**/*.css` with no unquoted glob character (the shell's `**` is a plain `*`, so an unquoted glob skips subfolders), and no `--config`/`-c`/`--config-basedir`/`--ignore-pattern`/`--ip`/`--ignore-path`/`-i`: otherwise `ui-lint/stylelint-scope`. | `test/check-ui-lint.test.ts` (37, was 7): 6 passing forms (double, single and backslash quoting, first position, the real `packages/ui` script, an extra harmless option); 9 not-wired forms (none, only in a comment, as an `echo` argument, `stylelint-x`, `\|\| true`, after `\|\|`, before `;`, into a pipe, backgrounded); 13 scope forms (no files, `--version`, `src/**`, `*.css`, `*.scss`, unquoted, half-quoted `**/"*.css"`, three `--config` spellings, two ignore-pattern spellings, `--ignore-path`); the tokenizer; five `reactUi` call shapes. The real repo passes. |
+
+## PR #17 CI fix: clean-checkout typecheck and a slow test (2026-09-25)
+
+The `quality` job of PR #17 (run 36137033999) failed twice; neither showed up locally, where `.tsc/` and warm caches already existed.
+
+| # | Failure | Cause | Fix | Tests |
+|---|---|---|---|---|
+| C-1 | `apps/web` and `apps/ui-lab` `typecheck`: `TS6305 Output file '…/packages/ui/.tsc/scripts/font-licenses.d.ts' has not been built from source file …` (and `font-coverage.d.ts` for `test/samples.test.ts`). | Both apps import `@ralysa/ui/font-licenses` / `font-coverage`, exports that point at `.ts` sources inside the referenced `packages/ui` project. `tsc -p` then reads that project's declaration output in `.tsc/`, which only `packages/ui`'s own `typecheck` writes. Turbo ran `typecheck` with `dependsOn: ["^build"]` only, so in a clean checkout the apps could type-check before `.tsc/` existed. A second, local-only trap: the build info lived in `node_modules/.tmp/`, so deleting `.tsc/` left a build info that made `tsc -p` skip re-emitting. | `turbo.json`: `typecheck` gets `dependsOn: ["^build", "^typecheck"]` and `outputs: [".tsc/**"]`, so dependents wait for the libraries' declarations and a cache hit restores them. `packages/ui/tsconfig.json` and the `library` / `library-isomorphic` templates put `tsBuildInfoFile` in `.tsc/` too, so the declarations and their build info are created, cached and deleted together. `repo-conventions.md` ("Referenceable libraries") now says dependents read `.tsc/`. **Guard:** `check-turbo-config` fails with `turbo/typecheck-order` when `typecheck` lacks `^typecheck` or the `.tsc/**` output. | Reproduced by deleting every `.tsc/` and running `turbo run typecheck --force`: 2 failures before, 27/27 after; then deleting `packages/ui/.tsc` and re-running without `--force` restores it from the cache. `tooling/repo-scripts/test/check-turbo-config.test.ts` (+3: no `^typecheck`, no `.tsc/**` output, no `typecheck` task). |
+| C-2 | `tooling/eslint-config` `test/workspace-dir.test.ts > --print-config …` timed out at 30 s (about 70 s on the runner). | The N-1 test ran the ESLint CLI 8 times, each in a fresh process that loads the whole preset stack (typescript-eslint, Tailwind, jsx-a11y). About 9 s locally, far more on a runner that runs every workspace's tasks at once. | One driver subprocess per working directory (repo root and `packages/x`), run concurrently in `beforeAll`: it loads ESLint once and returns, per file, the resolved `no-restricted-syntax` entry (`calculateConfigForFile`, the data behind `--print-config`) and the lint error count, using the `ESLint` class with the default `cwd` (`process.cwd()`), as the CLI does. The fixture and assertions are unchanged. The 30 s test timeout is unchanged; the hook has 60 s. | Same 3 tests; about 1.3 s locally (was 9 s). **Mutation check repeated:** with the `reactUi` default put back to `workspaceOf(process.cwd())`, both behavioural tests fail; restored, they pass. |
+
+## PR #17 code review (head 612854c, 2026-09-25)
+
+| # | Finding | Fix | Tests |
+|---|---|---|---|
+| B-1 (blocking) | `packages/ui/src/styles/fonts.css`: the base typography rules were unlayered, so they beat every Tailwind utility (layer `utilities`). Under `lang="ar"`, `:lang(ar) { line-height }` overrode each `leading-*` (Heading `leading-tight`, CodeBlock `leading-relaxed`). In every locale, `code, kbd, samp, pre { font-size: 1em }` cancelled `text-sm` on Code and CodeBlock. | All three rules are inside `@layer base { … }`, after the `@import`s, and are preceded by `@layer theme, base, components, utilities;` (Tailwind's order), so utilities win whichever stylesheet loads first. The Arabic rule is now `[lang\|='ar']`: it sits only on the element that declares the language, and descendants inherit, so a `leading-*` utility inside an Arabic run reaches its children. `tailwind.css` maps preflight's `--default-font-family` / `--default-mono-font-family` to the Ralysa stacks, so preflight's base rules agree with fonts.css. In the same base layer, `:root` beats preflight's `html` on specificity. Checked in the built CSS: in `apps/web/dist` and `apps/ui-lab/dist`, the three rules are in `@layer base`, `.leading-tight` and `.text-sm` are in `@layer utilities`, and the layer order is theme, base, components, utilities. | New `packages/ui/test/fonts-layer.test.ts` (7). A real Vite build of fonts.css puts each rule inside `@layer base` and leaves no style rule outside a layer (only `@font-face`), with no `:lang(ar)` left. Tailwind's compile of the real entry point puts `leading-tight` and `text-sm` in `@layer utilities`, after `base` in both bundle orders, and gives preflight the Ralysa font stacks. **Mutation check:** with the old fonts.css, 5 of the 7 fail. |
+| 2 | `LoadingState`: `aria-busy` on its own `role="status"` live region may hold back the announcement. | The outer placeholder (it stands in for the content being loaded) carries `aria-busy="true"`. The message is a separate inner `role="status" aria-live="polite"`, which is never busy. The component comment and the README document it: when the message sits inside a region that keeps its content, put `aria-busy` on that region. Design §7.5's "`aria-busy`, polite live region" still holds. | `components-layout-actions-states.test.tsx`: the region is busy and has no role; the status is polite, isn't busy, and its nearest busy ancestor is the region. |
+| 3 | `AppShell.tsx` SkipLink: `focus:not-sr-only` sets `padding: 0` after `px-4 py-2`, so the focused link had no padding. | Adds `focus:px-4 focus:py-2`. | New `test/skip-link-css.test.tsx`: compiles the rendered link's real classes with Tailwind; the last `:focus` padding declaration is `--ralysa-space-4` inline and `--ralysa-space-2` block. **Mutation check:** without the two classes it fails (`0`). |
+| 4 | `turbo.json`: the `.tsc/**` typecheck output makes Turbo warn "no output files found" for the 29 workspaces that emit none. | Documented as expected in `repo-conventions.md` ("Referenceable libraries"). The output stays on the root task: per-package outputs would need a `turbo.json` in every library, and a library without one would bring back TS6305. | None needed (`check-turbo-config` already requires the root output). |
+| 5 | `T.tsx`: literal invisible characters (U+2068, U+2069, U+E000, U+E001). | Written as `\u` escapes, and the marker regex gets the `u` flag. The same fix is applied to the literal controls in `test/text.test.tsx` and `test/font-coverage.test.ts`. A scan of `packages/ui` and both apps finds no others. | The existing `<T>` / `isolate()` and font-coverage tests pass unchanged. |
+| 6 | `workspace-dir.test.ts`: the driver matched lint results to files by index. | Results are keyed by `result.filePath` (absolute; the driver resolves each argument), and a missing result throws. | The same 3 tests pass. |
+
 ## Version confirmations (npm registry, 2026-09-25 ~08:20 UTC)
 
 Policy (§2.2): the latest patch of a line GA for at least 30 days, and `minimumReleaseAge` holds back anything under 3 days old. Cut-off for the 3-day rule: 2026-09-22T08:20Z.
@@ -743,7 +942,13 @@ No dependency added by T01 to T03 runs a build script: `allowBuilds` is still `{
 - **T15 and required-checks.json:** T15 must keep T03's `required-checks.json` content (T03-2).
 - Bump Turbo, Prettier, Vite and `@eslint-react` to their newest patches once those are outside the 3-day window.
 - **T06 to T08 follow-ups:**
-  - Native-speaker review of every `ar` string (3 open, in the two `review.json` files; OQ-D8, still open externally).
-  - `color.bg.surfaceRaised`: deferred to T11 by decision (T06-5).
+  - Native-speaker review of every `ar` string (OQ-D8, still open externally). After T12: 95 catalog strings open in the three `review.json` files (`ui` 24, `web` 1, `lab` 70), plus the 20 Arabic samples in `apps/ui-lab/src/samples/arabic-samples.json`.
+  - `color.bg.surfaceRaised`: done in T11 (T06-5).
   - Bump `jsdom` to 30.1.1 once it is outside the 3-day window.
   - TC-F-001-11 (E2E locale switch) and the Playwright console listener for runtime missing keys arrive with T13.
+- **T09 to T12 follow-ups (for T13 and T14):**
+  - TC-F-001-13 should read the mirrored icon's computed `scale` (`-1 1`), not `transform` (T09-9).
+  - The AC-13 E2E (TC-F-001-28, `vite preview` of `apps/web` at `/ui-lab`, `/demo`, `?view=showcase`) is T13's; `check-no-demo` (TC-F-001-27) covers the build output now.
+  - Space on a checkbox and Select typeahead are left to the keyboard walker (T11-4); the components view nests landmarks (T10-5, T12-8).
+  - TC-F-001-15/16 (per-engine shaping snapshots, browser matrix) use the 20 samples and their `data-sample-id` hooks (T14).
+  - `lucide-react`: move to a newer minor once one is 30 days old (T09-1).

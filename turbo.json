@@ -21,7 +21,8 @@
       "outputs": ["dist/**"]
     },
     "typecheck": {
-      "dependsOn": ["^build"]
+      "dependsOn": ["^build", "^typecheck"],
+      "outputs": [".tsc/**"]
     },
     "lint": {
       "dependsOn": ["^build"]

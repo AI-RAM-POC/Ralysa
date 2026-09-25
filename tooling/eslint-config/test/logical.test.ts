@@ -94,7 +94,7 @@ it('names the logical property in the message', async () => {
     overrideConfigFile: true,
     overrideConfig: [
       ...base({ tsconfigRootDir: root }),
-      ...reactUi({ tailwindEntryPoint: FIXTURE_ENTRY }),
+      ...reactUi({ workspaceDir: root, tailwindEntryPoint: FIXTURE_ENTRY }),
     ],
   });
   const [result] = await eslint.lintText('export const x = <div style={{ marginLeft: 4 }} />;\n', {
@@ -107,7 +107,11 @@ it('names the logical property in the message', async () => {
 describe('Tailwind classes (better-tailwindcss)', () => {
   const config = (entry?: string): Linter.Config[] => [
     ...base({ tsconfigRootDir: root }),
-    ...reactUi(entry === undefined ? {} : { tailwindEntryPoint: entry }),
+    ...reactUi(
+      entry === undefined
+        ? { workspaceDir: root }
+        : { workspaceDir: root, tailwindEntryPoint: entry },
+    ),
     ...tests(),
   ];
   const eslint = new ESLint({

@@ -12,7 +12,7 @@ Design system: tokens, components, themes, RTL (F-001 design §7).
 | `scripts/build-tokens.ts` | Validates the source against `src/contracts/tokens.ts` and emits the three outputs below. |
 | `dist/css/tokens.css` (`@ralysa/ui/tokens.css`) | `--ralysa-*` custom properties: light on `:root`, dark on `[data-theme='dark']` and under `prefers-color-scheme` when no theme is set, `:lang(ar)` overrides, 0 ms durations under `prefers-reduced-motion`. Also `--ralysa-dir-sign` (1 in LTR, -1 in RTL), for direction-aware horizontal offsets. |
 | `src/styles/theme.css` (`@ralysa/ui/theme.css`) | Tailwind v4 `@theme inline`. The default namespaces are reset, so `bg-red-500` and friends don't exist; the token-backed names are `bg-canvas`, `bg-surface`, `bg-subtle`, `text-fg`, `text-fg-muted`, `bg-accent`, `border-border-control`, `ring-focus-ring`, `p-4`, `h-control-md`, `rounded-md`, `shadow-md` and so on. Generated and committed (drift-checked) so the lint can load it before a build. |
-| `src/styles/tailwind.css` (`@ralysa/ui/tailwind.css`) | The Tailwind entry point: `tailwindcss` plus the theme. UI workspaces pass it to `reactUi({ tailwindEntryPoint })`. |
+| `src/styles/tailwind.css` (`@ralysa/ui/tailwind.css`) | The Tailwind entry point: `tailwindcss` plus the theme. UI workspaces pass it to `reactUi({ workspaceDir, tailwindEntryPoint })`. |
 | `src/tokens/generated.ts` | Typed token names (`TokenName`, `TOKEN_CSS_VARS`). Committed; `check:generated` regenerates it and CI fails on drift. |
 
 Components use **semantic** tokens only. Palette values are never emitted as CSS variables.
@@ -34,11 +34,34 @@ Components use **semantic** tokens only. Palette values are never emitted as CSS
 
 Components call `useTranslation('ui')` explicitly; an app's own namespace is its `defaultNS`.
 
+## Fonts, icons and text (F-001-T09)
+
+| Path | What |
+|---|---|
+| `src/styles/fonts.css` (`@ralysa/ui/fonts.css`) | Noto Sans, Noto Sans Arabic and Noto Sans Mono (variable weight), self-hosted from the `@fontsource-variable/*` packages: the app's build bundles the woff2 files, with **no font CDN** and no network fetch (residency, air-gapped installs). Also the base typography: the `font.family.sans` stack, body line height and letter spacing from tokens, re-applied under `:lang(ar)` (line height 1.7, letter spacing 0), mono for `code`/`pre`. Import it once in an app after `tokens.css`. |
+| `scripts/font-licenses.ts` (`@ralysa/ui/font-licenses`) | The reviewed font packages (`FONT_PACKAGES`) and their licence check: `package.json` must say `OFL-1.1` and the licence's copyright notice must declare no Reserved Font Name. `build` writes `dist/licenses/fonts/<font>/OFL.txt` and `dist/THIRD_PARTY_NOTICES`. **`fontLicenses()`** is the Vite plugin every app that imports `fonts.css` adds: it emits the same files next to the bundle, never inlines a font as a data URI, and fails the build for a font file from any other package. |
+| `scripts/font-coverage.ts` (`@ralysa/ui/font-coverage`) | Reads the real woff2 cmaps (Brotli via `node:zlib`, cmap formats 4 and 12) and the `@font-face` `unicode-range`s, and reports the code points a font stack can't draw. Used by the coverage tests here and in `apps/ui-lab`. |
+| `src/icons/registry.ts`, `<Icon name>` | The icon registry: the **only** module that imports `lucide-react` (the `icon-set` group in `tooling/eslint-config/boundaries.js` bans it everywhere else, for ESLint, dependency-cruiser and `check-banned-deps`). Each icon is `directional` (mirrored in RTL with `rtl:-scale-x-100`: back, forward, chevrons, send, undo, redo) or not (never mirrored). `<Icon>` is decorative (`aria-hidden`) unless given a translated `label`, and renders `data-icon` and `data-icon-directional`. Unused icons are tree-shaken. |
+| `src/components/text/` | `Text`, `Heading`, and the LTR islands `Code` (`<code dir="ltr">`), `CodeBlock` (`<pre dir="ltr">`, wraps rather than scrolls) and `Ltr` (`<bdi dir="ltr" data-ltr>`), all `translate="no"`. `<T i18nKey values>` renders a translation with each interpolated value in `<bdi>`; `isolate()` / `isolateValues()` wrap values in FSI…PDI for attribute text (`aria-label`, `title`). |
+| `src/examples/` (`@ralysa/ui/examples`) | Every component's `*.examples.tsx`, collected in `ALL_EXAMPLES` for the `apps/ui-lab` gallery. A separate entry point, so apps never bundle them. Examples hold no text: the gallery passes `labels` (`EXAMPLE_LABELS`) from its own `lab` catalog, so example copy stays out of the shipped `ui` catalog. |
+
+## Components (F-001-T10, T11)
+
+Every component takes translated text (or an i18n key), uses semantic token classes only, logical layout only, and shows the shared focus ring (`focus-visible:focus-ring`, defined in `src/styles/tailwind.css`). Each has a `*.examples.tsx` registered in `ALL_EXAMPLES`.
+
+| Group | Components | Notes |
+|---|---|---|
+| Layout | `AppShell`, `SkipLink`, `VisuallyHidden` | `AppShell` renders `header`, a named `nav` (inline-start), `main` (`id="main"`, `tabIndex=-1`) and a named `aside` (inline-end) with flex in reading order, so RTL mirrors them with no extra rule; each region has `data-region`. The skip link is its first focusable element. |
+| Actions | `Button` (`primary`, `secondary`, `ghost`, `danger`; `sm`, `md`, `lg`; optional decorative `icon`), `IconButton` (required typed `labelKey`), `Link` | Native `<button>`/`<a>`. `Button` defaults to `type="button"`. |
+| Forms (Radix, `radix-ui` from the catalog) | `TextField`, `Checkbox`, `RadioGroup`, `Select`, `Tabs` | Visible labels (Radix `Label`) with a translated "(required)" marker; hint and error through `aria-describedby`, `aria-invalid` on error. Arrow keys follow the direction `LocaleProvider` feeds Radix's `DirectionProvider` (in `ar`, ArrowLeft moves forward). `Select` is the first raised surface: its popover is `bg-surface-raised` with `shadow-md`, a control border and the dropdown layer; Escape closes it and returns focus to the trigger. |
+| Preferences | `LocaleSwitcher`, `ThemeSwitcher` | `LocaleSwitcher` is a `Select` of the locales, each named in its own language with `lang`; switching sets `<html lang dir>` with no reload. `ThemeSwitcher` is a horizontal `RadioGroup` (light, dark, system) that sets `data-theme`. Both need `LocaleProvider`, and `ThemeSwitcher` needs `ThemeProvider`. |
+| States | `EmptyState`, `LoadingState`, `ErrorState`, `PermissionDenied` | Default copy from the `ui` catalog. `LoadingState`: a placeholder region with `aria-busy="true"` around a polite `role="status"` message (the live region itself is never busy); when the message sits inside a region that keeps its content, set `aria-busy` on that region; spinner only under `motion-safe`. `ErrorState`: `role="alert"`, no error-object prop (raw error text never renders), optional retry and bidi-isolated reference id. `PermissionDenied`: bidi-isolated resource name and an optional "Request access" link (spec §6.1.3). |
+
 ## Scripts
 
 | Script | Does |
 |---|---|
-| `build` | `build-tokens.ts`, then `tsc -p tsconfig.build.json` (browser library emit: no Node types in `src/`) |
+| `build` | `build-tokens.ts`, `font-licenses.ts` (licence check and copies), then `tsc -p tsconfig.build.json` (browser library emit: no Node types in `src/`) |
 | `check:generated` | Regenerates the token outputs and the i18n key types (CI then runs `git status --porcelain`) |
 | `lint` | ESLint (`base`, `react-ui` against `src/styles/tailwind.css`, `tests`), Stylelint (`@ralysa/stylelint-config`) and `i18next-cli extract --ci --dry-run`: raw colours, logical layout, token-backed classes, no hard-coded strings, no missing keys (AC-3 to AC-6) |
 | `test` | Vitest: token schema and generator (TC-F-001-06), contrast gate on the real pairs (TC-F-001-23), theme plumbing, i18n runtime and locale switch (AC-6), extract `--ci` behaviour (TC-F-001-12), contract parity with `check-i18n` and typed keys |

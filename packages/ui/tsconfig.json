@@ -7,10 +7,13 @@
     "allowImportingTsExtensions": true,
     // Referenceable library convention (repo-conventions.md): a referenced project may not
     // disable emit (TS6310), so the typecheck config emits declarations only, into the
-    // git-ignored .tsc/. The real build is tsconfig.build.json → dist/.
+    // git-ignored .tsc/. The real build is tsconfig.build.json → dist/. The build info lives in
+    // .tsc/ too, so deleting .tsc/ (or a Turbo cache restore of it) can't leave a stale build info
+    // that makes tsc skip re-emitting the declarations dependents read.
     "noEmit": false,
     "emitDeclarationOnly": true,
-    "outDir": "${configDir}/.tsc"
+    "outDir": "${configDir}/.tsc",
+    "tsBuildInfoFile": "${configDir}/.tsc/tsconfig.tsbuildinfo"
   },
   "include": ["src", "src/locales/*/*.json", "test", "scripts", "*.config.ts"]
 }

@@ -20,7 +20,7 @@ async function ruleIds(config: Linter.Config[], code: string, filePath: string):
 const everyPreset = (): Linter.Config[] => [
   ...base({ tsconfigRootDir: root }),
   ...isomorphic(),
-  ...reactUi(),
+  ...reactUi({ workspaceDir: root }),
   ...tests(),
 ];
 
@@ -124,7 +124,10 @@ describe('isomorphic preset (library-isomorphic)', () => {
 });
 
 describe('react-ui preset: jsx-a11y through @eslint/compat under ESLint 10 (T02 spike)', () => {
-  const config = (): Linter.Config[] => [...base({ tsconfigRootDir: root }), ...reactUi()];
+  const config = (): Linter.Config[] => [
+    ...base({ tsconfigRootDir: root }),
+    ...reactUi({ workspaceDir: root }),
+  ];
 
   it.each([
     ['jsx-a11y/alt-text', '<img src="a.png" />'],
