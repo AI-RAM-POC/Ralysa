@@ -20,7 +20,7 @@ const root = join(here, '..');
 async function lint(code: string, filePath: string, workspace = 'apps/web'): Promise<string[]> {
   const config: Linter.Config[] = [
     ...base({ tsconfigRootDir: root, workspace }),
-    ...reactUi(),
+    ...reactUi({ workspaceDir: root }),
     ...tests(),
   ];
   const eslint = new ESLint({ cwd: root, overrideConfigFile: true, overrideConfig: config });

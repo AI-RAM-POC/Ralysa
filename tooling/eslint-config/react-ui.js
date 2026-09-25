@@ -64,20 +64,31 @@ const jsxA11yPlugin = fixupPluginRules(jsxA11y);
 
 /**
  * @param {{
+ *   workspaceDir?: string,
  *   files?: string[],
  *   tailwindEntryPoint?: string,
  *   workspace?: string,
- * }} [options] `tailwindEntryPoint` is the absolute path of the workspace's Tailwind CSS entry
- *   point, normally `fileURLToPath(import.meta.resolve('@ralysa/ui/tailwind.css'))`. Without it,
- *   every token-backed class is reported as unknown. `workspace` (repo-relative, derived from the
- *   working directory like base()'s) places the LOADING_EXCEPTIONS globs; tests override it.
+ * }} [options] `workspaceDir` is the workspace folder: `import.meta.dirname` in its
+ *   eslint.config.js, the same folder base() gets as `tsconfigRootDir`. The repo-relative
+ *   `workspace` that places the LOADING_EXCEPTIONS globs is derived from it, never from the
+ *   working directory, so `eslint packages/x/…` run from the repo root sees the same exceptions
+ *   as `eslint .` run inside packages/x (PR #15 review). Tests may pass `workspace` directly.
+ *   `tailwindEntryPoint` is the absolute path of the workspace's Tailwind CSS entry point,
+ *   normally `fileURLToPath(import.meta.resolve('@ralysa/ui/tailwind.css'))`. Without it, every
+ *   token-backed class is reported as unknown.
  * @returns {import('eslint').Linter.Config[]}
  */
 export function reactUi({
+  workspaceDir,
   files = UI_FILES,
   tailwindEntryPoint = NO_THEME_ENTRY_POINT,
-  workspace = workspaceOf(process.cwd()),
+  workspace = workspaceDir === undefined ? undefined : workspaceOf(workspaceDir),
 } = {}) {
+  if (workspaceDir === undefined && workspace === undefined) {
+    throw new Error(
+      'reactUi() needs { workspaceDir: import.meta.dirname }: the workspace folder, as base() gets tsconfigRootDir',
+    );
+  }
   return [
     {
       ...eslintReact.configs['recommended-type-checked'],

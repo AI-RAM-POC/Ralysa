@@ -32,7 +32,7 @@ afterAll(() => {
 
 const config = (): Linter.Config[] => [
   ...base({ tsconfigRootDir: scratch }),
-  ...reactUi({ tailwindEntryPoint: FIXTURE_ENTRY }),
+  ...reactUi({ workspaceDir: scratch, tailwindEntryPoint: FIXTURE_ENTRY }),
   ...tests(),
 ];
 const eslint = new ESLint({ cwd: scratch, overrideConfigFile: true, overrideConfig: config() });

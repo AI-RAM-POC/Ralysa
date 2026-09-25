@@ -12,7 +12,7 @@ Design system: tokens, components, themes, RTL (F-001 design §7).
 | `scripts/build-tokens.ts` | Validates the source against `src/contracts/tokens.ts` and emits the three outputs below. |
 | `dist/css/tokens.css` (`@ralysa/ui/tokens.css`) | `--ralysa-*` custom properties: light on `:root`, dark on `[data-theme='dark']` and under `prefers-color-scheme` when no theme is set, `:lang(ar)` overrides, 0 ms durations under `prefers-reduced-motion`. Also `--ralysa-dir-sign` (1 in LTR, -1 in RTL), for direction-aware horizontal offsets. |
 | `src/styles/theme.css` (`@ralysa/ui/theme.css`) | Tailwind v4 `@theme inline`. The default namespaces are reset, so `bg-red-500` and friends don't exist; the token-backed names are `bg-canvas`, `bg-surface`, `bg-subtle`, `text-fg`, `text-fg-muted`, `bg-accent`, `border-border-control`, `ring-focus-ring`, `p-4`, `h-control-md`, `rounded-md`, `shadow-md` and so on. Generated and committed (drift-checked) so the lint can load it before a build. |
-| `src/styles/tailwind.css` (`@ralysa/ui/tailwind.css`) | The Tailwind entry point: `tailwindcss` plus the theme. UI workspaces pass it to `reactUi({ tailwindEntryPoint })`. |
+| `src/styles/tailwind.css` (`@ralysa/ui/tailwind.css`) | The Tailwind entry point: `tailwindcss` plus the theme. UI workspaces pass it to `reactUi({ workspaceDir, tailwindEntryPoint })`. |
 | `src/tokens/generated.ts` | Typed token names (`TokenName`, `TOKEN_CSS_VARS`). Committed; `check:generated` regenerates it and CI fails on drift. |
 
 Components use **semantic** tokens only. Palette values are never emitted as CSS variables.

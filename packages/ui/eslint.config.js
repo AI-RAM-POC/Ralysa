@@ -7,7 +7,7 @@ const tailwindEntryPoint = fileURLToPath(new URL('./src/styles/tailwind.css', im
 /** @type {import('eslint').Linter.Config[]} */
 const config = [
   ...base({ tsconfigRootDir: import.meta.dirname }),
-  ...reactUi({ tailwindEntryPoint }),
+  ...reactUi({ workspaceDir: import.meta.dirname, tailwindEntryPoint }),
   ...tests(),
 ];
 

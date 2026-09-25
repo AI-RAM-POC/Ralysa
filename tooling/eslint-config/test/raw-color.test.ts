@@ -86,7 +86,7 @@ describe('findRawColor', () => {
 describe('react-ui preset: raw colours (AC-3)', () => {
   const config = (): Linter.Config[] => [
     ...base({ tsconfigRootDir: root }),
-    ...reactUi(),
+    ...reactUi({ workspaceDir: root }),
     ...tests(),
   ];
   async function ruleIds(code: string, file: string): Promise<string[]> {
