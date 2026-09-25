@@ -1,8 +1,11 @@
 // State patterns (F-001 design §7.5 "States", §7.7): the empty, loading, error and
 // permission-denied states every Phase 1 data view reuses. Each has default copy from the ui
 // catalog and accepts translated overrides.
-// - LoadingState is a polite live region with aria-busy; its spinner turns only when the user
-//   hasn't asked for reduced motion.
+// - LoadingState stands in for the content being loaded: that placeholder region carries
+//   aria-busy, and the message inside it is a separate polite role="status" live region (a busy
+//   live region may hold back its own announcement; PR #17 review 2). When the loading message sits
+//   inside a region that keeps showing content, set aria-busy on that region instead. Its spinner
+//   turns only when the user hasn't asked for reduced motion.
 // - ErrorState is role="alert" and takes no error object: raw error text (stack traces, server
 //   messages, document content) never reaches the screen. A support reference id may be shown.
 // - PermissionDenied offers "Request access" as a link to the web console (spec §6.1.3).
@@ -60,15 +63,11 @@ export interface LoadingStateProps {
 export function LoadingState({ label, className }: LoadingStateProps): JSX.Element {
   const { t } = useTranslation('ui');
   return (
-    <div
-      role="status"
-      aria-live="polite"
-      aria-busy="true"
-      data-state-pattern="loading"
-      className={cn(FRAME, className)}
-    >
+    <div aria-busy="true" data-state-pattern="loading" className={cn(FRAME, className)}>
       <Icon name="loading" size="lg" className="text-fg-muted motion-safe:animate-spin" />
-      <Text tone="muted">{label ?? t('loadingState.label')}</Text>
+      <div role="status" aria-live="polite">
+        <Text tone="muted">{label ?? t('loadingState.label')}</Text>
+      </div>
     </div>
   );
 }

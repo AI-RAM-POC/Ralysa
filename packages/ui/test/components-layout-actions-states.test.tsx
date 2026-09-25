@@ -170,12 +170,17 @@ describe('state patterns (§7.5 States)', () => {
     expect(view.container.querySelector('button')?.textContent).toBe('go');
   });
 
-  it('LoadingState is a busy, polite status region with a reduced-motion-aware spinner', async () => {
+  it('LoadingState: a busy placeholder region holding a separate polite status message', async () => {
     view = await render(<LoadingState />, { locale: 'ar' });
-    const region = view.container.querySelector('[role="status"]');
-    expect(region?.getAttribute('aria-live')).toBe('polite');
+    const region = view.container.querySelector('[data-state-pattern="loading"]');
+    const status = region?.querySelector('[role="status"]');
+    // aria-busy sits on the region being loaded, never on the live region itself (review 2).
     expect(region?.getAttribute('aria-busy')).toBe('true');
-    expect(region?.textContent).toBe('جارٍ التحميل…');
+    expect(region?.getAttribute('role')).toBeNull();
+    expect(status?.getAttribute('aria-live')).toBe('polite');
+    expect(status?.hasAttribute('aria-busy')).toBe(false);
+    expect(status?.closest('[aria-busy]')).toBe(region);
+    expect(status?.textContent).toBe('جارٍ التحميل…');
     expect(region?.querySelector('svg')?.getAttribute('class')).toContain(
       'motion-safe:animate-spin',
     );
