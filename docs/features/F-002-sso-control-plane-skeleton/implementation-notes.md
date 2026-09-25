@@ -1,6 +1,6 @@
 # F-002: Implementation notes
 
-> Phase 5 · Owner: developer agent · Branch `feat/F-002-foundations` (T01–T03, one commit per task; T04 follows on its own branch) · Design: [design.md](./design.md) (G4 recorded 2026-09-25) · Security review: [security.md](./security.md) · Date: 2026-09-25
+> Phase 5 · Owner: developer agent · Branches `feat/F-002-foundations` (T01–T03, PR #18, merged) and `feat/F-002-secrets-db-audit` (T04–T06), one commit per task · Design: [design.md](./design.md) (G4 recorded 2026-09-25) · Security review: [security.md](./security.md) · Date: 2026-09-25
 > These notes carry the evidence the design asks each task to record: versions, deviations, "to verify" results and anything left open. The PR description links here.
 
 ## Environment
@@ -160,3 +160,58 @@ Checked for later tasks and **not added**, because no code uses them yet: `kysel
 | R-6 | No guard against `.refine()`/`.superRefine()` on wire types. | **Decision: enforce, don't just document.** Checked on zod 4.6.5: `z.toJSONSchema` silently drops custom checks even with `unrepresentable: 'throw'`, so a refinement would make the zod schema and the published JSON Schema disagree. New `findCustomChecks()` in the generator walks the zod tree (including lazy and recursive types such as `IJson`), and `toJsonSchema` throws on any custom check. A unit test also walks **every** exported schema of the four families, registered or not. | `schema.test.ts`: `refine`, `superRefine`, `check(z.refine)` and a refinement nested in a union all fail; built-in checks pass; all exports are clean. |
 | R-7 | The harness probe checked only the Transit mount, so a bootstrap that stopped half-way looked ready. | `bootstrap` now writes a completion marker `kv/data/ralysa/dev-stack/bootstrapped` (root token, outside every Ralysa policy) **after** the Postgres roles step. The probe also requires the `ralysa-cp-serve` policy and the marker. This covers the case hit locally where psql failed after the OpenBao part. | Unit tests for the marker path and `isBootstrapped`. `stack.int.ts` asserts the marker. Manual check: after the marker was deleted, the probe reported "the last bootstrap did not finish…", and re-running bootstrap restored it. |
 | R-8 | The `AuthorizeQuery.redirect_uri` port pattern `[1-9][0-9]{0,4}` accepted 65536–99999. | **Deviation from the design's regex (§3.2, `/^http:\/\/(127\.0\.0\.1\|\[::1\]):([1-9][0-9]{0,4})\/callback$/`):** tightened to exactly 1–65535 with no leading zeros. It is stricter only, and every port a real loopback listener can bind still passes. The generated `oauth-authorize-query.v1.json` was regenerated. | `auth.test.ts`: 1, 9999, 59999, 64999, 65499, 65529 and 65535 accepted; 0, 01, 65536, 65540, 66000, 99999 and 100000 refused. |
+
+## Carried review nits (from PR #18, on `feat/F-002-secrets-db-audit`)
+
+- The no-glob test now covers **every** policy, operator included. It uses a small OpenBao glob matcher (`+` = one segment, a trailing `*` = any suffix) to require that no allow pattern matches a sample of denied custody paths: key config, export, backup, restore and import.
+- The `stack.int.ts` comment now names `check-integration-scope`.
+- The `readDbPassword` doc comment is back above its function.
+
+## T04: `packages/secrets`
+
+### What landed
+
+- `ports.ts`: `SecretStore`, `KeyCustody`, `KeyDescription`, `PublicKeyVersion`, `VaultAuth`, `RuntimeEnv` (design §3.7).
+- `openbao/http.ts`: `fetch` client. The address must be plain `http(s)://host[:port][/path]`. Every API path segment must match `[A-Za-z0-9_.+-]+` with no `.` or `..`. A default 5 s timeout applies.
+- `openbao/auth.ts`: Kubernetes, AppRole and token login with the environment rules in `assertAuthAllowed`. Logins are single-flight and renew at half the lease.
+- `openbao/kv2.ts`: `get` and polling `watch` over mount-first paths.
+- `openbao/transit.ts`: `describe` (custody flags, type, public JWKs from the PEM) and `sign` (`sha2-256`, `key_version`, `marshaling_algorithm=jws`, a 64-byte r‖s check).
+- `memory/`: the two doubles. Key custody uses WebCrypto keys whose private halves are non-extractable, plus `setFlags` and `setMinAvailableVersion` for custody-monitor tests.
+- `errors.ts`: `SecretsError` codes and `CustodyViolationError`. No message carries a token, value or body.
+- Dev-stack harness: `roleCredentials(stack, role)` (role_id plus a fresh single-use secret_id), so adapter tests log in through AppRole themselves.
+
+### Versions
+
+| Item | Pinned | Evidence |
+|---|---|---|
+| `jose` | **6.2.12** (devDependency of `@ralysa/secrets`, integration verification only) | Published 2026-09-05 (20 days old), the latest 6.2 patch; the 6.2 line is well past 30 days. MIT, no dependencies, no install scripts. T07/T11 add it as a runtime dependency of control-plane and auth and move it to the catalog then. |
+
+### Recorded decisions and deviations
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T04-1 | **Bug found by the integration test, fixed** | After a 403, the adapter logs in again only if `auth/token/lookup-self` with the same token is also refused. A policy denial (valid token) is returned as `access_denied` without a new login. | The first version re-logged in on every 403. With the dev AppRole's single-use `secret_id`, a legitimate denial (serve reading `db/migrator`) burned the credential and turned the denial into `auth_failed`. In production the same would make each denial cost a login. `lookup-self` is in OpenBao's default policy. |
+| T04-2 | Addition to the port | `createOpenBao` takes `allowAppRole` (from config `vault.allow_approle`). AppRole is refused when `env=production` without it; token auth is refused unless `env` is `dev` or `test`. `assertAuthAllowed` is exported so T07's config guards call the same rule. | §3.7 says "production only with allow_approle" but its `createOpenBao` signature has no field for it. |
+| T04-3 | Addition to the port | `SecretStore.watch` takes an optional `onError`. Polling continues after an error, and the version seen at start is not reported. | §3.7's signature has no error channel. The T13 rotation watcher needs to see OpenBao outages without the watch dying. |
+| T04-4 | Implementation choice | `PublicKeyVersion.jwk` is a `PublicJwk` (`kty`, `crv`, `x`, `y` only), not the DOM `JsonWebKey`. | The isomorphic lib has no DOM types. The narrower type also guarantees that no private or `key_ops` members reach JWKS. |
+| T04-5 | Implementation choice | `describe` refuses any key type but `ecdsa-p256` (`unsupported_key`) as well as either custody flag. The flag check treats a **missing** flag as `true` (fail closed). | ES256 is the only algorithm the design mints with (§3.2.4). A reply without the flags is not proof of custody. |
+| T04-6 | Implementation choice | The in-memory custody's `sign` still signs after `setFlags`, as Transit does. Only `describe` refuses. | The custody monitor (T07/T16) is what stops signing. If the double refused too, TC-33's hermetic half would pass without the monitor doing anything. |
+| T04-7 | Hardening | `check-integration-scope` skips listed files that no longer exist. | `git ls-files --cached` still lists a deleted file until the deletion is staged, and the check crashed on it while this task replaced `wiring.int.ts`. |
+
+### Tests (T04)
+
+- `test/openbao.test.ts` (fake `fetch`, 40 cases):
+  - the auth matrix per environment, including a refusal before any request;
+  - address validation;
+  - Kubernetes login (single-flight, reused, re-login only when the token is invalid, no re-login on a policy denial);
+  - an AppRole login failure and an unreachable OpenBao, whose messages don't contain the role id, secret id or token;
+  - KV path mapping, the status → code mapping, a deleted version and path traversal refusals;
+  - `watch` with fake timers: a new version reported once, errors reported while polling continues, nothing after `stop`;
+  - Transit `describe` (JWK shape, `min_available_version`, each custody flag and a missing flag, non-P-256);
+  - `sign` (request body, 64 bytes, a wrong version, a wrong length, non-vault formats, key-name traversal).
+- `test/memory.test.ts`: versions and `watch`; `fail`; two key versions whose signatures verify only against their own JWK; unknown keys and unavailable versions; flags flipped at runtime are refused and then accepted again.
+- `test/integration/openbao.int.ts` (dev stack):
+  - **a Transit ES256 JWS verifies with `jose` against the published key for two versions**, and never under the other version's key;
+  - `describe` refuses a key after `exportable` is flipped at runtime, and another after `allow_plaintext_backup` alone is flipped (OpenBao 2.6.2 accepts that flag without `exportable`; checked), on throwaway keys [SEC-F002-11];
+  - **the KV v2 watch reports a new version**;
+  - the serve AppRole reads `db/cp_app` but gets `access_denied` on `db/migrator`, and signs with `ralysa-rts-signing` but not with `ralysa-audit-checkpoint`.

@@ -353,17 +353,29 @@ export async function readDbPassword(
 }
 
 /** Logs in with a fresh single-use secret_id (dev and tests only; needs a root/operator token). */
-export async function appRoleLogin(
+/** The role_id and a fresh single-use secret_id of a dev AppRole (root token). */
+export async function appRoleCredentials(
   root: BaoRequest,
-  anonymous: BaoRequest,
   role: string,
-): Promise<string> {
+): Promise<{ roleId: string; secretId: string }> {
   const roleId = dataOf(
     expectOk(await root('GET', `auth/approle/role/${role}/role-id`), 'role-id'),
   ).role_id;
   const secretId = dataOf(
     expectOk(await root('POST', `auth/approle/role/${role}/secret-id`, {}), 'secret-id'),
   ).secret_id;
+  if (typeof roleId !== 'string' || typeof secretId !== 'string') {
+    throw new Error(`approle ${role}: no role_id or secret_id`);
+  }
+  return { roleId, secretId };
+}
+
+export async function appRoleLogin(
+  root: BaoRequest,
+  anonymous: BaoRequest,
+  role: string,
+): Promise<string> {
+  const { roleId, secretId } = await appRoleCredentials(root, role);
   const login = expectOk(
     await anonymous('POST', 'auth/approle/login', { role_id: roleId, secret_id: secretId }),
     `approle login ${role}`,

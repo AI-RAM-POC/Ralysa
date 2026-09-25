@@ -8,7 +8,7 @@
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { connect } from 'node:net';
-import { appRoleLogin, isBootstrapped } from '../bootstrap-vault.ts';
+import { appRoleCredentials, appRoleLogin, isBootstrapped } from '../bootstrap-vault.ts';
 import { readEnvFile } from '../env.ts';
 import { type BaoRequest, baoClient } from '../openbao.ts';
 import { DEFAULT_ENV_FILE, OPENBAO_ADDR, POSTGRES, PROBE_POLICY, TRANSIT_MOUNT } from '../stack.ts';
@@ -136,6 +136,14 @@ export async function roleBao(
 ): Promise<{ token: string; bao: BaoRequest }> {
   const token = await appRoleLogin(rootBao(stack), baoClient(stack.openbao.addr), role);
   return { token, bao: baoClient(stack.openbao.addr, token) };
+}
+
+/** role_id and a fresh single-use secret_id for an AppRole, for adapters that log in themselves. */
+export function roleCredentials(
+  stack: DevStack,
+  role: string,
+): Promise<{ roleId: string; secretId: string }> {
+  return appRoleCredentials(rootBao(stack), role);
 }
 
 /** A unique, lowercase name for per-test OpenBao keys and paths, so test files run in parallel. */
