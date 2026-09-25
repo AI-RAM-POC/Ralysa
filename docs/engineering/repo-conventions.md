@@ -99,8 +99,9 @@ A workspace that depends on a TypeScript library must reference it in its `tscon
 ```sh
 node tooling/dev-stack/src/cli.ts env          # deploy/docker/dev/.env: random [A-Za-z0-9] values, mode 0600, git-ignored
 docker compose -f deploy/docker/dev/compose.yaml --env-file deploy/docker/dev/.env up -d --wait
-node tooling/dev-stack/src/cli.ts bootstrap    # OpenBao keys, KV, policies, AppRoles; Postgres login roles
-pnpm exec turbo run test:integration
+node tooling/dev-stack/src/cli.ts bootstrap    # OpenBao keys, KV, policies, AppRoles; Postgres roles + bootstrap-roles.sql
+pnpm exec turbo run test:integration          # each control-plane test file migrates its own fresh database
+pnpm --filter @ralysa/control-plane migrate:audit:dev && pnpm --filter @ralysa/control-plane migrate:dev   # the dev database (after build)
 docker compose -f deploy/docker/dev/compose.yaml --env-file deploy/docker/dev/.env down -v   # reset
 ```
 
@@ -114,7 +115,14 @@ docker compose -f deploy/docker/dev/compose.yaml --env-file deploy/docker/dev/.e
 - The env and bootstrap commands need no installed packages. `env` refuses to write outside `deploy/docker/dev/` and never overwrites without `--force`.
 - Postgres sets the superuser password only when its volume is first initialised. If you regenerate `.env` with `--force`, run `down -v` first, or the old volume keeps the old password and the smoke test fails with "password authentication failed for user postgres".
 - Integration tests read the stack only inside hooks, tests and helper functions, never directly in a `describe` body: that body runs at collection time even when the suite is skipped. `check-integration-scope` (in `repo:check`) enforces this. `bootstrap` writes a completion marker last, and the harness treats a stack without it as not bootstrapped.
-- Without the stack, `test:integration` skips with one message saying what to start. With `CI` set or `RALYSA_REQUIRE_DEV_STACK=1` it fails instead, so CI can't pass by skipping.
+- Without the stack, `test:integration` skips with one message saying what to start. With `CI` set or `RALYSA_REQUIRE_DEV_STACK=1` it fails instead, so CI can't pass by skipping. `turbo.json` lists `RALYSA_REQUIRE_DEV_STACK` in the task's `passThroughEnv` (Turbo's strict env mode would otherwise hide it), and `check-turbo-config` keeps it there.
+- Control-plane integration tests create one database per test file (`test/integration/support/db.ts`): bootstrapped with `bootstrap-roles.sql` as the superuser, then migrated with the real `migrate` code as the real roles, and dropped afterwards. Files therefore run in parallel and start clean.
+
+### Control-plane migrations
+
+- Two sets under `services/control-plane/src/db/migrations/`: `audit` (run first, by `migrate --audit` as the audit owner) and `cp` (by `migrate`). Each is a static import map in its `index.ts`; append new files, never edit released ones.
+- `services/control-plane/migrations.lock.json` records the SHA-256 of every migration and of the shared helpers beside them (`ddl.ts`). After adding a migration, run `pnpm migrations:lock`. `check-migrations-immutable` (in `repo:check`) fails on an unlocked or changed file, and on any change to an entry that `main`'s lock already has, so rewriting the lock can't hide an edit to a released migration. The CI `repo-checks` job fetches `main` for that comparison.
+- Application code reaches org data only through `withOrg()`. The control-plane lint config bans session-level `SET ROLE`, `SET app.…` and `set_config('app.org_id', …, false)` everywhere except `src/db/migrate.ts` (SEC-F002-31).
 - `pnpm secret-scan tree` scans git-ignored files too, so it reports the generated `deploy/docker/dev/.env`. Those values are throwaway; move the file aside (or `down -v` and delete it) before a local tree scan.
 
 ## Dependencies

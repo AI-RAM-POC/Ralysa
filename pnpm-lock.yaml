@@ -15,6 +15,9 @@ catalogs:
     '@types/node':
       specifier: 24.13.6
       version: 24.13.6
+    '@types/pg':
+      specifier: 8.23.1
+      version: 8.23.1
     '@types/react':
       specifier: 19.3.0
       version: 19.3.0
@@ -36,6 +39,12 @@ catalogs:
     jsdom:
       specifier: 30.1.0
       version: 30.1.0
+    kysely:
+      specifier: 0.29.6
+      version: 0.29.6
+    pg:
+      specifier: 8.23.0
+      version: 8.23.0
     radix-ui:
       specifier: 1.6.7
       version: 1.6.7
@@ -413,7 +422,29 @@ importers:
         version: link:../../tooling/repo-scripts
 
   services/control-plane:
+    dependencies:
+      '@ralysa/protocol':
+        specifier: workspace:*
+        version: link:../../packages/protocol
+      '@ralysa/secrets':
+        specifier: workspace:*
+        version: link:../../packages/secrets
+      kysely:
+        specifier: 'catalog:'
+        version: 0.29.6
+      pg:
+        specifier: 'catalog:'
+        version: 8.23.0
+      yaml:
+        specifier: 'catalog:'
+        version: 2.9.1
+      zod:
+        specifier: 'catalog:'
+        version: 4.6.5
     devDependencies:
+      '@ralysa/dev-stack':
+        specifier: workspace:*
+        version: link:../../tooling/dev-stack
       '@ralysa/eslint-config':
         specifier: workspace:*
         version: link:../../tooling/eslint-config
@@ -426,6 +457,9 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 24.13.6
+      '@types/pg':
+        specifier: 'catalog:'
+        version: 8.23.1
       eslint:
         specifier: 'catalog:'
         version: 10.11.0(jiti@2.7.0)(supports-color@10.2.2)
@@ -475,13 +509,13 @@ importers:
         specifier: 'catalog:'
         version: 24.13.6
       '@types/pg':
-        specifier: 8.23.1
+        specifier: 'catalog:'
         version: 8.23.1
       eslint:
         specifier: 'catalog:'
         version: 10.11.0(jiti@2.7.0)(supports-color@10.2.2)
       pg:
-        specifier: 8.23.0
+        specifier: 'catalog:'
         version: 8.23.0
       typescript:
         specifier: 'catalog:'
@@ -3262,6 +3296,10 @@ packages:
   kleur@3.0.3:
     resolution: {integrity: sha512-eTIzlVOSUR+JxdDFepEYcBMtZ9Qqdef+rnzWdRZuMbOywu5tO2w2N7rqjoANZ5k9vywhL6Br1VRjUIgTQx4E8w==}
     engines: {node: '>=6'}
+
+  kysely@0.29.6:
+    resolution: {integrity: sha512-hHaB8C/rfzDDtr/t8YZwxAuPJTT0zHyaPoVzcXwDYhYNAgH/4sIfVhi/XLLIY+bL/FqaIJnjATDbi8ObSELmxg==}
+    engines: {node: '>=22.0.0'}
 
   language-subtag-registry@0.3.23:
     resolution: {integrity: sha512-0K65Lea881pHotoGEa5gDlMxt3pctLi2RplBb7Ezh4rRdLEOtgi7n4EwK9lamnUCkKBqaeKRVebTq6BAxSkpXQ==}
@@ -7199,6 +7237,8 @@ snapshots:
   kind-of@6.0.3: {}
 
   kleur@3.0.3: {}
+
+  kysely@0.29.6: {}
 
   language-subtag-registry@0.3.23: {}
 

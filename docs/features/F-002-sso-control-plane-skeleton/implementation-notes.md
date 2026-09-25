@@ -215,3 +215,101 @@ Checked for later tasks and **not added**, because no code uses them yet: `kysel
   - `describe` refuses a key after `exportable` is flipped at runtime, and another after `allow_plaintext_backup` alone is flipped (OpenBao 2.6.2 accepts that flag without `exportable`; checked), on throwaway keys [SEC-F002-11];
   - **the KV v2 watch reports a new version**;
   - the serve AppRole reads `db/cp_app` but gets `access_denied` on `db/migrator`, and signs with `ralysa-rts-signing` but not with `ralysa-audit-checkpoint`.
+
+## T05: database
+
+### What landed
+
+- `src/db/sql/bootstrap-roles.sql`, the DBA script. It is plain SQL, idempotent and run once per database as a superuser, with these parts:
+  - a UTF-8 and superuser check;
+  - the roles, none with an elevated attribute;
+  - the NOLOGIN `ralysa_audit_owner`, granted to `ralysa_audit_migrator` `WITH INHERIT FALSE, SET TRUE`, plus an assertion that `ralysa_migrator` is not a member;
+  - database CONNECT and CREATE grants, and `REVOKE ALL ON SCHEMA public FROM PUBLIC`;
+  - the superuser-owned `ralysa_admin.record_audit_schema_ddl()` and two event triggers (`ddl_command_end`, `sql_drop`), `ENABLE ALWAYS`, which write `audit.schema_changed` for any DDL on `audit` or `ralysa_meta_audit` [SEC-F002-01 b].
+- Migrations (static providers, up only):
+  - `audit/0001_audit_store`: `audit.current_org()`; `audit_event`, `audit_seal` (foreign key to the event) and `audit_checkpoint`; FORCE RLS; column-level INSERT for the writer; reader and sealer grants; `reject_modify_row`/`_stmt` and `reject_truncate` on all three tables, `ENABLE ALWAYS`.
+  - `cp/0001` to `cp/0004`: the §4.4 tables, FORCE RLS with one policy per operation, per-table grants, and the `organization.region` immutability trigger.
+- `src/db/migrate.ts`: both sets. Each runs as its login role; the audit set issues `SET ROLE ralysa_audit_owner` on its single connection. Kysely history lives in `ralysa_meta` and `ralysa_meta_audit`. Both sets check UTF-8 and check the role matches the set.
+- `src/db/pools.ts` (one pool per role; password as a function, fetched from OpenBao at connect), `src/db/kysely.ts` (`createDb`, `withOrg` with a UUID check), `src/db/types.ts` (the Kysely `Database`).
+- `src/config/` (the shared `Common` parts plus `MigrateConfig` and `MigrateAuditConfig`, the common production guards, and a YAML loader whose errors name paths only), `src/secrets/vault.ts` (auth material from files or a named env var), and `src/main.ts` (`migrate [--audit]`).
+- `migrations.lock.json` (per-file `{sha256}` entries, T05-21), the `check-migrations-immutable` repo check, `pnpm migrations:lock`, and a CI step that fetches `main` for the comparison.
+- The SEC-F002-31 lint ban in the control-plane ESLint config.
+- Dev-stack `bootstrap` now applies `bootstrap-roles.sql`. The harness gains `dbPassword` and `BOOTSTRAP_ROLES_SQL`. There are dev configs for `migrate` and `migrate --audit`.
+
+### Versions
+
+| Item | Pinned | Evidence |
+|---|---|---|
+| `kysely` | **0.29.6** (catalog; control-plane dependency) | Published 2026-09-16 (9 days old); the 0.29 line started 2026-05-08. MIT, no dependencies, no install scripts. 0.29 moved `Migrator` and `Migration` to `kysely/migration` (the root exports are deprecated). |
+| `pg` / `@types/pg` | 8.23.0 / 8.23.1, moved to the **catalog** | Now used by dev-stack and control-plane (T02 note). |
+
+### Recorded decisions and deviations
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T05-1 | **Deviation from §8.2** | Dev-stack `bootstrap` applies `bootstrap-roles.sql` but does **not** run the migrations. They run through the control plane's own commands (`pnpm --filter @ralysa/control-plane migrate:audit:dev`, then `migrate:dev`), and integration tests migrate a fresh database per file. | Bootstrap runs before any build, both locally and in the CI job; the migrations are TypeScript in the control plane. Importing control-plane from dev-stack would create a dependency cycle, since control-plane has dev-stack as a devDependency. |
+| T05-2 | Interpretation | `bootstrap-roles.sql` sets no passwords and has no psql meta-commands. The dev stack sets passwords first (T02's SCRAM-over-stdin script), then appends this file to the same stdin. | One file serves the production DBA and the dev stack, and tests can run it through a driver. Passwords stay on the stdin channel (SEC-F002-29). |
+| T05-3 | Deviation from §4.3 | Locking schema `public` is in `bootstrap-roles.sql`, not in `cp/0001`. `cp/0001` refuses to run if `ralysa_cp_app` could still create objects in `public`. | `public` belongs to `pg_database_owner`, so the migrator cannot revoke on it. |
+| T05-4 | Implementation choice | `GRANT ralysa_audit_owner TO ralysa_audit_migrator WITH INHERIT FALSE, SET TRUE` (PostgreSQL 16+). | The audit migrator has the owner's rights only after an explicit `SET ROLE`, never implicitly. The test checks `pg_has_role(…, 'USAGE') = false` and `'SET' = true`. |
+| T05-5 | Design gap, filled | Event-trigger attribution: the org is the caller's `app.org_id`, else the single organization, else the nil UUID. The migrate jobs set `app.org_id` from `config.org.id` on their one connection. When `audit.audit_event` doesn't exist (its own first migration, or after a drop), the DDL goes to the server log as a `WARNING` (`log_line_prefix` names user and client). The trigger also records the audit migration's own DDL. | §4.5 doesn't say which org a DDL event belongs to, and the org can't come from config inside the database. Recording migration DDL too is simply what "any DDL on the audit schema" means. |
+| T05-6 | Hardening | Every audit trigger, the region trigger and the event triggers are `ENABLE ALWAYS`, so they also fire under `session_replication_role = replica`. `audit.modify_denied` is written only when the statement touched at least one row. With several orgs in one statement (a superuser, since RLS limits the owner to one org), the event carries the first row's org. | SEC-F002-25 says no Ralysa role may set that GUC (tested); ALWAYS also covers a superuser. A zero-row statement changes nothing and would only add noise. Phase 0 has one organization. |
+| T05-7 | Implementation choice | The audit tables have UPDATE and DELETE RLS policies although nobody is granted those operations. | Without a policy, FORCE RLS makes the owner's `UPDATE` match zero rows before the row trigger runs. The statement would change nothing but leave no `audit.modify_denied`, which TC-23 requires. |
+| T05-8 | Implementation choice | `cp.organization` has `org_id uuid GENERATED ALWAYS AS (id) STORED`. Every cp table has a foreign key `org_id → cp.organization(id)`. | TC-19: every table has `org_id`. The RLS policy stays uniform. Referential checks bypass RLS, so the app role needs no REFERENCES grant. |
+| T05-9 | Deviation from §4.1 (DELETE list) | `ralysa_cp_app` gets DELETE on `cp.group_membership`. It does not yet get DELETE on `cp.auth_session`. | Memberships are "replaced at each sign-in/refresh" (§4.4), which needs DELETE. The 30-day session purge belongs to T08's cleanup job, which will grant it in a new migration. |
+| T05-10 | Scope note | `cp.usage_record` has no grants. `ralysa_usage_writer` doesn't exist yet. `cp.kill_switch` is SELECT-only for the app. | The usage writer role and its grant arrive with F-004 (stack.ts already says so). F-012 writes kill switches. |
+| T05-11 | Simplification | No down functions at all. | §4.2: `migrate` is up-only everywhere, and downs "exist only for local development". A local reset is `down -v` plus migrate. Unused downs would still be code to keep immutable. |
+| T05-12 | Implementation choice | Events generated inside the database (`audit.modify_denied`, `audit.schema_changed`) use `gen_random_uuid()` (v4) and a random 32-hex `trace_id`. | PostgreSQL 17 has no `uuidv7()`. Application events get UUIDv7 ids from the writer (T06). |
+| T05-13 | Design gap, filled | `vault.auth` config shapes: `kubernetes {role, jwt_path}`, `approle {role_id, secret_id_path}`, `token {token_env}`. Secret material comes from a file or a named env var, never the config. `KvPath` accepts only `<kv mount>/ralysa/control-plane/…`. | §3.8 names `VaultAuthConfig` without fields. Its rule is that config holds paths and ids only. |
+| T05-14 | Scope split with T07 | T05 adds `Common`, `MigrateConfig`, `MigrateAuditConfig`, the common production guards (token auth, AppRole without `allow_approle`, non-https vault, `db.ssl=false`), the YAML loader and `main.ts` with `migrate` only. T07 adds serve, sealer and audit-verify, env overrides, the serve-specific guards and the seal-status check. | The migrate commands are T05's and need a config; building only the shared parts avoids pre-empting T07. |
+| T05-15 | Scope note | The SEC-F002-31 tests that an `X-Org-Id` header and a body `org_id` are ignored land with T07's routes. | There is no HTTP surface in T05. The rule itself is documented at `withOrg`. |
+| T05-16 | Hardening | `migrations.lock.json` also hashes the shared helpers beside the sets (`ddl.ts`). The check compares against `main`'s lock (the CI `repo-checks` job now fetches `main`) and is a finding in CI if the base can't be read. | Released migrations import `ddl.ts`, so an edit there would change them. Comparing with the base stops a rewritten lock from hiding an edit to a released migration. |
+| T05-17 | **Latent T02 bug, fixed** | `turbo.json` now passes `RALYSA_REQUIRE_DEV_STACK` through to `test:integration` (`passThroughEnv`). New `check-turbo-config` rule `turbo/integration-require-env`. | Turbo's strict env mode hid the variable, so `RALYSA_REQUIRE_DEV_STACK=1 turbo run test:integration` **skipped** without a stack instead of failing. CI was not affected: Turbo passes `CI` through, and with the stack down `CI=1` failed as intended. Found while the local stack was stopped (see T05-20). |
+| T05-18 | Fix | `listRepoFiles` (repo-scripts) drops files that no longer exist on disk. | `git ls-files --cached` lists a deleted-but-unstaged file. The repo-copy test fixture crashed on T04's deleted `wiring.int.ts`. T04-7's local guard is now redundant but harmless. |
+| T05-19 | Test detail | TC-23's TRUNCATE check uses `TRUNCATE … CASCADE`. | A plain `TRUNCATE audit.audit_event` is already refused by the `audit_seal` foreign key (`0A000`) before the guard runs. CASCADE reaches the guard trigger, which refuses with `42501`. |
+| T05-21 | Implementation choice | `migrations.lock.json` is `{"version": 2, "migrations": {"<set>/<file>": {"sha256": "…"}}}`, not a flat name → hash map. The unpushed branch was rebuilt so no commit contains the flat form. | gitleaks' `generic-api-key` rule read `"…_tokens.ts": "<sha256>"` as a keyword next to a secret (2 findings in `secret-scan pr`). A nested object fixes this without allow-listing a path, so the scanner stays at full strength. |
+| T05-20 | Environment note | During the run, the shared dev-stack containers were stopped externally (exit 137), probably by another session using the same `ralysa-dev` compose project and fixed ports. The stack was recreated and every suite re-run. | Only one dev stack can run per machine. Parallel agent sessions should coordinate on it. |
+
+### Tests (T05)
+
+- **Unit** (`test/config.test.ts`, `test/db.test.ts`, 22 cases):
+  - env defaults to production;
+  - secret-looking values, foreign paths and traversal are refused where a KV path belongs;
+  - each migrate job's config names only its own credentials [SEC-F002-02, AR-9];
+  - unknown keys are refused; token auth names an env var; errors name fields, not values; the YAML loader;
+  - each common production guard, and the same settings allowed in dev;
+  - vault auth reads files and env at login time;
+  - the migration sets are ordered and up-only, audit runs as the owner via SET ROLE;
+  - **the writer column grant equals the input envelope's fields plus the server-set org, source, attestation and client_seq, and never `ts`, `ingest_seq` or `schema_version`** [AR-8];
+  - `withOrg` refuses non-UUID and uppercase ids.
+- **Integration** (`test/integration/db.int.ts`, 29 cases, one fresh database per file):
+  - **TC-F-002-19:**
+    - the cp and audit table lists;
+    - every table has `org_id`, `relrowsecurity` and `relforcerowsecurity`;
+    - `endpoint_region` and `inference_region` exist on both tables;
+    - the history schemas exist and are excluded;
+    - ownership: the audit store is owned by `ralysa_audit_owner`, cp by `ralysa_migrator`;
+    - the role layout: migrator is not a member, the audit migrator is SET-only, the owner is NOLOGIN;
+    - migrate twice is a no-op, and `bootstrap-roles.sql` is idempotent.
+  - **TC-F-002-23:**
+    - the writer gets `42501` on SELECT, UPDATE, DELETE and TRUNCATE, and on inserting `ts` or `schema_version`;
+    - the writer can't insert another org's event (RLS WITH CHECK);
+    - the cp migrator gets `42501` on `audit.*`;
+    - **as the owner via `ralysa_audit_migrator`**, a multi-row UPDATE and DELETE on `audit_event`, `audit_seal` and `audit_checkpoint` changes 0 rows and writes exactly **one** `audit.modify_denied` with `row_count`, and `app.org_id` is restored;
+    - TRUNCATE raises on all three;
+    - **`ALTER TABLE … DISABLE TRIGGER` and re-enabling write two `audit.schema_changed` events** attributed to the login user and the org;
+    - the owner can't alter the event trigger;
+    - all rows are still present afterwards.
+  - **TC-F-002-27:**
+    - a query outside `withOrg` errors for the app and reader roles;
+    - the other org's rows are invisible;
+    - the pooled connection has no `app.org_id` after `withOrg`, and a query on it errors;
+    - `withOrg` refuses an injection-shaped id;
+    - `organization.region` is immutable (`23514`) while other columns update.
+  - **SEC-F002-25:** no Ralysa role can `SET session_replication_role` (`42501`).
+  - **AC-15:** `bootstrap-roles.sql` and `migrate` both refuse a `SQL_ASCII` database; `migrate` refuses the wrong login role for a set.
+- **Repo checks:**
+  - `check-migrations-immutable.test.ts` (8): shared helpers are hashed and `index.ts` is not; the lock matches; unlocked, changed, helper-changed and missing-file findings; a rewritten lock can't launder a released change; a dropped base entry is flagged; a missing base is a finding in CI only; an invalid lock; the real repository is clean;
+  - `check-turbo-config` (2 new): the pass-through rule.
+- **Manual:**
+  - the built CLI against the dev database: `migrate:audit:dev` and then `migrate:dev` apply 1 and 4 migrations, a rerun applies none, an audit-shaped config given to `migrate` is refused (exit 2), and an unknown command prints usage (exit 2);
+  - the lint ban flags `'SET ROLE …'`, `set_config('app.org_id', $1, false)` and `set app.org_id`, passes the `true` form, and exempts `src/db/migrate.ts`.

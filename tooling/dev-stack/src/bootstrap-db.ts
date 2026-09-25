@@ -3,9 +3,10 @@
 // KV. The script reaches psql over **stdin** (`docker compose exec -T postgres psql`), never on a
 // command line, and carries SCRAM verifiers computed here, never the passwords themselves.
 //
-// Scope in F-002-T02: login roles and passwords only. Ownership, grants, memberships, the NOLOGIN
-// `ralysa_audit_owner` and the DDL event trigger are bootstrap-roles.sql (F-002-T05), which will
-// run through the same stdin channel with the same psql variables.
+// Then, through the same stdin channel, the control plane's bootstrap-roles.sql (F-002-T05): the
+// NOLOGIN `ralysa_audit_owner`, memberships, database grants and the DDL event trigger. The
+// migrations run separately (`pnpm --filter @ralysa/control-plane migrate:audit:dev`, then
+// `migrate:dev`), because they need the built control plane and bootstrap runs before any build.
 import { spawn } from 'node:child_process';
 import { scramVerifier } from './scram.ts';
 import { DB_ROLES } from './stack.ts';

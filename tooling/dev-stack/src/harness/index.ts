@@ -8,14 +8,34 @@
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { connect } from 'node:net';
-import { appRoleCredentials, appRoleLogin, isBootstrapped } from '../bootstrap-vault.ts';
+import {
+  appRoleCredentials,
+  appRoleLogin,
+  isBootstrapped,
+  readDbPassword,
+} from '../bootstrap-vault.ts';
 import { readEnvFile } from '../env.ts';
 import { type BaoRequest, baoClient } from '../openbao.ts';
-import { DEFAULT_ENV_FILE, OPENBAO_ADDR, POSTGRES, PROBE_POLICY, TRANSIT_MOUNT } from '../stack.ts';
+import {
+  DEFAULT_ENV_FILE,
+  type DbRoleKey,
+  OPENBAO_ADDR,
+  POSTGRES,
+  PROBE_POLICY,
+  TRANSIT_MOUNT,
+} from '../stack.ts';
 
 export { appRoleLogin } from '../bootstrap-vault.ts';
 export { type BaoRequest, type BaoResponse, baoClient, dataOf, expectOk } from '../openbao.ts';
-export { CP_KV_PREFIX, KV_MOUNT, OPENBAO_ADDR, TRANSIT_MOUNT } from '../stack.ts';
+export {
+  BOOTSTRAP_ROLES_SQL,
+  CP_KV_PREFIX,
+  DB_ROLES,
+  type DbRoleKey,
+  KV_MOUNT,
+  OPENBAO_ADDR,
+  TRANSIT_MOUNT,
+} from '../stack.ts';
 
 export interface DevStack {
   postgres: { host: string; port: number; database: string; user: string; password: string };
@@ -144,6 +164,11 @@ export function roleCredentials(
   role: string,
 ): Promise<{ roleId: string; secretId: string }> {
   return appRoleCredentials(rootBao(stack), role);
+}
+
+/** A database role's password from KV (root token), for tests that connect as that role. */
+export function dbPassword(stack: DevStack, key: DbRoleKey): Promise<string> {
+  return readDbPassword(rootBao(stack), key);
 }
 
 /** A unique, lowercase name for per-test OpenBao keys and paths, so test files run in parallel. */

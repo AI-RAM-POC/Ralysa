@@ -27,6 +27,7 @@ export const TYPECHECK_OUTPUT = '.tsc/**';
 
 /** Tasks that must never be cached, whatever their name. */
 export const UNCACHED_TASKS = ['check:generated', 'test:integration'] as const;
+export const INTEGRATION_REQUIRE_ENV = 'RALYSA_REQUIRE_DEV_STACK';
 
 export function checkTurboConfig(config: unknown, path = 'turbo.json'): Finding[] {
   const findings: Finding[] = [];
@@ -55,7 +56,27 @@ export function checkTurboConfig(config: unknown, path = 'turbo.json'): Finding[
 
   findings.push(...checkTaskCaching(taskMap(config), {}, path));
   findings.push(...checkTypecheckTask(taskMap(config), path));
+  findings.push(...checkIntegrationEnv(taskMap(config), path));
   return findings;
+}
+
+/**
+ * Turbo's strict env mode hides undeclared variables from tasks. Without this entry,
+ * RALYSA_REQUIRE_DEV_STACK=1 never reaches the harness and a missing dev stack skips instead of
+ * failing (found in F-002-T05; CI itself is covered because Turbo passes CI through).
+ */
+function checkIntegrationEnv(tasks: Record<string, unknown>, path: string): Finding[] {
+  const task = tasks['test:integration'];
+  const passThrough =
+    isRecord(task) && Array.isArray(task.passThroughEnv) ? task.passThroughEnv : [];
+  if (passThrough.includes(INTEGRATION_REQUIRE_ENV)) return [];
+  return [
+    {
+      rule: 'turbo/integration-require-env',
+      path,
+      message: `tasks["test:integration"].passThroughEnv must include "${INTEGRATION_REQUIRE_ENV}" so the integration tests can't pass by skipping`,
+    },
+  ];
 }
 
 function checkTypecheckTask(tasks: Record<string, unknown>, path: string): Finding[] {

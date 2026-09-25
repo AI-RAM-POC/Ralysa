@@ -10,6 +10,16 @@ export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', 
 export const DEV_DIR = join(REPO_ROOT, 'deploy', 'docker', 'dev');
 export const COMPOSE_FILE = join(DEV_DIR, 'compose.yaml');
 export const DEFAULT_ENV_FILE = join(DEV_DIR, '.env');
+/** The DBA script from the control plane (F-002-T05): roles, grants, DDL event trigger. */
+export const BOOTSTRAP_ROLES_SQL = join(
+  REPO_ROOT,
+  'services',
+  'control-plane',
+  'src',
+  'db',
+  'sql',
+  'bootstrap-roles.sql',
+);
 
 export const POSTGRES = { host: '127.0.0.1', port: 55432, database: 'ralysa', user: 'postgres' };
 export const OPENBAO_ADDR = 'http://127.0.0.1:58200';

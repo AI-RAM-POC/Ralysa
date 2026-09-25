@@ -47,6 +47,10 @@ jobs:
           key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
           restore-keys: pnpm-store-${{ runner.os }}-
       - run: pnpm install --frozen-lockfile
+      # check-migrations-immutable compares against main's migrations.lock.json [AR-10]; the
+      # checkout above is shallow, so fetch just main's tip.
+      - name: Fetch main for the migration lock comparison
+        run: git fetch --no-tags --depth=1 origin +refs/heads/main:refs/remotes/origin/main
       # check-workspaces (coverage, contract, lifecycle scripts, build settings, specifiers,
       # packs/, Python), check-tsrefs, check-turbo-config, check-banned-deps (lockfile graph),
       # check-imports (dependency-cruiser), then prettier --check.
