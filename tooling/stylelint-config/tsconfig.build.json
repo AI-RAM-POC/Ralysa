@@ -5,14 +5,5 @@
     "rootDir": "${configDir}",
     "outDir": "${configDir}/dist"
   },
-  "include": [
-    "base.js",
-    "boundaries.js",
-    "index.js",
-    "isomorphic.js",
-    "react-ui.js",
-    "rules",
-    "tests.js",
-    "types"
-  ]
+  "include": ["index.js"]
 }

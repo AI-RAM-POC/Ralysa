@@ -1,0 +1,379 @@
+{
+  "$description": "Ralysa core tokens (DTCG Format 2025.10). F-001 design §7.1. Placeholder values until brand work lands (OQ-F001-1).",
+  "palette": {
+    "$type": "color",
+    "$description": "Primitive palette. Components never use these directly; semantic tokens alias them. Placeholder values (OQ-F001-1).",
+    "gray": {
+      "0": {
+        "$value": { "colorSpace": "srgb", "components": [1, 1, 1], "hex": "#ffffff" }
+      },
+      "50": {
+        "$value": { "colorSpace": "srgb", "components": [0.9529, 0.9569, 0.9647], "hex": "#f3f4f6" }
+      },
+      "100": {
+        "$value": { "colorSpace": "srgb", "components": [0.9059, 0.9176, 0.9333], "hex": "#e7eaee" }
+      },
+      "200": {
+        "$value": { "colorSpace": "srgb", "components": [0.8314, 0.8471, 0.8706], "hex": "#d4d8de" }
+      },
+      "300": {
+        "$value": { "colorSpace": "srgb", "components": [0.6431, 0.6784, 0.7216], "hex": "#a4adb8" }
+      },
+      "400": {
+        "$value": { "colorSpace": "srgb", "components": [0.5412, 0.5765, 0.6196], "hex": "#8a939e" }
+      },
+      "450": {
+        "$value": { "colorSpace": "srgb", "components": [0.498, 0.5333, 0.5804], "hex": "#7f8894" }
+      },
+      "500": {
+        "$value": { "colorSpace": "srgb", "components": [0.451, 0.4824, 0.5255], "hex": "#737b86" }
+      },
+      "550": {
+        "$value": { "colorSpace": "srgb", "components": [0.4196, 0.451, 0.502], "hex": "#6b7380" }
+      },
+      "600": {
+        "$value": { "colorSpace": "srgb", "components": [0.3294, 0.3608, 0.4], "hex": "#545c66" }
+      },
+      "800": {
+        "$value": { "colorSpace": "srgb", "components": [0.1804, 0.2039, 0.2353], "hex": "#2e343c" }
+      },
+      "850": {
+        "$value": { "colorSpace": "srgb", "components": [0.1216, 0.1412, 0.1647], "hex": "#1f242a" }
+      },
+      "900": {
+        "$value": { "colorSpace": "srgb", "components": [0.102, 0.1137, 0.1294], "hex": "#1a1d21" }
+      },
+      "925": {
+        "$value": { "colorSpace": "srgb", "components": [0.0902, 0.1059, 0.1255], "hex": "#171b20" }
+      },
+      "950": {
+        "$value": { "colorSpace": "srgb", "components": [0.0627, 0.0745, 0.0863], "hex": "#101316" }
+      }
+    },
+    "blue": {
+      "200": {
+        "$value": { "colorSpace": "srgb", "components": [0.6392, 0.7529, 1], "hex": "#a3c0ff" }
+      },
+      "250": {
+        "$value": { "colorSpace": "srgb", "components": [0.6157, 0.7333, 1], "hex": "#9dbbff" }
+      },
+      "300": {
+        "$value": { "colorSpace": "srgb", "components": [0.5412, 0.6824, 1], "hex": "#8aaeff" }
+      },
+      "600": {
+        "$value": { "colorSpace": "srgb", "components": [0.1686, 0.3333, 0.7882], "hex": "#2b55c9" }
+      },
+      "700": {
+        "$value": { "colorSpace": "srgb", "components": [0.1333, 0.2784, 0.6784], "hex": "#2247ad" }
+      },
+      "950": {
+        "$value": { "colorSpace": "srgb", "components": [0.0431, 0.0784, 0.149], "hex": "#0b1426" }
+      }
+    },
+    "red": {
+      "300": {
+        "$value": { "colorSpace": "srgb", "components": [1, 0.5608, 0.5294], "hex": "#ff8f87" }
+      },
+      "700": {
+        "$value": { "colorSpace": "srgb", "components": [0.702, 0.149, 0.1176], "hex": "#b3261e" }
+      }
+    },
+    "green": {
+      "300": {
+        "$value": { "colorSpace": "srgb", "components": [0.4471, 0.8196, 0.5569], "hex": "#72d18e" }
+      },
+      "700": {
+        "$value": { "colorSpace": "srgb", "components": [0.1059, 0.4784, 0.2118], "hex": "#1b7a36" }
+      }
+    },
+    "amber": {
+      "300": {
+        "$value": { "colorSpace": "srgb", "components": [0.9412, 0.7451, 0.3333], "hex": "#f0be55" }
+      },
+      "700": {
+        "$value": { "colorSpace": "srgb", "components": [0.5412, 0.3255, 0], "hex": "#8a5300" }
+      }
+    },
+    "shadow": {
+      "light": {
+        "$value": {
+          "colorSpace": "srgb",
+          "components": [0, 0, 0],
+          "alpha": 0.12,
+          "hex": "#000000"
+        },
+        "$description": "Shadow tint for the light theme."
+      },
+      "dark": {
+        "$value": { "colorSpace": "srgb", "components": [0, 0, 0], "alpha": 0.5, "hex": "#000000" },
+        "$description": "Shadow tint for the dark theme."
+      }
+    }
+  },
+  "font": {
+    "family": {
+      "$type": "fontFamily",
+      "sans": {
+        "$value": [
+          "Noto Sans Variable",
+          "Noto Sans Arabic Variable",
+          "system-ui",
+          "Segoe UI",
+          "Tahoma",
+          "sans-serif"
+        ],
+        "$description": "Latin glyphs from Noto Sans, Arabic falls through to Noto Sans Arabic (§7.2)."
+      },
+      "mono": {
+        "$value": [
+          "Noto Sans Mono Variable",
+          "ui-monospace",
+          "SFMono-Regular",
+          "Menlo",
+          "Consolas",
+          "monospace"
+        ]
+      }
+    },
+    "size": {
+      "$type": "dimension",
+      "xs": {
+        "$value": { "value": 0.75, "unit": "rem" }
+      },
+      "sm": {
+        "$value": { "value": 0.875, "unit": "rem" }
+      },
+      "md": {
+        "$value": { "value": 1, "unit": "rem" }
+      },
+      "lg": {
+        "$value": { "value": 1.125, "unit": "rem" }
+      },
+      "xl": {
+        "$value": { "value": 1.25, "unit": "rem" }
+      },
+      "2xl": {
+        "$value": { "value": 1.5, "unit": "rem" }
+      },
+      "3xl": {
+        "$value": { "value": 1.875, "unit": "rem" }
+      }
+    },
+    "weight": {
+      "$type": "fontWeight",
+      "regular": {
+        "$value": 400
+      },
+      "medium": {
+        "$value": 500
+      },
+      "semibold": {
+        "$value": 600
+      },
+      "bold": {
+        "$value": 700
+      }
+    },
+    "lineHeight": {
+      "$type": "number",
+      "tight": {
+        "$value": 1.25
+      },
+      "body": {
+        "$value": 1.5,
+        "$description": "Arabic needs more leading for marks above and below the line (§7.2).",
+        "$extensions": {
+          "solutions.ralysa.lang": {
+            "ar": 1.7
+          }
+        }
+      },
+      "relaxed": {
+        "$value": 1.75
+      }
+    },
+    "letterSpacing": {
+      "$type": "dimension",
+      "normal": {
+        "$value": { "value": 0, "unit": "rem" },
+        "$extensions": {
+          "solutions.ralysa.lang": {
+            "ar": { "value": 0, "unit": "rem" }
+          }
+        }
+      },
+      "wide": {
+        "$value": { "value": 0.025, "unit": "rem" },
+        "$description": "Tracking breaks Arabic cursive joining, so :lang(ar) forces 0 (§7.2).",
+        "$extensions": {
+          "solutions.ralysa.lang": {
+            "ar": { "value": 0, "unit": "rem" }
+          }
+        }
+      }
+    }
+  },
+  "space": {
+    "$type": "dimension",
+    "$description": "4 px base scale, in rem.",
+    "0": {
+      "$value": { "value": 0, "unit": "rem" }
+    },
+    "0_5": {
+      "$value": { "value": 0.125, "unit": "rem" }
+    },
+    "1": {
+      "$value": { "value": 0.25, "unit": "rem" }
+    },
+    "1_5": {
+      "$value": { "value": 0.375, "unit": "rem" }
+    },
+    "2": {
+      "$value": { "value": 0.5, "unit": "rem" }
+    },
+    "3": {
+      "$value": { "value": 0.75, "unit": "rem" }
+    },
+    "4": {
+      "$value": { "value": 1, "unit": "rem" }
+    },
+    "5": {
+      "$value": { "value": 1.25, "unit": "rem" }
+    },
+    "6": {
+      "$value": { "value": 1.5, "unit": "rem" }
+    },
+    "8": {
+      "$value": { "value": 2, "unit": "rem" }
+    },
+    "10": {
+      "$value": { "value": 2.5, "unit": "rem" }
+    },
+    "12": {
+      "$value": { "value": 3, "unit": "rem" }
+    },
+    "16": {
+      "$value": { "value": 4, "unit": "rem" }
+    }
+  },
+  "size": {
+    "$type": "dimension",
+    "control": {
+      "$description": "Control heights. Every size meets the 24 CSS px minimum target; md is 40 px.",
+      "sm": {
+        "$value": { "value": 2, "unit": "rem" }
+      },
+      "md": {
+        "$value": { "value": 2.5, "unit": "rem" }
+      },
+      "lg": {
+        "$value": { "value": 3, "unit": "rem" }
+      }
+    },
+    "icon": {
+      "sm": {
+        "$value": { "value": 1, "unit": "rem" }
+      },
+      "md": {
+        "$value": { "value": 1.25, "unit": "rem" }
+      },
+      "lg": {
+        "$value": { "value": 1.5, "unit": "rem" }
+      }
+    },
+    "container": {
+      "sm": {
+        "$value": { "value": 40, "unit": "rem" }
+      },
+      "md": {
+        "$value": { "value": 48, "unit": "rem" }
+      },
+      "lg": {
+        "$value": { "value": 64, "unit": "rem" }
+      },
+      "xl": {
+        "$value": { "value": 80, "unit": "rem" }
+      }
+    },
+    "focusRing": {
+      "width": {
+        "$value": { "value": 2, "unit": "px" }
+      },
+      "offset": {
+        "$value": { "value": 2, "unit": "px" }
+      }
+    }
+  },
+  "radius": {
+    "$type": "dimension",
+    "none": {
+      "$value": { "value": 0, "unit": "rem" }
+    },
+    "sm": {
+      "$value": { "value": 0.25, "unit": "rem" }
+    },
+    "md": {
+      "$value": { "value": 0.375, "unit": "rem" }
+    },
+    "lg": {
+      "$value": { "value": 0.5, "unit": "rem" }
+    },
+    "full": {
+      "$value": { "value": 9999, "unit": "px" }
+    }
+  },
+  "elevation": {
+    "layer": {
+      "$type": "number",
+      "$description": "z-index layers.",
+      "base": {
+        "$value": 0
+      },
+      "dropdown": {
+        "$value": 1000
+      },
+      "sticky": {
+        "$value": 1100
+      },
+      "overlay": {
+        "$value": 1200
+      },
+      "modal": {
+        "$value": 1300
+      },
+      "toast": {
+        "$value": 1400
+      }
+    }
+  },
+  "motion": {
+    "duration": {
+      "$type": "duration",
+      "$description": "Every duration resolves to 0ms under prefers-reduced-motion: reduce.",
+      "instant": {
+        "$value": { "value": 0, "unit": "ms" }
+      },
+      "fast": {
+        "$value": { "value": 100, "unit": "ms" }
+      },
+      "base": {
+        "$value": { "value": 200, "unit": "ms" }
+      },
+      "slow": {
+        "$value": { "value": 300, "unit": "ms" }
+      }
+    },
+    "easing": {
+      "$type": "cubicBezier",
+      "standard": {
+        "$value": [0.2, 0, 0, 1]
+      },
+      "enter": {
+        "$value": [0, 0, 0, 1]
+      },
+      "exit": {
+        "$value": [0.3, 0, 1, 1]
+      }
+    }
+  }
+}

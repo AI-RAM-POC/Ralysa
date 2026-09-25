@@ -2,8 +2,10 @@
   "files": [],
   "references": [
     { "path": "apps/web" },
+    { "path": "packages/ui" },
     { "path": "tooling/eslint-config" },
     { "path": "tooling/repo-scripts" },
+    { "path": "tooling/stylelint-config" },
     { "path": "tooling/vitest-config" }
   ]
 }

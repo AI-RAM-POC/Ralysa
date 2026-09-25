@@ -215,6 +215,77 @@ yaml pnpmfile (control)                        | gate: pnpm/pnpmfile            
 - **NEL, LS and the kebab key** now fail closed as well, although pnpm ignores them.
 - **The two `env …` rows still read `PASS`** because the harness passes the variable only to pnpm, not to its in-process gate call. Calling `checkConfigGate` on those two case directories with the variable in `options.env` gives `gate/env-config env pnpm_config_pnpmfile` and `gate/env-config env npm_config_pnpmfile`. The CLI tests above cover the same through the real entry point.
 
+## T06: design tokens
+
+Branch `feat/F-001-tokens-i18n` (T06 to T08 together).
+
+### What landed
+
+- `packages/ui` converted from a placeholder with `pnpm scaffold packages/ui --kind library` and then filled in:
+  - DTCG 2025.10 source in `tokens/`: `core.tokens.json` holds primitives and the theme-independent categories, and `semantic.{light,dark}.tokens.json` hold semantic colours and shadows as aliases.
+  - The §7.1.3 placeholder values are used unchanged.
+  - `src/contracts/tokens.ts` is the §3.2 zod contract.
+  - `scripts/build-tokens.ts` is the generator. It emits `dist/css/tokens.css`, `dist/css/theme.css` and `src/tokens/generated.ts`. It is about 550 lines after Prettier, against the design's estimate of about 200. The extra length is validation messages, DTCG group and `$type` inheritance, alias cycle and type checks, the shadow and font-family formatters, and collision checks on the generated names.
+  - Theme plumbing: `ThemeProvider`, `useTheme`, `resolveInitialTheme` and `applyTheme`.
+  - Scripts: `build` (tokens, then tsc), `check:generated` and `lint` (ESLint, then Stylelint).
+- `@ralysa/repo-scripts` `src/check-contrast.ts` holds the WCAG 2.1 ratio, `MIN_RATIO` and `checkContrast`. It is exported as `@ralysa/repo-scripts/check-contrast` and run by `packages/ui` `test` against the parsed token model.
+- The new `tooling/stylelint-config` (`@ralysa/stylelint-config`) contains the raw-colour rules and requires a description on every disable comment.
+- `@ralysa/eslint-config` has a local plugin (`rules/`, registered as `ralysa/`) with `ralysa/no-raw-color`, wired into `reactUi()`.
+
+### Placeholder token contrast (`check-contrast`, TC-F-001-23)
+
+There are 25 pairs, checked in both themes (50 checks): **all pass**. Every ratio matches the §7.1.3 table. The lowest ratio per kind:
+
+| Kind | Minimum | Lowest light | Lowest dark |
+|---|---|---|---|
+| text | 4.5 | 5.41 (`status.success` on `bg.surface`/`bg.canvas`) | 6.88 (`fg.muted` on `bg.subtle`) |
+| nonText | 3 | 3.89 (`border.control` on `bg.subtle`) | 4.35 (`border.control` on `bg.subtle`) |
+| focus | 3 | 5.88 (`focus.ring` on `bg.subtle`) | 7.13 (`focus.ring` on `bg.subtle`) |
+
+The full table prints in the `@ralysa/ui:test` log. Exempt: `color.fg.disabled` (WCAG 1.4.3 inactive components) and `color.border.decor` (decorative, never a control's only boundary).
+
+### Recorded decisions and deviations
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T06-1 | Design inconsistency, fixed | `TokenPath` and `Alias` allow `_` in every segment after the first. | The §3.2 regex (`[a-zA-Z0-9]+` segments) rejects `space.0_5` and `space.1_5`, which §7.1.2 requires. DTCG allows `_` in names. |
+| T06-2 | Design deviation (small) | `MIN_RATIO` lives in `check-contrast.ts` (repo-scripts), not in `packages/ui/src/contracts/tokens.ts`. There is no `ralysa-repo check-contrast` CLI command: the gate runs inside `@ralysa/ui` `test` (as §7.1.4 says), which passes in its own resolved tokens. | The threshold belongs to the gate. `packages/ui` src must not import a tooling package (AR-3), and repo-scripts can't depend on `@ralysa/ui`. `check-contrast.ts` imports nothing, so the browser-library workspace can import it from source. |
+| T06-3 | Contract detail | `contrast-pairs.json` is `{ pairs, exempt }`. `exempt` entries need a reason of at least 20 characters. A pair that names an exempt token fails. A test fails if any semantic colour token is in neither a pair nor `exempt`. | §3.2 says exempt tokens are "listed with a reason" but gives no shape. The coverage test stops a new colour token from skipping the gate. |
+| T06-4 | Addition | Pairs beyond the §7.1.3 list: `fg.default` and `fg.muted` on `bg.surface`, `link` on `bg.surface`, `accent.default` on `bg.canvas`, `border.control` and `focus.ring` on `bg.canvas`/`bg.surface`, and the status colours on `bg.canvas`/`bg.subtle`. | These are combinations the components will use. All pass. |
+| T06-5 | **Gap in the design (not filled)** | `color.bg.surfaceRaised` (§7.1.2 examples) has no value in §7.1.3, so it isn't defined. | Picking a colour is a design decision. The first raised component (the T11 `Select` popover) should add it with light and dark values and its contrast pairs. |
+| T06-6 | Implementation choice | Tailwind names: the `bg` group and a trailing `default` are dropped (`bg-canvas`, `text-fg`, `bg-accent`, `bg-accent-hover`). `font.*` maps to `font`/`text`/`font-weight`/`leading`/`tracking`; `space.*`, `size.control.*` and `size.icon.*` map to `--spacing-*`; `size.container.*` maps to `--container-*`; `elevation.shadow.*` to `--shadow-*`; `motion.easing.*` to `--ease-*`. Layers, durations and the focus-ring size stay CSS-variable only. The reset list is in `TAILWIND_RESETS`. | §7.1.1 gives one example (`--color-canvas`). The rule has to be mechanical so generated names never collide; the generator fails on a collision. |
+| T06-7 | Implementation choice | Palette primitives aren't emitted as CSS variables. Semantic values are emitted resolved. | "Components use semantic tokens only" (§7.1.1). |
+| T06-8 | Scope note | The §7.2 `:lang(ar)` values are in the token source now, as `$extensions["solutions.ralysa.lang"]`: body line height 1.7, letter spacing 0. The font stacks are the §7.2 stacks. | The generator's `:lang()` support is part of §7.1.1, and the values are known. T09 still owns the font packages and `fonts.css`. |
+| T06-9 | Implementation choice | `packages/ui/tsconfig.json` (no emit: src, tests, scripts) adds `types: ["node"]` and `allowImportingTsExtensions`. `tsconfig.build.json` switches both off. | The generator and the token tests run on Node type stripping. Turning both off for the emit build means `build` fails if shipped `src/` code ever uses a Node type or a `.ts` import. |
+| T06-10 | Implementation choice | `ralysa/no-raw-color` doesn't apply to test files (`TEST_FILES`). | AC-3 targets "component or app code". Tests assert on colour values. |
+| T06-11 | Sequencing | The "default-palette classes → error" part of TC-F-001-07 is proven here at the theme level: Tailwind's own compiler builds nothing for `bg-red-500`, `text-slate-900`, `bg-white`, `shadow-2xl` and `font-serif` against the generated theme (`test/tokens.test.ts`). The **lint** error (`better-tailwindcss/no-unknown-classes`) lands with T07, which wires the plugin to the Tailwind entry point. | `better-tailwindcss` belongs to T07's file list (`react-ui.js`, logical, restricted and unknown rules). |
+| T06-12 | Note | `letterSpacing` values are in `rem`. | DTCG 2025.10 `dimension` allows only `px` and `rem`. |
+
+### Versions (npm registry, 2026-09-25 ~10:10 UTC; 3-day cut-off 2026-09-22T10:10Z)
+
+| Package | Design | Pinned | Notes |
+|---|---|---|---|
+| `stylelint` | 17.x | **17.15.0** (catalog) | Published 2026-09-04. MIT, no install scripts. |
+| `tailwindcss` | 4.3.x | **4.3.3** (catalog) | Published 2026-07-16. It is a devDependency of `@ralysa/ui` for the theme compile test; T07 uses it for `better-tailwindcss`. |
+| `jsdom` | (not pinned) | **30.1.0** (catalog) | **30.1.1 (2026-09-22T02:07Z) is inside the 3-day window.** 30.1.0 was published 2026-09-17, and the 30 line has been GA since 2026-07-27. Engines `^24.15.0` is satisfied by 24.21.0. |
+| `zod` | 4.6.x | 4.6.5 (existing catalog) | `.finite()` is deprecated in zod 4 (it's the default), so it isn't used. |
+
+None of these runs an install script. `allowBuilds` is unchanged in T06.
+
+### Tests added (T06)
+
+- `packages/ui/test/tokens.test.ts` (**TC-F-001-06**):
+  - the real source validates, with all 7 categories in both themes, identical light/dark keys, and the §7.1.3 values;
+  - failure fixtures: key-set mismatch, unresolved alias, alias of the wrong type, alias cycle, hex/components mismatch, missing `$type`, unknown key, `.` in a name, primitive in a semantic file, missing category;
+  - generator outputs, and `generated.ts` equal to the source;
+  - Tailwind compile: token classes resolve to `var(--ralysa-*)`, and default-palette classes produce nothing.
+- `packages/ui/test/contrast.test.ts` (**TC-F-001-23**): every real pair passes in both themes; every semantic colour token is covered; a `#777777` fixture (4.48:1) and a translucent fixture fail.
+- `tooling/repo-scripts/test/contrast.test.ts` (**TC-F-001-22**): reference ratios (21, 1, 4.478, 4.542, 7.0 and the design values); symmetry; the linearisation knee; `MIN_RATIO` per kind; no rounding up (4.478 fails text); translucent, unresolved and exempt-in-pair findings.
+- `packages/ui/test/theme.test.tsx` (jsdom): `resolveInitialTheme` order and throwing storage; `ThemeProvider` sets and removes `data-theme`; `useTheme` outside a provider; `tokenVar`.
+- **TC-F-001-07**:
+  - `tooling/eslint-config/test/raw-color.test.ts`: `RuleTester`, 11 valid and 21 invalid cases (hex forms, every colour function, template literals, style objects, `bg-[#fff]`, `text-[rgb(…)]`, `border-[oklch(…)]`); the composed preset reports component code and not test files.
+  - `tooling/stylelint-config/test/raw-color.test.ts`: hex, named colours and every colour function report an error; tokens, `color-mix()` over `var()`, `currentcolor`/`transparent` and Tailwind `@theme` with `var()` pass; token and `dist` files are ignored; disable comments must carry a description, and a needless disable is reported.
+
 ## Version confirmations (npm registry, 2026-09-25 ~08:20 UTC)
 
 Policy (§2.2): the latest patch of a line GA for at least 30 days, and `minimumReleaseAge` holds back anything under 3 days old. Cut-off for the 3-day rule: 2026-09-22T08:20Z.

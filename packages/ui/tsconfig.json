@@ -1,0 +1,10 @@
+{
+  "extends": "@ralysa/tsconfig/react-lib.json",
+  "compilerOptions": {
+    // scripts/ and the Node-side tests run on Node 24 type stripping and import .ts files directly.
+    // tsconfig.build.json switches both options back off, so shipped src/ can't use Node types.
+    "types": ["node"],
+    "allowImportingTsExtensions": true
+  },
+  "include": ["src", "test", "scripts", "*.config.ts"]
+}

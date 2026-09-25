@@ -15,7 +15,7 @@ export default config;
 |---|---|---|
 | `base` | every JS/TS file: source, tests, scripts, `*.config.*` | `@eslint/js` recommended; typescript-eslint `strict-type-checked` (type info through `projectService`, switched off for plain JS files); the **boundary rules** (`no-restricted-imports`, `no-restricted-syntax`) fed from `boundaries.js`; eslint-comments rules: no bare `eslint-disable`, no inline rule config, `eslint-disable-next-line` only and always with a `-- reason`, and never for a boundary rule (RC-3, SEC-F001-09 f) |
 | `isomorphic` | `library-isomorphic` workspaces | Adds the Node built-in module ban to the boundary rules |
-| `reactUi` | UI workspaces (`ralysa.ui: true`) | `@eslint-react` recommended-type-checked, `react-hooks` recommended, `jsx-a11y` strict through `@eslint/compat`. The logical-layout, raw-colour and i18n rules join in T06 to T08. |
+| `reactUi` | UI workspaces (`ralysa.ui: true`) | `@eslint-react` recommended-type-checked, `react-hooks` recommended, `jsx-a11y` strict through `@eslint/compat`. Design-system rules from the local plugin (`rules/`, registered as `ralysa/`), not applied to test files: `ralysa/no-raw-color` (hex and colour-function literals, including Tailwind arbitrary values such as `bg-[#fff]`; AC-3). |
 | `tests` | `*.test.*`, `test/**`, `e2e/**` | Relaxes a few type-strictness rules. It never touches the boundary or lint-comment rules; `test/presets.test.ts` checks this. |
 
 `boundaries.js` is the single source for the boundary lists that ESLint, dependency-cruiser and the repo checks share. T02 created the slots, and T04 and T16 fill them.

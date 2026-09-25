@@ -1,32 +1,31 @@
 {
-  "name": "@ralysa/repo-scripts",
+  "name": "@ralysa/stylelint-config",
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Repository checks and helpers run in CI (repo-checks, quality) and by developers.",
-  "bin": {
-    "ralysa-repo": "./src/cli.ts"
-  },
+  "description": "Shared Stylelint config for the UI workspaces: raw-colour and logical-layout rules.",
   "exports": {
-    "./check-contrast": "./src/check-contrast.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./index.js"
+    }
   },
   "scripts": {
-    "build": "echo \"@ralysa/repo-scripts: runs from source on Node 24 (type stripping), nothing to build\"",
+    "build": "tsc -p tsconfig.build.json",
     "lint": "eslint .",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json"
   },
-  "dependencies": {
-    "typescript": "catalog:",
-    "yaml": "catalog:",
-    "zod": "catalog:"
+  "peerDependencies": {
+    "stylelint": "^17.15.0"
   },
   "devDependencies": {
     "@ralysa/eslint-config": "workspace:*",
     "@ralysa/tsconfig": "workspace:*",
-    "@ralysa/vitest-config": "workspace:*",
     "@types/node": "catalog:",
     "eslint": "catalog:",
+    "stylelint": "catalog:",
+    "typescript": "catalog:",
     "vitest": "catalog:"
   },
   "ralysa": {

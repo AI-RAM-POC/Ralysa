@@ -3,20 +3,47 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Placeholder package (F-001 design §2.1): only README.md and package.json until F-001 T06 converts it (--kind library).",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./tokens.css": "./dist/css/tokens.css",
+    "./theme.css": "./dist/css/theme.css"
+  },
   "scripts": {
-    "build": "ralysa-repo placeholder-guard",
-    "lint": "ralysa-repo placeholder-guard",
-    "test": "ralysa-repo placeholder-guard",
-    "typecheck": "ralysa-repo placeholder-guard"
+    "build": "node scripts/build-tokens.ts && tsc -p tsconfig.build.json",
+    "check:generated": "node scripts/build-tokens.ts",
+    "lint": "eslint . && stylelint \"**/*.css\" --allow-empty-input",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "react": "^19.3.0"
   },
   "devDependencies": {
-    "@ralysa/repo-scripts": "workspace:*"
+    "@ralysa/eslint-config": "workspace:*",
+    "@ralysa/repo-scripts": "workspace:*",
+    "@ralysa/stylelint-config": "workspace:*",
+    "@ralysa/tsconfig": "workspace:*",
+    "@ralysa/vitest-config": "workspace:*",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "eslint": "catalog:",
+    "jsdom": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "stylelint": "catalog:",
+    "tailwindcss": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "zod": "catalog:"
   },
   "ralysa": {
-    "kind": "placeholder",
+    "kind": "library",
+    "runtime": "browser",
     "shipped": false,
-    "ui": true,
-    "artefacts": []
+    "ui": true
   }
 }

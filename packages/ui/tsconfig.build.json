@@ -1,0 +1,8 @@
+{
+  "extends": ["./tsconfig.json", "@ralysa/tsconfig/build.json"],
+  "compilerOptions": {
+    // Emit covers src/ only, compiled as a browser library: no Node types.
+    "types": [],
+    "allowImportingTsExtensions": false
+  }
+}

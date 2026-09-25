@@ -4,5 +4,5 @@
     "allowJs": true,
     "checkJs": true
   },
-  "include": ["*.js", "rules", "types", "test"]
+  "include": ["*.js", "test"]
 }
