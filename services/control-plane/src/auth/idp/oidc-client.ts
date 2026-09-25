@@ -3,19 +3,22 @@
 // + nonce + state toward the IdP, the client secret from OpenBao KV (`client_secret_post`).
 //
 // - The configuration comes from the pinned issuer's discovery document; openid-client refuses a
-//   document whose `issuer` differs. It is cached for an hour and rebuilt when the secret is
-//   re-read. Plain `http` is allowed only outside production for the mock IdP; the production
+//   document whose `issuer` differs. The document is cached for an hour; the client configuration
+//   is rebuilt from it whenever the secret watcher (src/secrets/runtime.ts, F-002-T13) holds a new
+//   version. Plain `http` is allowed only outside production for the mock IdP; the production
 //   guards already refuse an `http` issuer (SEC-F002-12).
 // - Code redemption validates the authorization response (state, `iss` when the IdP advertises
 //   it) and the ID token (signature RS256, issuer, audience, expiry, nonce); RTS then applies its
 //   own pinned claim rules (entra-token-validator.ts `validateIdToken`).
-// - `invalid_client` at the token endpoint re-reads the secret once and retries: a failed client
-//   authentication doesn't consume the IdP's code (the full rotation watcher is F-002-T13).
+// - `invalid_client` at the token endpoint asks the watcher to re-read the secret at once and
+//   retries once, only with a newer version: a failed client authentication doesn't consume the
+//   IdP's code, so the retry is safe (T10-32, F-002-T13).
 // - Every call is bounded (3 s); a network fault or timeout is `unavailable`, any protocol or
 //   validation failure is `rejected` (the reason never carries a token or code).
-import type { SecretStore } from '@ralysa/secrets';
+import type { SecretStore, SecretValue } from '@ralysa/secrets';
 import * as client from 'openid-client';
 import type { ServeConfig } from '../../config/schema.js';
+import { type IdpClientSecret, createIdpClientSecret } from '../../secrets/runtime.js';
 
 export const OIDC_TIMEOUT_S = 3;
 export const OIDC_CONFIG_TTL_MS = 60 * 60 * 1000;
@@ -52,38 +55,74 @@ const isNetworkFault = (error: unknown): boolean => {
 
 export function createOidcClient(options: {
   config: Pick<ServeConfig, 'env' | 'idp' | 'public_base_url'>;
-  secrets: SecretStore;
+  /**
+   * The process's secret watcher (serve shares one with the Graph directory). Without it, one is
+   * built over `secrets` that reads on first use and on `invalid_client` only (tests).
+   */
+  clientSecret?: IdpClientSecret;
+  secrets?: SecretStore;
   now?: () => number;
 }): OidcClient {
   const { config } = options;
   const now = options.now ?? (() => Date.now());
   const insecure = config.env !== 'production' && config.idp.issuer.startsWith('http://');
-  let cached: { at: number; configuration: client.Configuration } | undefined;
+  const clientSecret =
+    options.clientSecret ??
+    (() => {
+      if (options.secrets === undefined) throw new Error('oidc client: no client secret source');
+      return createIdpClientSecret({
+        secrets: options.secrets,
+        path: config.idp.client_secret_path,
+      });
+    })();
+  /** The discovery document, fetched at most once an hour. */
+  let discovered: { at: number; server: client.ServerMetadata } | undefined;
+  /** The client configuration for one secret version, built on the cached document. */
+  let built:
+    | { version: number; server: client.ServerMetadata; configuration: client.Configuration }
+    | undefined;
 
-  const configuration = async (fresh = false): Promise<client.Configuration> => {
-    if (!fresh && cached !== undefined && now() - cached.at < OIDC_CONFIG_TTL_MS) {
-      return cached.configuration;
+  const serverMetadata = async (): Promise<client.ServerMetadata> => {
+    if (discovered !== undefined && now() - discovered.at < OIDC_CONFIG_TTL_MS) {
+      return discovered.server;
     }
-    const secret = (await options.secrets.get(config.idp.client_secret_path)).value;
-    const built = await client.discovery(
+    // Discovery authenticates nothing: the client authentication is attached per secret version.
+    const found = await client.discovery(
       new URL(config.idp.issuer),
       config.idp.rts_client_id,
       { id_token_signed_response_alg: 'RS256' },
-      client.ClientSecretPost(secret),
+      client.None(),
       {
         timeout: OIDC_TIMEOUT_S,
         // eslint-disable-next-line @typescript-eslint/no-deprecated -- dev/test only: the mock IdP is plain http, and production refuses an http issuer (SEC-F002-12)
         ...(insecure ? { execute: [client.allowInsecureRequests] } : {}),
       },
     );
-    built.timeout = OIDC_TIMEOUT_S;
-    cached = { at: now(), configuration: built };
-    return built;
+    discovered = { at: now(), server: found.serverMetadata() };
+    return discovered.server;
+  };
+
+  const configuration = async (secret: SecretValue): Promise<client.Configuration> => {
+    const server = await serverMetadata();
+    if (built !== undefined && built.version === secret.version && built.server === server) {
+      return built.configuration;
+    }
+    const configured = new client.Configuration(
+      server,
+      config.idp.rts_client_id,
+      { id_token_signed_response_alg: 'RS256' },
+      client.ClientSecretPost(secret.value),
+    );
+    // eslint-disable-next-line @typescript-eslint/no-deprecated -- dev/test only, as above
+    if (insecure) client.allowInsecureRequests(configured);
+    configured.timeout = OIDC_TIMEOUT_S;
+    built = { version: secret.version, server, configuration: configured };
+    return configured;
   };
 
   return {
     async authorizationUrl(input) {
-      const url = client.buildAuthorizationUrl(await configuration(), {
+      const url = client.buildAuthorizationUrl(await configuration(await clientSecret.current()), {
         redirect_uri: idpCallbackUrl(config),
         response_type: 'code',
         scope: FLOW_B_SCOPE,
@@ -107,9 +146,15 @@ export function createOidcClient(options: {
         return tokens.id_token;
       };
       try {
+        let used: SecretValue;
         let configured: client.Configuration;
         try {
-          configured = await configuration();
+          used = await clientSecret.current();
+        } catch {
+          return { kind: 'unavailable', reason: 'client_secret' };
+        }
+        try {
+          configured = await configuration(used);
         } catch (error) {
           return { kind: 'unavailable', reason: isNetworkFault(error) ? 'network' : 'discovery' };
         }
@@ -119,7 +164,15 @@ export function createOidcClient(options: {
           if (!(error instanceof client.ResponseBodyError) || error.error !== 'invalid_client') {
             throw error;
           }
-          return { kind: 'ok', idToken: await grant(await configuration(true)) };
+          // Rotated: re-read at once and retry once, only with a newer version (F-002-T13).
+          let next: SecretValue | undefined;
+          try {
+            next = await clientSecret.refreshAfterInvalidClient(used.version);
+          } catch {
+            return { kind: 'unavailable', reason: 'client_secret' };
+          }
+          if (next === undefined) throw error;
+          return { kind: 'ok', idToken: await grant(await configuration(next)) };
         }
       } catch (error) {
         if (isNetworkFault(error)) return { kind: 'unavailable', reason: 'network' };

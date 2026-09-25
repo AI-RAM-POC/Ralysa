@@ -1,5 +1,6 @@
 // Builders for the audit events the control plane itself writes (§3.5 catalogue). Server-set
 // facts go under `details` (or `details.server` where a client also contributes).
+import { createHash } from 'node:crypto';
 import type { Outcome, Source } from '@ralysa/protocol/audit';
 import { newTraceId, uuidv7 } from '@ralysa/protocol/common';
 import type { StoredEventInput } from './columns.js';
@@ -13,6 +14,16 @@ export interface SystemEventFields {
   reasonCode?: string;
   traceId?: string;
   details: Record<string, unknown>;
+}
+
+/**
+ * A version 8 UUID derived from `parts`: the same event gets the same id on every replica and on
+ * every retry, so the writer stores it once and answers `duplicate` after that.
+ */
+export function derivedEventId(...parts: string[]): string {
+  const h = createHash('sha256').update(parts.join('|')).digest('hex');
+  const variant = ((parseInt(h.slice(16, 17), 16) & 0x3) | 0x8).toString(16);
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-8${h.slice(13, 16)}-${variant}${h.slice(17, 20)}-${h.slice(20, 32)}`;
 }
 
 export function systemEvent(fields: SystemEventFields): StoredEventInput {

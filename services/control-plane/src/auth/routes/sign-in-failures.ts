@@ -13,11 +13,11 @@
 // `details.client` (sanitised display text) and server facts under `details.server`
 // (`reported_by: client`). An expired device code is `expired`; every other IdP error is
 // `idp_error` (§5.8).
-import { createHash } from 'node:crypto';
 import { newTraceId, uuidv7 } from '@ralysa/protocol/common';
 import { SignInFailureReport } from '@ralysa/protocol/control-plane';
 import type { FastifyInstance } from 'fastify';
 import type { StoredEventInput } from '../../audit/columns.js';
+import { derivedEventId } from '../../audit/events.js';
 import { type EmittedRejection, createRejectionAggregator } from '../../audit/rejections.js';
 import { ROUTES } from '../../http/contracts.js';
 import { HttpProblem } from '../../http/errors.js';
@@ -33,9 +33,7 @@ const SEEN_MAX = 50_000;
 
 /** A stable UUID (version 8) for an attempt's event: per org, per attempt id. */
 export function reportEventId(orgId: string, attemptId: string): string {
-  const h = createHash('sha256').update(`sign-in-failure|${orgId}|${attemptId}`).digest('hex');
-  const variant = ((parseInt(h.slice(16, 17), 16) & 0x3) | 0x8).toString(16);
-  return `${h.slice(0, 8)}-${h.slice(8, 12)}-8${h.slice(13, 16)}-${variant}${h.slice(17, 20)}-${h.slice(20, 32)}`;
+  return derivedEventId('sign-in-failure', orgId, attemptId);
 }
 
 interface Report {

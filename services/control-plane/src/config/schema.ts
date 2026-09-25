@@ -126,6 +126,8 @@ export const ServeConfig = z.strictObject({
     allowed_public_client_ids: z.array(z.uuid()).min(1),
     signin_scope: z.string().min(1).max(200),
     client_secret_path: KvPath,
+    /** How often each replica re-reads the client secret from KV (F-002-T13; design §5.7: 60 s). */
+    client_secret_poll_s: z.int().min(1).max(300).default(60),
     graph_base_url: z.url(),
     graph_timeout_ms: z.int().min(100).max(3000).default(3000),
     require_mfa_claim: z.boolean().optional(),
