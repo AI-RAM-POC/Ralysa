@@ -7,6 +7,9 @@
 
 const {
   BANNED_PACKAGE_GROUPS,
+  DEV_ONLY_IMPORT_ALLOWED_IN,
+  DEV_ONLY_MESSAGE,
+  DEV_ONLY_PACKAGES,
   globSource,
   groupNameSource,
 } = require('./tooling/eslint-config/boundaries.js');
@@ -35,6 +38,17 @@ module.exports = {
       severity: 'error',
       from: { pathNot: '^apps/ui-lab/' },
       to: { path: `^apps/ui-lab/|${packagePath('@ralysa/ui-lab')}` },
+    },
+    {
+      // F-002-T14, SEC-F002-13 (a): the mock IdP never reaches shipped code, whether by package
+      // name or by a relative path into tooling/dev-stack.
+      name: 'no-dev-only-in-shipped',
+      comment: DEV_ONLY_MESSAGE,
+      severity: 'error',
+      from: { pathNot: pathsSource(DEV_ONLY_IMPORT_ALLOWED_IN) },
+      to: {
+        path: `^tooling/dev-stack/|${packagePath(`(?:${DEV_ONLY_PACKAGES.map(globSource).join('|')})`)}`,
+      },
     },
     {
       name: 'no-packs',

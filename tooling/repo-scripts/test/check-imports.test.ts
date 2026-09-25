@@ -157,6 +157,28 @@ describe('check-imports (dependency-cruiser)', () => {
     ]);
   });
 
+  it('TC-F-002-35: shipped code importing @ralysa/dev-stack or oidc-provider fails; tests and tooling may (SEC-F002-13 a)', async () => {
+    expect(
+      await violations({
+        'services/control-plane/src/idp.ts': `${ok}import { startMockIdp } from '@ralysa/dev-stack/mock-idp';\nexport { startMockIdp };\n`,
+        'services/control-plane/src/provider.cjs':
+          "const Provider = require('oidc-provider');\nmodule.exports = Provider;\n",
+        'packages/auth/src/dev.ts':
+          "export const mock = await import('../../../tooling/dev-stack/src/mock-idp/index.ts');\n",
+        'apps/web/src/types.ts':
+          "import type { Configuration } from 'oidc-provider';\nexport type C = Configuration;\n",
+        'services/control-plane/test/integration/sign-in.int.ts': `${ok}import { startMockIdp } from '@ralysa/dev-stack/mock-idp';\nexport { startMockIdp };\n`,
+        'tooling/dev-stack/src/mock-idp/index.ts':
+          "import Provider from 'oidc-provider';\nexport { Provider };\n",
+      }),
+    ).toEqual([
+      'imports/no-dev-only-in-shipped apps/web/src/types.ts',
+      'imports/no-dev-only-in-shipped packages/auth/src/dev.ts',
+      'imports/no-dev-only-in-shipped services/control-plane/src/idp.ts',
+      'imports/no-dev-only-in-shipped services/control-plane/src/provider.cjs',
+    ]);
+  });
+
   it('fails when the options drop every package target (graph sanity)', async () => {
     expect(
       await violations({
