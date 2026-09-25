@@ -62,7 +62,26 @@ pnpm turbo run lint typecheck test build --filter=@ralysa/agent-host
 | `app` | `apps/` | `vite-app.json` | `base` + `reactUi` + `tests` | Vite + React apps (`apps/web`) |
 | `cli` | `apps/` | `node-cli.json` (`jsx: react-jsx` for Ink) | `base` + `tests` | Node CLIs (`apps/cli`, F-005). The owning feature chooses the bundler. |
 
-Each package's `tsconfig.json` is a no-emit project over `src/`, `test/` and `*.config.ts`, used by `typecheck` and type-aware lint. `tsconfig.build.json` emits `src/` to `dist/`. Apps are bundled by Vite instead.
+Each package's `tsconfig.json` is the composite project over `src/`, `test/` and `*.config.ts` that `typecheck` and type-aware lint use. `tsconfig.build.json` emits `src/` to `dist/`. Apps are bundled by Vite instead.
+
+### Referenceable libraries (`.tsc/`)
+
+A workspace that depends on a TypeScript library must reference it in its `tsconfig.json` (`check-tsrefs`). TypeScript rejects a reference to a project that disables emit (`TS6310 Referenced project … may not disable emit`, reported by `tsc -p`, which every `typecheck` script runs). So a **library's** `tsconfig.json` doesn't use `noEmit`. It emits declarations only, into a git-ignored scratch folder:
+
+```jsonc
+// packages/<library>/tsconfig.json (the library and library-isomorphic templates do this)
+"compilerOptions": {
+  "noEmit": false,
+  "emitDeclarationOnly": true,
+  "outDir": "${configDir}/.tsc"
+}
+```
+
+- `.tsc/` is in `.gitignore` and in the ESLint base ignores. Nothing reads it; `typecheck` and `tsc -b` just write it.
+- `tsconfig.build.json` sets `"emitDeclarationOnly": false` again, so `build` still emits JavaScript and declarations to `dist/`.
+- `check-tsrefs` fails when a referenced project isn't `composite` (`tsrefs/reference-not-composite`, TS6306) or sets `noEmit` (`tsrefs/reference-no-emit`, TS6310). It reads the effective options, with `extends` resolved.
+- Apps, services and CLIs are leaves (nothing references them), so their `tsconfig.json` stays no-emit.
+- A dependent imports the library through its package entry point (`dist/`), so it type-checks against the built library; Turbo's `^build` puts that first. `tsc -b <app>` builds the whole reference graph; the scaffold test proves it with a scaffolded app referencing a scaffolded library (TC-F-001-46).
 
 ## Tests: `test` vs `test:integration`
 

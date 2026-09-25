@@ -7,9 +7,10 @@
 // template declares, linked to the real repo's installed copies (test/link-deps.ts), so a template
 // that forgets one fails here. Scripts run directly with that .bin on PATH.
 import { execSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { checkTsrefs } from '../src/check-tsrefs.ts';
 import { checkWorkspaces } from '../src/check-workspaces.ts';
 import { listWorkspaceDirs, readJson } from '../src/lib/repo.ts';
 import { formatRootTsconfig, type ScaffoldKind, scaffold } from '../src/scaffold.ts';
@@ -175,5 +176,88 @@ describe('scaffold templates pass every gate on creation (TC-F-001-46)', () => {
     const result = runScript(root, 'packages/demo-iso', 'typecheck');
     expect(result.ok).toBe(false);
     expect(result.output).toMatch(/Cannot find name 'document'/);
+  });
+});
+
+// T08-8 (decided): a scaffolded library's typecheck config is referenceable. A scaffolded app that
+// depends on it references it (check-tsrefs requires that), and `tsc -b` builds the graph without
+// TS6310. A negative control switches the library back to noEmit.
+describe('a scaffolded app can reference a scaffolded library (T08-8)', () => {
+  const root = copyRepo('ralysa-scaffold-');
+  const lib = 'packages/ref-lib';
+  const app = 'apps/ref-app';
+  scaffold({ root, target: lib, kind: 'library', repoFiles: [] });
+  scaffold({ root, target: app, kind: 'app', repoFiles: [] });
+  linkDeclaredDependencies(join(root, lib));
+  linkDeclaredDependencies(join(root, app));
+
+  // The app depends on, references and imports the library. link-deps resolves @ralysa/* from
+  // the real repo, where this library doesn't exist, so it is linked to the copy here.
+  const appPkgFile = join(root, app, 'package.json');
+  const appPkg = readJson(appPkgFile) as { dependencies: Record<string, string> };
+  appPkg.dependencies['@ralysa/ref-lib'] = 'workspace:*';
+  writeFileSync(appPkgFile, `${JSON.stringify(appPkg, null, 2)}\n`);
+  writeFileSync(
+    join(root, app, 'tsconfig.json'),
+    `${JSON.stringify(
+      {
+        extends: '@ralysa/tsconfig/vite-app.json',
+        include: ['src', 'test', '*.config.ts'],
+        references: [{ path: '../../packages/ref-lib' }],
+      },
+      null,
+      2,
+    )}\n`,
+  );
+  writeFileSync(
+    join(root, app, 'src/uses-lib.tsx'),
+    "import { Slot } from '@ralysa/ref-lib';\n\nexport const LibSlot: typeof Slot = Slot;\n",
+  );
+  mkdirSync(join(root, app, 'node_modules/@ralysa'), { recursive: true });
+  symlinkSync(join(root, lib), join(root, app, 'node_modules/@ralysa/ref-lib'), 'dir');
+
+  const tscBuild = (): { ok: boolean; output: string } => {
+    try {
+      const output = execSync(`"${join(root, lib, 'node_modules/.bin/tsc')}" -b ${app}`, {
+        cwd: root,
+        encoding: 'utf8',
+        env: cleanEnv(),
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      return { ok: true, output };
+    } catch (error) {
+      const { stdout = '', stderr = '' } = error as { stdout?: string; stderr?: string };
+      return { ok: false, output: `${stdout}\n${stderr}` };
+    }
+  };
+  const refFindings = (): string[] =>
+    checkTsrefs({ root })
+      .filter((f) => f.path.includes('ref-'))
+      .map((f) => f.rule);
+
+  it('check-tsrefs accepts the reference', () => {
+    expect(refFindings()).toEqual([]);
+  });
+
+  it('tsc -b builds the library declarations and type-checks the app against the library', () => {
+    // The app imports the package entry point (dist/), as a bundler does.
+    expect(runScript(root, lib, 'build').ok).toBe(true);
+    const result = tscBuild();
+    expect(result.ok, result.output).toBe(true);
+    expect(existsSync(join(root, lib, '.tsc/src/index.d.ts'))).toBe(true);
+    expect(runScript(root, app, 'typecheck').ok).toBe(true);
+  });
+
+  it('negative control: with a noEmit library the app typecheck fails with TS6310, and so does check-tsrefs', () => {
+    writeFileSync(
+      join(root, lib, 'tsconfig.json'),
+      '{ "extends": "@ralysa/tsconfig/react-lib.json", "include": ["src", "test", "*.config.ts"] }\n',
+    );
+    // Every workspace's `typecheck` is `tsc -p tsconfig.json`, which validates references.
+    // (TypeScript 6's `tsc -b` tolerates a noEmit reference, so it is not the control here.)
+    const result = runScript(root, app, 'typecheck');
+    expect(result.ok).toBe(false);
+    expect(result.output).toContain('TS6310');
+    expect(refFindings()).toEqual(['tsrefs/reference-no-emit']);
   });
 });

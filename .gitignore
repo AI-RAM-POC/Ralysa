@@ -4,6 +4,8 @@ build/
 out/
 coverage/
 .turbo/
+# Declaration-only typecheck output of referenceable library projects (repo-conventions.md)
+.tsc/
 .env
 .env.*
 !.env.example

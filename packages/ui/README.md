@@ -42,7 +42,7 @@ Components call `useTranslation('ui')` explicitly; an app's own namespace is its
 | `check:generated` | Regenerates the token outputs and the i18n key types (CI then runs `git status --porcelain`) |
 | `lint` | ESLint (`base`, `react-ui` against `src/styles/tailwind.css`, `tests`), Stylelint (`@ralysa/stylelint-config`) and `i18next-cli extract --ci --dry-run`: raw colours, logical layout, token-backed classes, no hard-coded strings, no missing keys (AC-3 to AC-6) |
 | `test` | Vitest: token schema and generator (TC-F-001-06), contrast gate on the real pairs (TC-F-001-23), theme plumbing, i18n runtime and locale switch (AC-6), extract `--ci` behaviour (TC-F-001-12), contract parity with `check-i18n` and typed keys |
-| `typecheck` | `tsc -p tsconfig.json` (src, tests and scripts). Emits declarations only, into `node_modules/.tmp/tsc-check`, because apps reference this project and TypeScript rejects a reference to a no-emit project (TS6310). |
+| `typecheck` | `tsc -p tsconfig.json` (src, tests and scripts). Emits declarations only, into the ignored `.tsc/`, because apps reference this project and TypeScript rejects a reference to a no-emit project (TS6310). See "Referenceable libraries" in `docs/engineering/repo-conventions.md`. |
 
 After changing a token, run `pnpm --filter @ralysa/ui build` and commit `src/tokens/generated.ts` and `src/styles/theme.css`. If you add a colour token, add its pairs to `contrast-pairs.json` or list it as exempt with a reason; the test fails otherwise.
 
