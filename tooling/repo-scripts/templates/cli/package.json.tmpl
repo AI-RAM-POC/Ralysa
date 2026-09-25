@@ -1,0 +1,32 @@
+{
+  "name": "{{package}}",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "{{name}}": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "devDependencies": {
+    "@ralysa/eslint-config": "workspace:*",
+    "@ralysa/tsconfig": "workspace:*",
+    "@ralysa/vitest-config": "workspace:*",
+    "@types/node": "catalog:",
+    "eslint": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "ralysa": {
+    "kind": "cli",
+    "shipped": true,
+    "ui": false,
+    "artefacts": [
+      "dist"
+    ]
+  }
+}

@@ -61,3 +61,73 @@
 - `tooling/vitest-config/test/presets.test.ts` (2).
 - `tooling/repo-scripts/test/check-workspaces.test.ts`: TC-F-001-01 (unit part), **TC-F-001-43**, and the lifecycle, specifier and `packs/` parts of **TC-F-001-42**.
 - `tooling/repo-scripts/test/check-tsrefs.test.ts`, `test/tsconfig-bases.test.ts` (AR-4 c; the isomorphic base rejects DOM and Node globals, part of TC-F-001-46).
+
+## T03: placeholders, scaffold, `apps/web`, CI jobs
+
+### What landed
+
+- **14 placeholder packages** (`apps/cli`, `apps/desktop`, `packages/{auth,protocol,sdk,ui,views,workbench}`, `services/{agent-host,control-plane,extraction,mcp-gateway,model-gateway,workspace-runtime}`). Their four scripts run `ralysa-repo placeholder-guard`. Each README is kept, and `ralysa.shipped` follows §3.1 (services `true` with no artefacts yet; `apps/cli` and `apps/desktop` `false` until converted; `packages/*` `false`). `ralysa.ui` is `true` for `apps/desktop` and `packages/{ui,workbench,views}` (the §7.3.1 scope).
+- **`pnpm scaffold`** with templates `library`, `library-isomorphic`, `service`, `app` and `cli`. **`apps/web` was created with `pnpm scaffold apps/web --kind app`**, so the app template is proven in the real repo, not only in the test copy. `apps/web` renders an empty `<main>` landmark with no text (T08 adds the i18n'd heading) and is `shipped: true`.
+- `placeholder-guard`, `summary` (the workspace × task table in `$GITHUB_STEP_SUMMARY`, which also fails if a workspace is missing a required task) and `check-turbo-config`.
+- CI: `repo-checks` (`pnpm repo:check`) and `quality` (`turbo run lint typecheck test build check:generated --continue=dependencies-successful --summarize`, the `git status --porcelain` drift check, and the summary) replace `build`. `pr-traceability` is unchanged. The Turbo local cache uses `actions/cache` with key `turbo-quality-<os>-<sha>`.
+- `.github/required-checks.json` = `["pr-traceability", "quality", "repo-checks"]`.
+- `docs/engineering/repo-conventions.md`; root README tooling section.
+
+### Recorded decisions and deviations
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T03-1 | **Design deviation** | `turbo.json` `globalDependencies` gains `!tooling/**/.turbo/**` and `!tooling/**/dist/**` next to the design's `!tooling/**/node_modules/**`. `check-turbo-config` still requires every entry the design lists. | Turbo's `globalDependencies` globs don't honour `.gitignore`. As designed, `tooling/**/*` matched the tooling packages' Turbo logs (`.turbo/turbo-*.log`) and `dist/` declarations, which every run rewrites. Every task hash therefore changed on every run: two identical consecutive runs gave `0 cached, 76 total`. With the two negations the second run gives `76 cached, 76 total`. Tooling *sources* are still global inputs, so SEC-F001-23 holds: the TC-F-001-45 test shows that editing `.dependency-cruiser.cjs` or `tooling/eslint-config/base.js` changes every lint hash. |
+| T03-2 | Design deviation (sequencing) | `.github/required-checks.json` is **created** by T03 with the T03 content. | §6.3.3 has T15 create it as `["build", "pr-traceability"]` and T03 replace `build`. T15 (human merge) hasn't landed, so T03 writes the post-T03 state directly. T15 must keep this content rather than the initial list. |
+| T03-3 | Scope note | `repo-checks` does not yet run `node --test .claude/hooks/test/`. | The guard fixtures arrive with T15, which touches `.claude/**` and is out of scope here. T15 adds the step. |
+| T03-4 | Implementation choice | TC-F-001-46 (`tooling/repo-scripts/test/scaffold.test.ts`) scaffolds the five kinds into a temp copy of the working tree and **does not run `pnpm install`**. Each new package's `node_modules` is a symlink to a real workspace with the same dependency set (`apps/web` for `library`/`app`, `tooling/repo-scripts` for the Node kinds), and the package's own `lint`/`typecheck`/`test`/`build` scripts run with that `.bin` on `PATH`. | An offline install in the copy fails: pnpm 11's supply-chain verification (`minimumReleaseAge`, `trustPolicy`) and `catalog:` resolution need registry metadata that isn't cached (`ERR_PNPM_NO_OFFLINE_META`). Going online would make `test` non-hermetic (§2.1), and switching the policies off in the copy would defeat them. The templates use no dependency outside those two sets. `pnpm scaffold apps/web --kind app` in the real repo, followed by a real `pnpm install`, covers the install path once. |
+| T03-5 | Implementation note | The placeholders' and tooling packages' `build` tasks produce Turbo "no output files found" warnings. | Placeholders and no-emit tooling builds have nothing to output. Suppressing the warning would need a per-package `turbo.json`, which would itself break the placeholder rule (only `README.md` and `package.json`). |
+| T03-6 | Implementation note | `pnpm scaffold` and other root scripts may trigger pnpm 11's automatic dependency check before running. | This is pnpm 11 default behaviour. It installs only what the lockfile already allows (release-age and trust policies apply). |
+
+### TC-F-001-02 canary (manual, once)
+
+The design asks for a throw-away PR whose run is linked in the PR. **Not done**: the brief for this change says not to open PRs. **Local equivalent, recorded here:** with one assertion in `apps/web/test/App.test.tsx` inverted, `turbo run lint typecheck test build --continue=dependencies-successful --summarize` exited 1. 75 tasks succeeded, 1 failed, and the rendered summary listed all 19 workspaces, with `@ralysa/web | … | **FAILED** |` in the `test` column and every other workspace still `pass`. The edit was reverted. The CI version still needs to run once, on the first PR.
+
+### Tests added (T03)
+
+- `test/placeholder-guard.test.ts`: the guard passes, fails with the scaffold hint, refuses non-placeholders, and every real placeholder passes.
+- `test/scaffold.test.ts`: target and kind validation, placeholder conversion, the root tsconfig format; **TC-F-001-46** (the five kinds × check-workspaces, lint, typecheck, test and build; an isomorphic `node:fs` import fails lint; `document` fails typecheck).
+- `test/summary.test.ts`: the workspace × task table, a missing-task finding, and a check that `user`/`scm` are never echoed (AC-1 support).
+- `test/check-turbo-config.test.ts`: **TC-F-001-45** (remote cache, each required `globalDependencies` entry, cacheable `check*`/`scan*`/`check:generated`/`test:integration`, and lint hashes changing when `.dependency-cruiser.cjs` or a tooling config changes, through `turbo run lint --dry=json` on a copy).
+- TC-F-001-01: `check-workspaces` unit tests (T02) plus the real-repo run in `repo-checks`.
+
+## Version confirmations (npm registry, 2026-09-25 ~08:20 UTC)
+
+Policy (§2.2): the latest patch of a line GA for at least 30 days, and `minimumReleaseAge` holds back anything under 3 days old. Cut-off for the 3-day rule: 2026-09-22T08:20Z.
+
+| Tool | Design | Pinned | Registry facts and deviation |
+|---|---|---|---|
+| Node.js | 24.x (24.21.0) | **24.21.0** | Latest 24 LTS. As designed. |
+| pnpm | 11.27.N | **11.27.1** | `latest-11` = 11.27.1 (2026-09-20). pnpm 12.6.0 is `latest`; the 12 line is under 30 days old (12.0.0 on 2026-08-26). As designed. |
+| Turborepo | 2.11.x | **2.11.2** | **Deviation.** 2.11.3 (2026-09-22T20:39Z) and 2.11.4 (2026-09-24) are inside the 3-day window, and pnpm rejected the old lockfile's 2.11.3 with `ERR_PNPM_MINIMUM_RELEASE_AGE_VIOLATION`. The 2.11 line itself is only 7 days old (2.11.0 on 2026-09-18), so it doesn't meet the 30-day policy either. Kept on 2.11 because the design pins it and the previous lockfile already used 2.11.3. Move to the newest 2.11 patch after the window passes. |
+| TypeScript | 6.0.x (6.0.3) | **6.0.3** | `latest` is 7.0.2; typescript-eslint 8.70.1 declares `typescript >=4.8.4 <6.1.0`. As designed. |
+| ESLint | 10.x | **10.11.0** | 2026-09-18. `@eslint/js` is 10.0.1 (its latest). As designed. |
+| typescript-eslint | 8.70.x | **8.70.1** | Peer `eslint ^8.57 \|\| ^9 \|\| ^10`. As designed. |
+| `@eslint-react/eslint-plugin` | 5.20.x | **5.20.5** | **Minor deviation.** 5.20.6 to 5.20.8 were all published 2026-09-23 (inside the 3-day window); 5.20.5 is the newest allowed 5.20 patch. |
+| `eslint-plugin-react-hooks` | 7.1.x | **7.1.1** | As designed. |
+| `eslint-plugin-jsx-a11y` | 6.10.2 via `@eslint/compat` 2.1.x | **6.10.2**, `@eslint/compat` **2.1.1** | Spike passed (see T02). |
+| `@eslint-community/eslint-plugin-eslint-comments` | (not pinned in the design) | **4.8.1** | Peer includes ESLint ^10. Needed for the T02 lint-comment rules. |
+| Prettier | 3.9.x | **3.9.8** | **Minor deviation.** 3.9.9 (2026-09-23) is inside the 3-day window. |
+| Vitest | 4.1.x | **4.1.11** | Peer `vite ^6 \|\| ^7 \|\| ^8`. Vitest 5.0.1 is `latest`, but the 5 line is under 30 days old. As designed. |
+| Vite | 8.3.x | **8.3.0** | **Minor deviation.** 8.3.1 (2026-09-24) is inside the 3-day window. 8.3.0 (2026-09-10) is 15 days old, under the 30-day policy but pinned because the design names 8.3.x. |
+| `@vitejs/plugin-react` | 6.1.x | **6.1.1** | As designed. |
+| React / React DOM / types | 19.x | **19.3.0** | As designed. |
+| zod | 4.6.x | **4.6.5** | As designed. |
+| `@types/node` | (not pinned) | **24.13.6** | Matches Node 24. |
+| `globals` | (not pinned) | **17.12.0** | |
+| `yaml` | (new) | **2.9.1** | **New dependency** of `@ralysa/repo-scripts` (ISC, no dependencies, no install scripts), used to read `pnpm-workspace.yaml` for the `allowBuilds`, `enablePrePostScripts` and `packs/` rules. |
+
+No dependency added by T01 to T03 runs a build script: `allowBuilds` is still `{}`, and `strictDepBuilds` would have failed the install otherwise. The only `pnpm peers check` finding is jsx-a11y's ESLint ≤ 9 peer range (covered by the spike).
+
+## Left incomplete / follow-ups
+
+- **TC-F-001-02 in CI.** It needs a throw-away PR; see above. Run it on the first PR from this branch.
+- **The first CI run of `repo-checks` and `quality`** is unverified: nothing has been pushed to a PR yet. Things to watch: Corepack's download of pnpm on the runner, `pnpm store path` before the first install, and job time against the §8.3 budget.
+- **Guard fixtures in `repo-checks`** (`node --test .claude/hooks/test/`) arrive with T15 (human merge).
+- **T15 and required-checks.json:** T15 must keep T03's `required-checks.json` content (T03-2).
+- Bump Turbo, Prettier, Vite and `@eslint-react` to their newest patches once those are outside the 3-day window.

@@ -18,7 +18,9 @@ env:
   COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
 
 jobs:
-  build:
+  # Repository-level gates that aren't per-workspace (F-001 design §8.2). Runs outside Turbo,
+  # so nothing here can be replayed from a cache.
+  repo-checks:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -40,9 +42,54 @@ jobs:
           key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
           restore-keys: pnpm-store-${{ runner.os }}-
       - run: pnpm install --frozen-lockfile
-      - run: pnpm lint
-      - run: pnpm test
-      - run: pnpm build
+      # check-workspaces (coverage, contract, lifecycle scripts, build settings, specifiers,
+      # packs/, Python), check-tsrefs, check-turbo-config, then prettier --check.
+      - run: pnpm repo:check
+
+  # Every workspace's lint, typecheck, test and build (AC-1). --continue=dependencies-successful
+  # lets the other workspaces finish when one fails, so the summary lists every result.
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - name: Enable pnpm through Corepack
+        run: |
+          corepack enable
+          pnpm --version
+      - name: Locate pnpm store
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: pnpm-store-${{ runner.os }}-
+      - run: pnpm install --frozen-lockfile
+      # Turbo local cache only; the remote cache is disabled in turbo.json (SEC-F001-12).
+      # PR runs can read main's caches but main can't read PR caches.
+      - uses: actions/cache@v4
+        with:
+          path: .turbo/cache
+          key: turbo-quality-${{ runner.os }}-${{ github.sha }}
+          restore-keys: turbo-quality-${{ runner.os }}-
+      - name: Lint, typecheck, test and build every workspace
+        run: pnpm exec turbo run lint typecheck test build check:generated --continue=dependencies-successful --summarize
+      # Generated files must be committed: catches modified and new untracked files (AR-7).
+      - name: No generated-file drift
+        run: |
+          drift="$(git status --porcelain)"
+          if [ -n "$drift" ]; then
+            echo "$drift"
+            echo "::error::Generated files are out of date or uncommitted. Run the build locally and commit the result."
+            exit 1
+          fi
+      - name: Workspace summary
+        if: ${{ !cancelled() }}
+        run: node tooling/repo-scripts/src/cli.ts summary --out "$GITHUB_STEP_SUMMARY"
 
   pr-traceability:
     if: github.event_name == 'pull_request'

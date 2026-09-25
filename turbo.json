@@ -8,17 +8,42 @@
     ".nvmrc",
     "pnpm-workspace.yaml",
     "tooling/**/*",
-    "!tooling/**/node_modules/**"
+    "!tooling/**/node_modules/**",
+    "!tooling/**/.turbo/**",
+    "!tooling/**/dist/**"
   ],
-  "remoteCache": { "enabled": false },
+  "remoteCache": {
+    "enabled": false
+  },
   "tasks": {
-    "build": { "dependsOn": ["^build"], "outputs": ["dist/**"] },
-    "typecheck": { "dependsOn": ["^build"] },
-    "lint": { "dependsOn": ["^build"] },
-    "test": { "dependsOn": ["^build"] },
-    "test:integration": { "dependsOn": ["^build"], "cache": false },
-    "check:generated": { "dependsOn": ["^build"], "cache": false },
-    "e2e": { "dependsOn": ["^build"], "cache": false },
-    "dev": { "cache": false, "persistent": true }
+    "build": {
+      "dependsOn": ["^build"],
+      "outputs": ["dist/**"]
+    },
+    "typecheck": {
+      "dependsOn": ["^build"]
+    },
+    "lint": {
+      "dependsOn": ["^build"]
+    },
+    "test": {
+      "dependsOn": ["^build"]
+    },
+    "test:integration": {
+      "dependsOn": ["^build"],
+      "cache": false
+    },
+    "check:generated": {
+      "dependsOn": ["^build"],
+      "cache": false
+    },
+    "e2e": {
+      "dependsOn": ["^build"],
+      "cache": false
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    }
   }
 }

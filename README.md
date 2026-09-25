@@ -25,9 +25,14 @@ Ralysa is built using an **Agentic Development Life Cycle**: agents do each phas
 
 ## Tooling
 
-pnpm workspaces + Turborepo.
+pnpm workspaces + Turborepo on Node.js 24 LTS. pnpm comes from Corepack, which verifies the hash in `package.json#packageManager`.
 
 ```bash
+nvm use && corepack enable
 pnpm install
-pnpm build
+pnpm lint && pnpm typecheck && pnpm test && pnpm build
+pnpm repo:check                                  # workspace, tsconfig and Turbo checks + prettier
+pnpm scaffold services/<name> --kind service     # turn a placeholder into a real package
 ```
+
+Conventions (workspaces, scaffold kinds, `test` vs `test:integration`, dependency rules) are in [docs/engineering/repo-conventions.md](docs/engineering/repo-conventions.md).
