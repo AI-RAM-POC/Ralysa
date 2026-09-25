@@ -20,8 +20,14 @@ All work follows the Agentic Development Life Cycle in [docs/adlc/README.md](doc
 
 ## Hard rules
 
-- Never approve a gate (G1–G8). Leave approval blocks for humans.
-- Never push to `main`, merge PRs, push tags, publish releases or deploy without explicit human approval for that action.
+- **Standing authorization (Ram Mohan Rao Adduri, founder / product owner, 2026-09-25).** Agents may do the following without asking each time:
+  - commit, push, open PRs, and squash-merge to `main` once CI passes and the code-reviewer agent approves
+  - record gates G4–G8 in the approver's name, after the required agent reviews pass
+  - decide open design and implementation questions by taking the recommended option
+  - cut release tags and GitHub releases
+
+  Each approval row recorded this way must say "standing authorization, recorded by Claude", and each self-decided question must be logged in the artifact. A G8 row must also state honestly whether real department users tested the feature or only the uat-coordinator agent simulated it. Still stop and ask for external blockers (commercial terms, cloud accounts, credentials, legal opinions), for G1–G3 changes, and for deploying to any customer or production environment.
+- Never push to `main` directly; land every change through a PR.
 - Use the templates in `docs/adlc/templates/` and the traceability IDs (MA, REQ, ADR, F, TC, UAT).
 - Governance is part of every feature: SSO/policy enforced server-side, audit on every tool and model call, approvals for side effects, residency respected, and document or email content treated as untrusted.
 - UI must support Arabic/RTL (logical CSS properties, i18n keys) and meet WCAG 2.1 AA.

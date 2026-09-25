@@ -53,7 +53,8 @@ Forces:
 6. **Engine-neutral types:**
    - The protocol defines its own `Message`, `ContentBlock`, `ToolCall`, `ToolResult`, `Usage`, `ApprovalRequest`, `Artifact` and `AccessDenied` types.
    - `services/agent-host` contains an **engine adapter** that maps Claude Agent SDK messages and hooks to and from these types. It is the only module allowed to import the SDK.
-   - CI enforces this with an import-restriction lint rule on `@anthropic-ai/claude-agent-sdk` outside `services/agent-host/src/engine/**`.
+   - CI enforces this with an import-restriction lint rule on `@anthropic-ai/claude-agent-sdk` outside `services/agent-host/src/engine/claude/**`.
+   - *Clarified 2026-09-25 (F-001 design review): the allowed path is `services/agent-host/src/engine/claude/**`, as in ADR-0012 decision 2 and agent-protocol.md §6.1 rule 1. The earlier wording `engine/**` also covered `engine/port.ts` and `engine/mock/**`, which must stay engine-neutral. The decision itself has not changed.*
    - A mock engine and a mock host pass the conformance suite (REQ-015).
 7. **Reliability:**
    - Every host → client notification carries a per-session monotonic `seq`.
