@@ -4,6 +4,7 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { checkWorkspaces, exoticSpecifierKind } from '../src/check-workspaces.ts';
+import { checkConfigGate } from '../src/config-gate.ts';
 import { findRepoRoot } from '../src/lib/repo.ts';
 import { type FixtureWorkspace, makeFixtureRepo, validWorkspacePackage } from './fixture-repo.ts';
 
@@ -560,5 +561,64 @@ describe('check-workspaces: pnpm configDependencies (code review N1)', () => {
   it('rejects a malformed register entry', () => {
     const bad = { package: 'x', specifier: '1.0.0', owner: 'o', reason: 'r' };
     expect(rules(run({ configDependencyEntries: [bad] }))).toContain('registers/schema');
+  });
+});
+
+describe('check-workspaces: lone CR, .npmrc spellings and key spellings (code review R3)', () => {
+  it('refuses a lone CR in pnpm-workspace.yaml before reading any setting', () => {
+    const yaml =
+      'packages:\n  - "tooling/*"\n# ok\rconfigDependencies:\r  pnpm-plugin-x: "1.0.0"\n';
+    expect(rules(run({ workspaceYaml: yaml }))).toEqual(['gate/lone-cr']);
+  });
+
+  it('reads .npmrc keys case-insensitively and with any separator, and CR as a line break', () => {
+    const cases: [string, string][] = [
+      ['PNPMFILE=probe.cjs\n', 'pnpm/pnpmfile'],
+      ['global_pnpmfile=/x.cjs\n', 'pnpm/pnpmfile'],
+      ['workspace-dir=/elsewhere\n', 'gate/env-config'],
+      ['Enable_Pre_Post_Scripts=true\n', 'pnpm/enable-pre-post-scripts'],
+      ['; comment\rpnpmfile=probe.cjs\n', 'gate/lone-cr'],
+    ];
+    for (const [npmrc, rule] of cases) {
+      const found = rules(
+        run(
+          {},
+          {
+            setup: (f) => {
+              f.write('.npmrc', npmrc);
+            },
+          },
+        ),
+      );
+      expect(found, npmrc).toContain(rule);
+    }
+  });
+
+  it('refuses other spellings of sensitive YAML and package.json keys, and workspaceDir', () => {
+    const base = 'packages:\n  - "tooling/*"\n';
+    expect(rules(run({ workspaceYaml: `${base}config-dependencies:\n  x: "1"\n` }))).toContain(
+      'gate/ambiguous-key',
+    );
+    expect(rules(run({ workspaceYaml: `${base}PnpmFile: probe.cjs\n` }))).toContain(
+      'gate/ambiguous-key',
+    );
+    expect(rules(run({ workspaceYaml: `${base}workspaceDir: ../elsewhere\n` }))).toContain(
+      'gate/env-config',
+    );
+    const rootPkg = { name: 'ralysa', private: true, pnpm: { configdependencies: {} } };
+    expect(rules(run({ rootPkg }))).toContain('gate/ambiguous-key');
+  });
+
+  it('checks the environment it is given', () => {
+    const fixture = makeFixtureRepo();
+    const env = {
+      PATH: '/usr/bin',
+      pnpm_config_pnpmfile: 'probe.cjs',
+      npm_config_user_agent: 'pnpm/11',
+    };
+    const { findings } = checkConfigGate({ root: fixture.root, env });
+    expect(findings).toEqual([
+      expect.objectContaining({ rule: 'gate/env-config', path: 'env pnpm_config_pnpmfile' }),
+    ]);
   });
 });

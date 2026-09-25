@@ -18,7 +18,7 @@ import {
   toPosix,
   walkFiles,
 } from './lib/core.ts';
-import { MiniYamlError, parseMiniYaml } from './lib/mini-yaml.ts';
+import { LONE_CR, MiniYamlError, parseMiniYaml } from './lib/mini-yaml.ts';
 
 /**
  * Scripts a package manager runs by itself during install or publish. `pnpm:devPreinstall` is
@@ -205,6 +205,8 @@ export interface ConfigGateOptions {
   root: string;
   /** Folder with the registers; defaults to tooling/repo-scripts. */
   registersDir?: string;
+  /** Environment pnpm would run with; defaults to process.env (code review R3-2). */
+  env?: NodeJS.ProcessEnv;
 }
 
 export interface ConfigGateResult {
@@ -213,9 +215,108 @@ export interface ConfigGateResult {
   settings: Record<string, unknown>;
 }
 
-function readNpmrc(root: string): string {
+/** Setting names as pnpm matches them: case-insensitive, with `-` and `_` ignored. */
+export function normalizeKey(key: string): string {
+  return key.toLowerCase().replace(/[-_]/g, '');
+}
+
+interface NpmrcEntry {
+  key: string;
+  norm: string;
+  value: string;
+}
+
+/**
+ * Reads .npmrc the way pnpm's `ini` reader splits it: CR, LF and CRLF are all line breaks, and
+ * `;` or `#` start a comment. A lone CR is reported, because a reader that splits on LF only
+ * would miss the setting after it (code review R3-1).
+ */
+function readNpmrc(root: string, findings: Finding[]): NpmrcEntry[] {
   const file = join(root, '.npmrc');
-  return existsSync(file) ? readFileSync(file, 'utf8') : '';
+  if (!existsSync(file)) return [];
+  const text = readFileSync(file, 'utf8');
+  if (LONE_CR.test(text)) {
+    findings.push({
+      rule: 'gate/lone-cr',
+      path: '.npmrc',
+      message:
+        'contains a carriage return not followed by a line feed; pnpm reads it as a line break, so the gate refuses the file',
+    });
+  }
+  const entries: NpmrcEntry[] = [];
+  for (const line of text.split(/\r\n|\r|\n/)) {
+    const trimmed = line.trim();
+    if (trimmed === '' || trimmed.startsWith('#') || trimmed.startsWith(';')) continue;
+    const eq = trimmed.indexOf('=');
+    const key = (eq === -1 ? trimmed : trimmed.slice(0, eq)).trim();
+    const value = eq === -1 ? 'true' : trimmed.slice(eq + 1).trim();
+    entries.push({ key, norm: normalizeKey(key), value });
+  }
+  return entries;
+}
+
+/** Settings that make pnpm load code or read its config from somewhere the gate doesn't check. */
+const ENV_SENSITIVE = ['pnpmfile', 'globalpnpmfile', 'configdependencies', 'workspacedir'];
+
+/**
+ * pnpm also takes settings from `npm_config_*` and `pnpm_config_*` environment variables
+ * (case-insensitive). One that names a pnpmfile, config dependencies or another workspace
+ * directory bypasses every file the gate reads (code review R3-2).
+ */
+function checkEnv(env: NodeJS.ProcessEnv, findings: Finding[]): void {
+  for (const name of Object.keys(env).sort()) {
+    const match = /^(npm|pnpm)_config_(.+)$/i.exec(name);
+    if (match === null) continue;
+    if (!ENV_SENSITIVE.includes(normalizeKey(match[2] ?? ''))) continue;
+    findings.push({
+      rule: 'gate/env-config',
+      path: `env ${name}`,
+      message:
+        'this environment variable changes which pnpmfile, config dependencies or workspace pnpm loads; unset it before running pnpm',
+    });
+  }
+}
+
+/** Sensitive settings, by normalised name, with the one spelling pnpm reads in YAML/package.json. */
+const CANONICAL_KEYS: Record<string, string> = {
+  configdependencies: 'configDependencies',
+  pnpmfile: 'pnpmfile',
+  globalpnpmfile: 'globalPnpmfile',
+  allowbuilds: 'allowBuilds',
+  onlybuiltdependencies: 'onlyBuiltDependencies',
+  enableprepostscripts: 'enablePrePostScripts',
+  dangerouslyallowallbuilds: 'dangerouslyAllowAllBuilds',
+  workspacedir: 'workspaceDir',
+  packages: 'packages',
+};
+
+/**
+ * Refuses other spellings of sensitive keys (`config-dependencies`, `PnpmFile`): pnpm 11 ignores
+ * them today, but a reader change could start honouring one the gate skipped.
+ */
+function checkKeySpellings(
+  object: Record<string, unknown>,
+  file: string,
+  findings: Finding[],
+): void {
+  for (const key of Object.keys(object)) {
+    const canonical = CANONICAL_KEYS[normalizeKey(key)];
+    if (canonical !== undefined && key !== canonical) {
+      findings.push({
+        rule: 'gate/ambiguous-key',
+        path: file,
+        message: `"${key}" is another spelling of "${canonical}"; use "${canonical}" exactly`,
+      });
+    }
+  }
+  if (Object.hasOwn(object, 'workspaceDir')) {
+    findings.push({
+      rule: 'gate/env-config',
+      path: file,
+      message:
+        'workspaceDir must not be set: it points pnpm at another workspace the gate does not check',
+    });
+  }
 }
 
 function readManifest(
@@ -289,11 +390,19 @@ function checkPnpmfiles(
   root: string,
   settings: Record<string, unknown>,
   rootPkg: Record<string, unknown> | undefined,
-  npmrc: string,
+  npmrc: NpmrcEntry[],
   register: PnpmfileEntry[],
   findings: Finding[],
 ): void {
-  const candidates = new Set(walkFiles(root).filter((file) => PNPMFILE.test(file)));
+  const files = walkFiles(root);
+  for (const file of files.filter((f) => /[\r\n]/.test(f))) {
+    findings.push({
+      rule: 'gate/lone-cr',
+      path: JSON.stringify(file),
+      message: 'a file name contains a line break character',
+    });
+  }
+  const candidates = new Set(files.filter((file) => PNPMFILE.test(file)));
   const named: [string, string, unknown][] = [
     ['pnpm-workspace.yaml', 'pnpmfile', settings.pnpmfile],
     ['pnpm-workspace.yaml', 'globalPnpmfile', settings.globalPnpmfile],
@@ -303,8 +412,17 @@ function checkPnpmfiles(
     named.push(['package.json', 'pnpm.pnpmfile', pnpmField.pnpmfile]);
     named.push(['package.json', 'pnpm.globalPnpmfile', pnpmField.globalPnpmfile]);
   }
-  for (const match of npmrc.matchAll(/^\s*(global-pnpmfile|pnpmfile)\s*=\s*(.+?)\s*$/gim)) {
-    named.push(['.npmrc', match[1] ?? 'pnpmfile', match[2]]);
+  for (const entry of npmrc) {
+    if (entry.norm === 'pnpmfile' || entry.norm === 'globalpnpmfile') {
+      named.push(['.npmrc', entry.key, entry.value]);
+    }
+    if (entry.norm === 'workspacedir' || entry.norm === 'configdependencies') {
+      findings.push({
+        rule: 'gate/env-config',
+        path: '.npmrc',
+        message: `${entry.key} must not be set: it changes which workspace or config dependencies pnpm loads`,
+      });
+    }
   }
   for (const [file, setting, value] of named) {
     if (value === undefined || value === null) continue;
@@ -385,7 +503,7 @@ function checkBuildSettings(
   root: string,
   settings: Record<string, unknown>,
   rootPkg: Record<string, unknown> | undefined,
-  npmrc: string,
+  npmrc: NpmrcEntry[],
   register: AllowBuildsEntry[],
   findings: Finding[],
 ): void {
@@ -398,7 +516,7 @@ function checkBuildSettings(
       message: 'enablePrePostScripts must not be enabled (SEC-F001-19)',
     });
   }
-  if (/^\s*enable-pre-post-scripts\s*=\s*(?!false\s*$)/im.test(npmrc)) {
+  if (npmrc.some((e) => e.norm === 'enableprepostscripts' && e.value.toLowerCase() !== 'false')) {
     findings.push({
       rule: 'pnpm/enable-pre-post-scripts',
       path: '.npmrc',
@@ -465,10 +583,23 @@ export function checkConfigGate(options: ConfigGateOptions): ConfigGateResult {
     findings,
   );
 
+  checkEnv(options.env ?? process.env, findings);
+
   let settings: Record<string, unknown> = {};
   const workspaceFile = join(root, 'pnpm-workspace.yaml');
+  const yamlText = existsSync(workspaceFile) ? readFileSync(workspaceFile, 'utf8') : '';
   try {
-    settings = existsSync(workspaceFile) ? parseMiniYaml(readFileSync(workspaceFile, 'utf8')) : {};
+    if (LONE_CR.test(yamlText)) {
+      findings.push({
+        rule: 'gate/lone-cr',
+        path: 'pnpm-workspace.yaml',
+        message:
+          'contains a carriage return not followed by a line feed; pnpm reads it as a line break, so text the gate would read as a comment could be a setting to pnpm. The file is refused.',
+      });
+    } else {
+      settings = parseMiniYaml(yamlText);
+      checkKeySpellings(settings, 'pnpm-workspace.yaml', findings);
+    }
   } catch (error) {
     if (!(error instanceof MiniYamlError)) throw error;
     findings.push({
@@ -478,8 +609,11 @@ export function checkConfigGate(options: ConfigGateOptions): ConfigGateResult {
     });
   }
 
-  const npmrc = readNpmrc(root);
+  const npmrc = readNpmrc(root, findings);
   const rootPkg = readManifest(root, '', findings);
+  if (rootPkg !== undefined && isRecord(rootPkg.pnpm)) {
+    checkKeySpellings(rootPkg.pnpm, 'package.json#pnpm', findings);
+  }
 
   checkConfigDependencies(settings, rootPkg, configDeps, findings);
   checkPnpmfiles(root, settings, rootPkg, npmrc, pnpmfiles, findings);

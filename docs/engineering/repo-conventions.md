@@ -103,7 +103,7 @@ Every pnpm command, even `pnpm --version`, installs the `configDependencies` in 
 node tooling/repo-scripts/src/pre-install-gate.ts
 ```
 
-It needs no installed packages and starts no subprocess. CI runs it before any pnpm command in every job that installs.
+It needs no installed packages and starts no subprocess. It also fails if your shell sets an `npm_config_*`/`pnpm_config_*` variable for a pnpmfile, config dependencies or workspace dir, and it refuses `pnpm-workspace.yaml` or `.npmrc` files that contain a carriage return without a line feed. CI runs it before any pnpm command in every job that installs.
 
 ## CI (`.github/workflows/ci.yml`)
 

@@ -8,6 +8,12 @@ import { MiniYamlError, parseMiniYaml } from '../src/lib/mini-yaml.ts';
 import { REAL_ROOT } from './repo-copy.ts';
 
 describe('mini-yaml: accepted documents match the yaml package', () => {
+  it('reports the line of a lone CR', () => {
+    expect(() => parseMiniYaml('a: 1\nb: 2 # x\ry: 3\n')).toThrow(
+      /line 2: a carriage return not followed by a line feed/,
+    );
+  });
+
   it.each([
     ['the real pnpm-workspace.yaml', readFileSync(join(REAL_ROOT, 'pnpm-workspace.yaml'), 'utf8')],
     ['empty', ''],
@@ -61,6 +67,20 @@ describe('mini-yaml: everything outside the subset is rejected', () => {
     ['ambiguous plain scalar', 'a: b: c\n'],
     ['unterminated quote', 'a: "x\n'],
     ['text after a quoted value', 'a: "x" y\n'],
+    // Code review R3-1: pnpm's reader treats a lone CR as a line break.
+    [
+      'lone CR hiding configDependencies after a comment',
+      "# reviewed\rconfigDependencies:\r  pnpm-plugin-zzzprobe: '1.0.0+sha512-AAAA'\n",
+    ],
+    ['lone CR hiding pnpmfile after a comment', '# note\rpnpmfile: probe.cjs\n'],
+    ['lone CR at the end of a value', 'a: 1\r'],
+    ['NEL', 'a: 1\n# note\u0085configDependencies: {}\n'],
+    ['line separator', 'a: 1\n# note\u2028b: 2\n'],
+    ['paragraph separator', 'a: 1\u2029\n'],
+    ['byte-order mark', '\uFEFFa: 1\n'],
+    ['no-break space before a comment', '\u00A0# c\na: 1\n'],
+    ['form feed', 'a: 1\f\n'],
+    ['NUL', 'a: 1\u0000\n'],
   ])('%s', (_name, source) => {
     expect(() => parseMiniYaml(source)).toThrow(MiniYamlError);
   });

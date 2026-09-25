@@ -155,6 +155,66 @@ The design asks for a throw-away PR whose run is linked in the PR. **Not done**:
   - `pre-install-gate.ts` run from a **copy of `src/` with no `node_modules` anywhere above it**, proving it needs no packages: it fails on the plugin, passes a clean fixture and the real repository, and fails closed on YAML aliases.
 - `test/mini-yaml.test.ts` (39): 10 accepted documents, including the real `pnpm-workspace.yaml`, deep-equal the `yaml` package's parse, and 29 unsupported constructs are rejected.
 
+### Round-3 review: lone CR and environment config
+
+| Finding | Fix | Tests |
+|---|---|---|
+| **R3-1 (Major)** `lib/mini-yaml.ts` split lines on `\n` only, but pnpm 11.27.1 reads `pnpm-workspace.yaml` with `@zkochan/js-yaml`, which treats a lone `\r` as a line break. `# reviewed\rconfigDependencies:\r  pnpm-plugin-zzzprobe: …` passed the gate while pnpm fetched the plugin, and `# note\rpnpmfile: probe.cjs` made pnpm run `probe.cjs`. | **Fail closed.** `mini-yaml` rejects any CR not followed by LF (`LONE_CR`) with the line number, splits on CRLF or LF only, and now also rejects C0 controls, DEL, NEL (U+0085), the line and paragraph separators (U+2028/9), the BOM, no-break and other non-ASCII spaces, since readers disagree on whether these are line breaks or whitespace. The gate checks for a lone CR **before** parsing and reports `gate/lone-cr` for `pnpm-workspace.yaml` and `.npmrc`. `.npmrc` is now read the way pnpm's `ini` reader splits it (CR, LF and CRLF are all line breaks; keys case-insensitive with `-`/`_` ignored), so `PNPMFILE=`, `global_pnpmfile=` and `Enable_Pre_Post_Scripts=` are caught too. A file name containing CR or LF is also reported. Package manifests are JSON, where a raw CR can only sit in whitespace, so they're unaffected. **Invariant:** after install, `check-workspaces` asserts again that `pnpm-workspace.yaml` has no lone CR (`pnpm/lone-cr`), next to the existing `mini-yaml` vs `yaml` comparison. | `mini-yaml.test.ts` (50): both probe strings, a trailing lone CR, NEL, LS, PS, BOM, NBSP, form feed and NUL rejected; the line number of a lone CR reported; CRLF still accepted. `cli-gate.test.ts`: both lone-CR probes through the **real `pre-install-gate.ts`** (from the no-`node_modules` copy of `src/`), which exits 1 with `[gate/lone-cr] pnpm-workspace.yaml`, no stack trace, no pnpm call (shims) and no `PNPMFILE_RAN` marker; plus a lone CR in `.npmrc`. `check-workspaces.test.ts`: the YAML lone-CR case returns only `gate/lone-cr`, and five `.npmrc` spelling and line-break cases. |
+| **R3-2 (Minor)** The gate ignored environment config: `pnpm_config_pnpmfile=probe.cjs` made pnpm run `probe.cjs`. | `checkEnv` fails (`gate/env-config`) on any `npm_config_*` or `pnpm_config_*` variable, in any case, whose setting name (with `-`/`_` ignored) is `pnpmfile`, `global-pnpmfile`, `config-dependencies` or `workspace-dir`. That covers `NPM_CONFIG_WORKSPACE_DIR` and `PNPM_CONFIG_WORKSPACE_DIR`. The environment is injectable (`options.env`, default `process.env`). The only `*_config_*` variables pnpm itself exports to scripts, `npm_config_user_agent` and `pnpm_config_verify_deps_before_run` (checked with `pnpm exec`), are not sensitive, so `pnpm repo:check` doesn't trip it. Also refused as defence in depth: `workspaceDir` in `pnpm-workspace.yaml` or `package.json#pnpm`, `workspace-dir`/`config-dependencies` in `.npmrc`, and any other spelling of a sensitive key (`config-dependencies:`, `PnpmFile:`) as `gate/ambiguous-key`. pnpm 11 ignores these spellings today (the harness's kebab-key case), but a reader change could start honouring one. | `cli-gate.test.ts`: nine variables (`pnpm_config_pnpmfile`, `npm_config_pnpmfile`, `NPM_CONFIG_GLOBAL_PNPMFILE`, `pnpm_config_global-pnpmfile`, `pnpm_config_config_dependencies`, `npm_config_config-dependencies`, `NPM_CONFIG_WORKSPACE_DIR`, `PNPM_CONFIG_WORKSPACE_DIR`, `pnpm_config_workspace_dir`) each fail the real `pre-install-gate.ts`, and pnpm's own exported variables pass. `check-workspaces.test.ts`: injected env, and the key-spelling cases. |
+
+**Reviewer's probe harness** (`diff.mjs`, read in full before running; every case directory's `.npmrc` sets `registry=http://127.0.0.1:9/`, and `pnpm-plugin-zzzprobe` doesn't exist on npm). The harness runs the real `pnpm config get registry` in each case directory and calls `checkConfigGate` in its own process.
+
+Before the fix (at `f4d45dd`):
+```
+control: clean                                 | gate: PASS                                             | pnpm: configDep -  pnpmfile - 
+control: configDependencies                    | gate: pnpm/config-dependencies                         | pnpm: configDep SEEN  pnpmfile - 
+lone CR after comment                          | gate: PASS                                             | pnpm: configDep SEEN  pnpmfile - 
+lone CR after comment (pnpmfile)               | gate: PASS                                             | pnpm: configDep -  pnpmfile RAN 
+CRLF                                           | gate: pnpm/config-dependencies                         | pnpm: configDep SEEN  pnpmfile - 
+BOM                                            | gate: gate/unsupported-yaml                            | pnpm: configDep SEEN  pnpmfile - 
+tab indent                                     | gate: gate/unsupported-yaml                            | pnpm: configDep SEEN  pnpmfile - 
+duplicate key (2nd hides?)                     | gate: gate/unsupported-yaml                            | pnpm: configDep SEEN  pnpmfile - 
+trailing document                              | gate: gate/unsupported-yaml                            | pnpm: configDep -  pnpmfile - pnpm-error
+document end ...                               | gate: gate/unsupported-yaml                            | pnpm: configDep -  pnpmfile - pnpm-error
+NEL U+0085 after comment                       | gate: PASS                                             | pnpm: configDep -  pnpmfile - 
+LS U+2028 after comment                        | gate: PASS                                             | pnpm: configDep -  pnpmfile - 
+NBSP-indented comment line                     | gate: pnpm/config-dependencies                         | pnpm: configDep SEEN  pnpmfile - 
+.npmrc pnpmfile                                | gate: pnpm/pnpmfile                                    | pnpm: configDep -  pnpmfile - 
+package.json pnpm.pnpmfile                     | gate: pnpm/pnpmfile                                    | pnpm: configDep -  pnpmfile - 
+package.json pnpm.configDependencies           | gate: pnpm/config-dependencies                         | pnpm: configDep -  pnpmfile - 
+env pnpm_config_pnpmfile                       | gate: PASS                                             | pnpm: configDep -  pnpmfile RAN 
+env npm_config_pnpmfile                        | gate: PASS                                             | pnpm: configDep -  pnpmfile - 
+kebab key config-dependencies                  | gate: PASS                                             | pnpm: configDep -  pnpmfile - 
+yaml pnpmfile (control)                        | gate: pnpm/pnpmfile                                    | pnpm: configDep -  pnpmfile RAN
+```
+After the fix:
+```
+control: clean                                 | gate: PASS                                             | pnpm: configDep -  pnpmfile - 
+control: configDependencies                    | gate: pnpm/config-dependencies                         | pnpm: configDep SEEN  pnpmfile - 
+lone CR after comment                          | gate: gate/lone-cr                                     | pnpm: configDep SEEN  pnpmfile - 
+lone CR after comment (pnpmfile)               | gate: gate/lone-cr                                     | pnpm: configDep -  pnpmfile RAN 
+CRLF                                           | gate: pnpm/config-dependencies                         | pnpm: configDep SEEN  pnpmfile - 
+BOM                                            | gate: gate/unsupported-yaml                            | pnpm: configDep SEEN  pnpmfile - 
+tab indent                                     | gate: gate/unsupported-yaml                            | pnpm: configDep SEEN  pnpmfile - 
+duplicate key (2nd hides?)                     | gate: gate/unsupported-yaml                            | pnpm: configDep SEEN  pnpmfile - 
+trailing document                              | gate: gate/unsupported-yaml                            | pnpm: configDep -  pnpmfile - pnpm-error
+document end ...                               | gate: gate/unsupported-yaml                            | pnpm: configDep -  pnpmfile - pnpm-error
+NEL U+0085 after comment                       | gate: gate/unsupported-yaml                            | pnpm: configDep -  pnpmfile - 
+LS U+2028 after comment                        | gate: gate/unsupported-yaml                            | pnpm: configDep -  pnpmfile - 
+NBSP-indented comment line                     | gate: gate/unsupported-yaml                            | pnpm: configDep SEEN  pnpmfile - 
+.npmrc pnpmfile                                | gate: pnpm/pnpmfile                                    | pnpm: configDep -  pnpmfile - 
+package.json pnpm.pnpmfile                     | gate: pnpm/pnpmfile                                    | pnpm: configDep -  pnpmfile - 
+package.json pnpm.configDependencies           | gate: pnpm/config-dependencies                         | pnpm: configDep -  pnpmfile - 
+env pnpm_config_pnpmfile                       | gate: PASS                                             | pnpm: configDep -  pnpmfile RAN 
+env npm_config_pnpmfile                        | gate: PASS                                             | pnpm: configDep -  pnpmfile - 
+kebab key config-dependencies                  | gate: gate/ambiguous-key                               | pnpm: configDep -  pnpmfile - 
+yaml pnpmfile (control)                        | gate: pnpm/pnpmfile                                    | pnpm: configDep -  pnpmfile RAN
+```
+- **Lone-CR cases:** both now fail closed with `gate/lone-cr`, where the gate had passed while pnpm saw the config dependency or ran the pnpmfile.
+- **The other cases pnpm acts on** are all caught: CRLF, BOM, tab, duplicate key, NBSP, `.npmrc` and `package.json` settings.
+- **NEL, LS and the kebab key** now fail closed as well, although pnpm ignores them.
+- **The two `env …` rows still read `PASS`** because the harness passes the variable only to pnpm, not to its in-process gate call. Calling `checkConfigGate` on those two case directories with the variable in `options.env` gives `gate/env-config env pnpm_config_pnpmfile` and `gate/env-config env npm_config_pnpmfile`. The CLI tests above cover the same through the real entry point.
+
 ## Version confirmations (npm registry, 2026-09-25 ~08:20 UTC)
 
 Policy (§2.2): the latest patch of a line GA for at least 30 days, and `minimumReleaseAge` holds back anything under 3 days old. Cut-off for the 3-day rule: 2026-09-22T08:20Z.

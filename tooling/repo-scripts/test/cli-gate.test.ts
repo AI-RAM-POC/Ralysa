@@ -139,6 +139,67 @@ describe('static config gate through the real CLI (no pnpm, no network)', () => 
       expect(status, output).toBe(0);
     });
 
+    // Code review R3-1: the reviewer's lone-CR probes, through the real entry point.
+    it.each([
+      [
+        'configDependencies',
+        `packages:\n  - "tooling/*"\n# reviewed\rconfigDependencies:\r  pnpm-plugin-zzzprobe: '1.0.0+sha512-AAAA'\n`,
+      ],
+      ['pnpmfile', 'packages:\n  - "tooling/*"\n# note\rpnpmfile: probe.cjs\n'],
+    ])('fails closed on a lone CR hiding %s', (_name, yaml) => {
+      const repo = makeFixtureRepo({ workspaceYaml: yaml });
+      repo.write('probe.cjs', "require('fs').writeFileSync(__dirname + '/PNPMFILE_RAN', '1');\n");
+      const { env, marker } = sentinel();
+      const { status, output } = run(gate, [], repo.root, env);
+      expect(status, output).toBe(1);
+      expect(output).toContain('[gate/lone-cr] pnpm-workspace.yaml');
+      expect(output).not.toMatch(/\n\s+at .+:\d+:\d+/);
+      expect(existsSync(marker)).toBe(false);
+      expect(existsSync(join(repo.root, 'PNPMFILE_RAN'))).toBe(false);
+    });
+
+    it('fails closed on a lone CR in .npmrc', () => {
+      const repo = makeFixtureRepo();
+      repo.write('.npmrc', 'registry=http://127.0.0.1:9/\n# note\rpnpmfile=probe.cjs\n');
+      const { env } = sentinel();
+      const { status, output } = run(gate, [], repo.root, env);
+      expect(status, output).toBe(1);
+      expect(output).toContain('[gate/lone-cr] .npmrc');
+      expect(output).toContain('[pnpm/pnpmfile]');
+    });
+
+    // Code review R3-2: pnpm reads settings from npm_config_* / pnpm_config_* too.
+    it.each([
+      ['pnpm_config_pnpmfile', 'probe.cjs'],
+      ['npm_config_pnpmfile', 'probe.cjs'],
+      ['NPM_CONFIG_GLOBAL_PNPMFILE', '/tmp/x.cjs'],
+      ['pnpm_config_global-pnpmfile', '/tmp/x.cjs'],
+      ['pnpm_config_config_dependencies', '{}'],
+      ['npm_config_config-dependencies', '{}'],
+      ['NPM_CONFIG_WORKSPACE_DIR', '/tmp/elsewhere'],
+      ['PNPM_CONFIG_WORKSPACE_DIR', '/tmp/elsewhere'],
+      ['pnpm_config_workspace_dir', '/tmp/elsewhere'],
+    ])('fails on the environment variable %s', (name, value) => {
+      const repo = makeFixtureRepo();
+      const { env, marker } = sentinel();
+      const { status, output } = run(gate, [], repo.root, { ...env, [name]: value });
+      expect(status, output).toBe(1);
+      expect(output).toContain(`[gate/env-config] env ${name}`);
+      expect(existsSync(marker)).toBe(false);
+    });
+
+    it('passes with the variables pnpm itself exports to scripts', () => {
+      const repo = makeFixtureRepo();
+      const { env } = sentinel();
+      const pnpmOwn = {
+        npm_config_user_agent: 'pnpm/11.27.1 npm/? node/v24.21.0 darwin arm64',
+        pnpm_config_verify_deps_before_run: 'install',
+        npm_config_registry: 'http://127.0.0.1:9/',
+      };
+      const { status, output } = run(gate, [], repo.root, { ...env, ...pnpmOwn });
+      expect(status, output).toBe(0);
+    });
+
     it('fails closed on YAML it does not understand', () => {
       const repo = makeFixtureRepo({
         workspaceYaml:

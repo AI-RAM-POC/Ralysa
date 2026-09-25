@@ -12,7 +12,7 @@ import { basename, join, posix } from 'node:path';
 import { SPECIFIER_ALLOWLIST } from '@ralysa/eslint-config/boundaries';
 import { checkConfigGate, resolveWorkspaceGlobs } from './config-gate.ts';
 import { REQUIRED_SCRIPTS, WorkspacePackageJson } from './contracts/workspace.ts';
-import { parseMiniYaml } from './lib/mini-yaml.ts';
+import { LONE_CR, parseMiniYaml } from './lib/mini-yaml.ts';
 import {
   type Finding,
   isRecord,
@@ -266,7 +266,19 @@ export function checkWorkspaces(options: CheckWorkspacesOptions): Finding[] {
       message: 'not a YAML mapping',
     });
   }
-  const strict = parseMiniYaml(readFileSync(workspaceFile, 'utf8'));
+  const workspaceText = readFileSync(workspaceFile, 'utf8');
+  // Defence in depth (code review R3-1): the gate refuses a lone CR itself; asserting it again
+  // here catches any future drift between the gate's reader and this check.
+  if (LONE_CR.test(workspaceText)) {
+    findings.push({
+      rule: 'pnpm/lone-cr',
+      path: 'pnpm-workspace.yaml',
+      message:
+        'contains a carriage return not followed by a line feed, which pnpm reads as a line break',
+    });
+    return findings;
+  }
+  const strict = parseMiniYaml(workspaceText);
   if (JSON.stringify(strict) !== JSON.stringify(settings)) {
     findings.push({
       rule: 'pnpm/yaml-differential',

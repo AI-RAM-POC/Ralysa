@@ -32,11 +32,44 @@ interface Line {
 
 const FORBIDDEN_PLAIN_START = /^[&*!|>%@`{[\]}?,'"]/;
 
+/**
+ * A carriage return not followed by a line feed. pnpm's YAML reader (@zkochan/js-yaml) and the
+ * `ini` reader it uses for .npmrc both treat a lone CR as a line break, so text after one would
+ * be read as a new line by pnpm but as part of the previous line (for example a comment) by a
+ * reader that splits on LF only (code review R3-1).
+ */
+export const LONE_CR = /\r(?!\n)/;
+
+/**
+ * Characters the subset refuses anywhere: C0 controls other than LF (CR is handled as CRLF or
+ * rejected as a lone CR; tab has its own message), DEL, the Unicode line and paragraph
+ * separators and NEL, the byte-order mark, and non-ASCII spaces. Readers disagree about whether
+ * these are line breaks or whitespace, so none of them may appear.
+ */
+const FORBIDDEN_CHAR =
+  // eslint-disable-next-line no-control-regex -- matching control characters is the point of this check
+  /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F\u0085\u00A0\u1680\u2000-\u200A\u2028\u2029\u202F\u205F\u3000\uFEFF]/;
+
+function lineOf(source: string, index: number): number {
+  return source.slice(0, index).split(/\r\n|\n/).length;
+}
+
 function preprocess(source: string): Line[] {
+  const cr = LONE_CR.exec(source);
+  if (cr !== null) {
+    throw new MiniYamlError(
+      'a carriage return not followed by a line feed; pnpm reads it as a line break, so it is refused',
+      lineOf(source, cr.index),
+    );
+  }
+  const forbidden = FORBIDDEN_CHAR.exec(source);
+  if (forbidden !== null) {
+    const code = (forbidden[0].codePointAt(0) ?? 0).toString(16).toUpperCase().padStart(4, '0');
+    throw new MiniYamlError(`character U+${code} is not allowed`, lineOf(source, forbidden.index));
+  }
   const lines: Line[] = [];
-  source.split('\n').forEach((raw, index) => {
+  source.split(/\r\n|\n/).forEach((text, index) => {
     const no = index + 1;
-    const text = raw.replace(/\r$/, '');
     if (text.includes('\t')) throw new MiniYamlError('tab characters are not supported', no);
     const trimmed = text.trim();
     if (trimmed === '' || trimmed.startsWith('#')) return;
