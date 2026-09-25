@@ -446,6 +446,13 @@ The design's 16 entries are kept unchanged. Checked 2026-09-25:
 
 `design.md` §6.2.2 is updated to match the T05-1 decision and this schema (recorded in its revision log).
 
+### Round-2 nits (branch `fix/F-001-boundary-nits`, after PR #13)
+
+| Item | Fix | Tests |
+|---|---|---|
+| The `require` ban only caught direct calls, so the handle could escape: `module.require.bind(module)`, `Reflect.apply(module.require, …)`, `const { require: rq } = module`. | Any `require` member access (named or computed) is banned **unless** it is the callee of a call whose first argument is a literal: `MemberExpression[property.name='require']:not(CallExpression[arguments.0.type='Literal'] > MemberExpression.callee)`. Destructuring `require` out of an object (`ObjectPattern > Property[key.name/value='require']`) is banned too. These replace the two call-only selectors. | `boundaries.test.ts` fails on `.bind`, `{ require: rq }`, `{ 'require': rq }`, `Reflect.apply(module.require, …)`, a stored `module.require`, and `module.require()` with no argument. `module.require('./local.cjs')` still passes, which exercises the `:not(...)` side. |
+| An exact-file allow-list entry couldn't start with an escaped dot (a dot-folder). | `ANCHORED_LITERAL_PATH` = `/^\^(?:[A-Za-z0-9_@-]\|\\\.)(?:[A-Za-z0-9_@/-]\|\\\.)*\$$/`. | Passes `^\.github/fixtures/sample\.txt$`. Fails `^\.github/.*$`, `^.github/fixtures/sample\.txt$` (unescaped dot) and `^/x\.txt$`. |
+
 ## Version confirmations (npm registry, 2026-09-25 ~08:20 UTC)
 
 Policy (§2.2): the latest patch of a line GA for at least 30 days, and `minimumReleaseAge` holds back anything under 3 days old. Cut-off for the 3-day rule: 2026-09-22T08:20Z.
