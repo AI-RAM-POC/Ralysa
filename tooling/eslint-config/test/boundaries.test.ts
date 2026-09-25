@@ -222,6 +222,25 @@ describe('dynamic loading ban: no-restricted-syntax (SEC-F001-09 b)', () => {
       'const main = process.mainModule;\nexport const r = main;\n',
     ],
     ['computed process["mainModule"]', "export const r = process['mainModule'];\n"],
+    // Round 2: the require handle, not only direct calls.
+    [
+      'module.require.bind',
+      "const rq = module.require.bind(module);\nexport const m = rq('op' + 'enai');\n",
+    ],
+    [
+      'destructured { require: rq }',
+      "const { require: rq } = module;\nexport const m = rq('x');\n",
+    ],
+    [
+      "destructured { 'require': rq }",
+      "const { 'require': rq } = module;\nexport const m = rq('x');\n",
+    ],
+    [
+      'Reflect.apply(module.require, …)',
+      "export const m = Reflect.apply(module.require, module, ['op' + 'enai']);\n",
+    ],
+    ['module.require stored', 'const rq = module.require;\nexport { rq };\n'],
+    ['module.require() with no argument', 'export const m = module.require();\n'],
   ])('%s is an error', async (_, code) => {
     expect(await lint(code, 'src/loader.js')).toContain('no-restricted-syntax');
   });

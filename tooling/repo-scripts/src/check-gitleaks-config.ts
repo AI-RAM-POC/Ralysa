@@ -98,9 +98,10 @@ export const CONFIG_KEYS = {
 /**
  * A repo allow-list path entry must be one exact file: `^`, a literal repo-relative path (letters,
  * digits, `_ @ / -` and escaped dots only), then `$`. `^.*`, `^.*\.env$` or a directory prefix
- * would silence far more than one reviewed file (finding 3).
+ * would silence far more than one reviewed file (finding 3). The first character may be an
+ * escaped dot too, for dot-folders such as `^\.github/fixtures/sample\.txt$` (round 2).
  */
-export const ANCHORED_LITERAL_PATH = /^\^[A-Za-z0-9_@-](?:[A-Za-z0-9_@/-]|\\\.)*\$$/;
+export const ANCHORED_LITERAL_PATH = /^\^(?:[A-Za-z0-9_@-]|\\\.)(?:[A-Za-z0-9_@/-]|\\\.)*\$$/;
 
 type Add = (path: string, message: string) => void;
 

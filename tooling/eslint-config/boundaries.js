@@ -47,17 +47,22 @@ export const RESTRICTED_SYNTAX = [
     selector: "CallExpression[callee.name='require'][arguments.length=0]",
     message: LOADING_MESSAGE,
   },
-  // `module.require(x)`, `mod['require'](x)` and the like (code review finding 5).
+  // The `require` handle on any object (code review findings 5 and round 2): `module.require`,
+  // `mod['require']`, `module.require.bind(module)`, `Reflect.apply(module.require, …)`. Only a
+  // direct call with a string literal, `module.require('./x.cjs')`, is allowed.
   {
     selector:
-      "CallExpression[callee.type='MemberExpression'][callee.property.name='require'][arguments.0.type!='Literal']",
+      "MemberExpression[property.name='require']:not(CallExpression[arguments.0.type='Literal'] > MemberExpression.callee)",
     message: LOADING_MESSAGE,
   },
   {
     selector:
-      "CallExpression[callee.type='MemberExpression'][callee.property.value='require'][arguments.0.type!='Literal']",
+      "MemberExpression[property.value='require']:not(CallExpression[arguments.0.type='Literal'] > MemberExpression.callee)",
     message: LOADING_MESSAGE,
   },
+  // Destructuring the handle out: `const { require: rq } = module`, `{ 'require': rq }`.
+  { selector: "ObjectPattern > Property[key.name='require']", message: LOADING_MESSAGE },
+  { selector: "ObjectPattern > Property[key.value='require']", message: LOADING_MESSAGE },
   // `process.mainModule.require` and any alias of it: ban the handle itself.
   { selector: "MemberExpression[property.name='mainModule']", message: LOADING_MESSAGE },
   { selector: "MemberExpression[property.value='mainModule']", message: LOADING_MESSAGE },

@@ -222,9 +222,21 @@ describe('check-gitleaks-config', () => {
       );
     });
 
-    it('passes an exact anchored file', () => {
-      expect(check(withList("paths = ['''^apps/web/fixtures/sample-1\\.txt$''']"))).toEqual([]);
-    });
+    it.each([['^apps/web/fixtures/sample-1\\.txt$'], ['^\\.github/fixtures/sample\\.txt$']])(
+      'passes the exact anchored file %s',
+      (path) => {
+        expect(check(withList(`paths = ['''${path}''']`))).toEqual([]);
+      },
+    );
+
+    it.each([['^\\.github/.*$'], ['^.github/fixtures/sample\\.txt$'], ['^/x\\.txt$']])(
+      'fails on the dot-folder entry %s (wildcard, unescaped dot or leading /)',
+      (path) => {
+        expect(check(withList(`paths = ['''${path}''']`)).join('\n')).toContain(
+          'must be one exact file anchored at the repo root',
+        );
+      },
+    );
 
     it.each(['regexes', 'stopwords', 'commits'])('fails on a content allow-list (%s)', (key) => {
       expect(check(withList(`paths = ['''^a\\.txt$''']\n${key} = ['''x''']`)).join('\n')).toContain(
