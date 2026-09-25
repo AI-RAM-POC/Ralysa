@@ -10,7 +10,8 @@ export interface AuthEventFields {
   outcome: Outcome;
   reasonCode?: string;
   traceId: string;
-  user?: { id: string; idpSubject: string };
+  /** `id` is null when the user has no record (a refused first sign-in). */
+  user?: { id: string | null; idpSubject: string | null };
   service?: string;
   sessionId?: string;
   surface?: 'cli' | 'desktop' | 'web' | 'automation' | 'console';

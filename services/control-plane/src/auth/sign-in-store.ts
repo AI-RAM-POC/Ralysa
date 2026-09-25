@@ -1,0 +1,340 @@
+// Persistence for sign-in (F-002 design §3.2.5 step 4, §4.4, §6.3; SEC-F002-07, -08). A port, so
+// the sign-in exits can be enumerated in a hermetic unit test; the Postgres implementation runs
+// every step through withOrg as ralysa_cp_app.
+//
+// - The IdP-token replay key is inserted and COMMITTED ON ITS OWN before anything else can fail,
+//   so every exchange attempt burns the IdP token whatever its outcome [SEC-F002-07].
+// - provision() is one transaction: upsert the user by (issuer, oid), mirror the configured groups
+//   (roles from config only) and the token's GUID groups, replace the user's memberships, store
+//   group display names fetched for display, and create the session (plus its first refresh
+//   token for flow A). A denied sign-in never reaches it: no user record, no session (AC-5).
+import { uuidv7 } from '@ralysa/protocol/common';
+import { type Kysely, type Transaction, sql } from 'kysely';
+import { withOrg } from '../db/kysely.js';
+import type { Database } from '../db/types.js';
+import type { SignInFlow } from './identity-mapping.js';
+import {
+  type SessionRole,
+  createSession,
+  issueRefreshToken,
+  revokeSession,
+  revokeUser,
+} from './sessions.js';
+
+export const GROUP_NAME_REFRESH_MS = 24 * 60 * 60 * 1000;
+export const GROUP_NAMES_PER_SIGN_IN = 20;
+/** Replay keys outlive the IdP token by 5 minutes (§4.4). */
+export const REPLAY_MARGIN_S = 300;
+
+export interface ProvisionInput {
+  issuer: string;
+  tenantId: string;
+  oid: string;
+  email: string | null;
+  displayName: string | null;
+  /** Display names read from the IdP now (idp group id → name, or null for none). */
+  groupNames: ReadonlyMap<string, string | null>;
+  /** The memberships to hold after this sign-in (idp group object ids). */
+  membership: readonly { idpGroupId: string; source: 'token_claim' | 'graph_check' }[];
+  configured: { access: string; admin: string };
+  session: {
+    flow: SignInFlow;
+    status: 'active' | 'pending';
+    roles: SessionRole[];
+    clientId: string;
+    surface: 'cli';
+    deviceLabel: string | null;
+    createdIp: string | null;
+  };
+  absoluteSeconds: number;
+  idleSeconds: number;
+  /** Flow A issues the first refresh token now; flow B at code redemption. */
+  issueRefreshToken: boolean;
+}
+
+export interface ProvisionResult {
+  userId: string;
+  created: boolean;
+  /** Names of the attributes that changed (never values). */
+  changedAttributes: string[];
+  /** IdP group object ids added to / removed from the user's memberships. */
+  added: string[];
+  removed: string[];
+  sessionId: string;
+  refreshToken?: string;
+}
+
+export interface SignInStore {
+  /** Inserts the replay key and commits it; false when it was already there (a replay). */
+  consumeIdpToken(tokenIdHash: Buffer, expiresAtEpochS: number): Promise<boolean>;
+  findUser(
+    issuer: string,
+    oid: string,
+  ): Promise<{ id: string; status: 'active' | 'disabled' } | undefined>;
+  /** Revokes everything the user holds (and disables them); returns the sessions revoked. */
+  revokeUser(userId: string, reason: string, disable: boolean): Promise<number>;
+  revokeSession(sessionId: string, reason: string): Promise<boolean>;
+  /** Of `ids`, those whose display name is unknown or older than a day (at most 20). */
+  groupsNeedingNames(ids: readonly string[]): Promise<string[]>;
+  provision(input: ProvisionInput): Promise<ProvisionResult>;
+}
+
+type Trx = Transaction<Database>;
+
+async function upsertUser(
+  trx: Trx,
+  orgId: string,
+  input: ProvisionInput,
+): Promise<{ id: string; created: boolean; changed: string[] }> {
+  const find = () =>
+    trx
+      .selectFrom('cp.app_user')
+      .select(['id', 'email', 'display_name', 'status'])
+      .where('idp_issuer', '=', input.issuer)
+      .where('idp_subject', '=', input.oid)
+      .forUpdate()
+      .executeTakeFirst();
+  let existing = await find();
+  if (existing === undefined) {
+    const inserted = await trx
+      .insertInto('cp.app_user')
+      .values({
+        id: uuidv7(),
+        org_id: orgId,
+        idp_issuer: input.issuer,
+        idp_tenant_id: input.tenantId,
+        idp_subject: input.oid,
+        email: input.email,
+        display_name: input.displayName,
+        department_id: null,
+        revoked_before: null,
+        last_sign_in_at: sql<Date>`clock_timestamp()`,
+      })
+      .onConflict((oc) => oc.columns(['org_id', 'idp_issuer', 'idp_subject']).doNothing())
+      .returning('id')
+      .executeTakeFirst();
+    if (inserted !== undefined) return { id: inserted.id, created: true, changed: [] };
+    existing = await find(); // a concurrent first sign-in of the same user won the insert
+    if (existing === undefined) throw new Error('app_user vanished during sign-in');
+  }
+  const changed = [
+    ...(existing.email === input.email ? [] : ['email']),
+    ...(existing.display_name === input.displayName ? [] : ['display_name']),
+    ...(existing.status === 'active' ? [] : ['status']),
+  ];
+  await trx
+    .updateTable('cp.app_user')
+    .set({
+      email: input.email,
+      display_name: input.displayName,
+      status: 'active',
+      last_sign_in_at: sql<Date>`clock_timestamp()`,
+      updated_at: sql<Date>`clock_timestamp()`,
+    })
+    .where('id', '=', existing.id)
+    .execute();
+  return { id: existing.id, created: false, changed };
+}
+
+async function syncGroups(
+  trx: Trx,
+  orgId: string,
+  userId: string,
+  input: ProvisionInput,
+): Promise<{ added: string[]; removed: string[] }> {
+  const { access, admin } = input.configured;
+  // Roles come from config only; a group that is no longer configured loses its role.
+  await trx
+    .updateTable('cp.idp_group')
+    .set({ role: null })
+    .where('role', 'is not', null)
+    .where('idp_group_id', 'not in', [access, admin])
+    .execute();
+  for (const [idpGroupId, role] of [
+    [access, 'access'],
+    [admin, 'platform_admin'],
+  ] as const) {
+    await trx
+      .insertInto('cp.idp_group')
+      .values({
+        id: uuidv7(),
+        org_id: orgId,
+        idp_group_id: idpGroupId,
+        display_name: null,
+        role,
+        name_refreshed_at: null,
+      })
+      .onConflict((oc) => oc.columns(['org_id', 'idp_group_id']).doUpdateSet({ role }))
+      .execute();
+  }
+  const others = [...new Set(input.membership.map((m) => m.idpGroupId))].filter(
+    (id) => id !== access && id !== admin,
+  );
+  if (others.length > 0) {
+    await trx
+      .insertInto('cp.idp_group')
+      .values(
+        others.map((idpGroupId) => ({
+          id: uuidv7(),
+          org_id: orgId,
+          idp_group_id: idpGroupId,
+          display_name: null,
+          role: null,
+          name_refreshed_at: null,
+        })),
+      )
+      .onConflict((oc) => oc.columns(['org_id', 'idp_group_id']).doNothing())
+      .execute();
+  }
+  for (const [idpGroupId, name] of input.groupNames) {
+    await trx
+      .updateTable('cp.idp_group')
+      .set({ display_name: name, name_refreshed_at: sql<Date>`clock_timestamp()` })
+      .where('idp_group_id', '=', idpGroupId)
+      .execute();
+  }
+
+  const desired = new Map(input.membership.map((m) => [m.idpGroupId, m.source]));
+  const current = await trx
+    .selectFrom('cp.group_membership as m')
+    .innerJoin('cp.idp_group as g', 'g.id', 'm.group_id')
+    .select(['g.id as groupId', 'g.idp_group_id as idpGroupId'])
+    .where('m.user_id', '=', userId)
+    .execute();
+  const removed = current.filter((c) => !desired.has(c.idpGroupId));
+  if (removed.length > 0) {
+    await trx
+      .deleteFrom('cp.group_membership')
+      .where('user_id', '=', userId)
+      .where(
+        'group_id',
+        'in',
+        removed.map((r) => r.groupId),
+      )
+      .execute();
+  }
+  const held = new Set(current.map((c) => c.idpGroupId));
+  if (desired.size > 0) {
+    const rows = await trx
+      .selectFrom('cp.idp_group')
+      .select(['id', 'idp_group_id'])
+      .where('idp_group_id', 'in', [...desired.keys()])
+      .execute();
+    await trx
+      .insertInto('cp.group_membership')
+      .values(
+        rows.map((row) => ({
+          org_id: orgId,
+          user_id: userId,
+          group_id: row.id,
+          source: desired.get(row.idp_group_id) ?? 'token_claim',
+        })),
+      )
+      .onConflict((oc) =>
+        oc.columns(['org_id', 'user_id', 'group_id']).doUpdateSet((eb) => ({
+          source: eb.ref('excluded.source'),
+          observed_at: sql<Date>`clock_timestamp()`,
+        })),
+      )
+      .execute();
+  }
+  return {
+    added: [...desired.keys()].filter((id) => !held.has(id)).sort(),
+    removed: removed.map((r) => r.idpGroupId).sort(),
+  };
+}
+
+export function createSignInStore(db: Kysely<Database>, orgId: string): SignInStore {
+  return {
+    async consumeIdpToken(tokenIdHash, expiresAtEpochS) {
+      const inserted = await withOrg(db, orgId, (trx) =>
+        trx
+          .insertInto('cp.idp_token_replay')
+          .values({
+            token_id_hash: tokenIdHash,
+            org_id: orgId,
+            expires_at: sql<Date>`to_timestamp(${expiresAtEpochS}) + make_interval(secs => ${REPLAY_MARGIN_S})`,
+          })
+          .onConflict((oc) => oc.column('token_id_hash').doNothing())
+          .returning('token_id_hash')
+          .executeTakeFirst(),
+      );
+      return inserted !== undefined;
+    },
+
+    findUser: (issuer, oid) =>
+      withOrg(
+        db,
+        orgId,
+        (trx) =>
+          trx
+            .selectFrom('cp.app_user')
+            .select(['id', 'status'])
+            .where('idp_issuer', '=', issuer)
+            .where('idp_subject', '=', oid)
+            .executeTakeFirst(),
+        { readOnly: true },
+      ),
+
+    revokeUser: (userId, reason, disable) =>
+      withOrg(db, orgId, (trx) => revokeUser(trx, userId, reason, { disable })),
+
+    revokeSession: (sessionId, reason) =>
+      withOrg(db, orgId, (trx) => revokeSession(trx, sessionId, reason)),
+
+    async groupsNeedingNames(ids) {
+      if (ids.length === 0) return [];
+      const known = await withOrg(
+        db,
+        orgId,
+        (trx) =>
+          trx
+            .selectFrom('cp.idp_group')
+            .select('idp_group_id')
+            .where('idp_group_id', 'in', [...ids])
+            .where(
+              sql<boolean>`name_refreshed_at > clock_timestamp() - make_interval(secs => ${GROUP_NAME_REFRESH_MS / 1000})`,
+            )
+            .execute(),
+        { readOnly: true },
+      );
+      const fresh = new Set(known.map((k) => k.idp_group_id));
+      return ids.filter((id) => !fresh.has(id)).slice(0, GROUP_NAMES_PER_SIGN_IN);
+    },
+
+    provision: (input) =>
+      withOrg(db, orgId, async (trx) => {
+        const user = await upsertUser(trx, orgId, input);
+        const groups = await syncGroups(trx, orgId, user.id, input);
+        const sessionId = await createSession(trx, {
+          orgId,
+          userId: user.id,
+          clientId: input.session.clientId,
+          surface: input.session.surface,
+          flow: input.session.flow,
+          status: input.session.status,
+          roles: input.session.roles,
+          deviceLabel: input.session.deviceLabel,
+          createdIp: input.session.createdIp,
+          absoluteSeconds: input.absoluteSeconds,
+        });
+        const refresh = input.issueRefreshToken
+          ? await issueRefreshToken(trx, {
+              orgId,
+              sessionId,
+              parentId: null,
+              idleSeconds: input.idleSeconds,
+            })
+          : undefined;
+        return {
+          userId: user.id,
+          created: user.created,
+          changedAttributes: user.changed,
+          added: groups.added,
+          removed: groups.removed,
+          sessionId,
+          ...(refresh === undefined ? {} : { refreshToken: refresh.token }),
+        };
+      }),
+  };
+}

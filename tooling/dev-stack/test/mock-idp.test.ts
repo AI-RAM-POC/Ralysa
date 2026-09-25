@@ -506,6 +506,17 @@ describe('client secrets', () => {
     }
   });
 
+  it('client credentials without a scope is invalid_scope, as Entra (AADSTS900144) (R27-N7)', async () => {
+    const refused = await postForm(idp.endpoints.token, {
+      grant_type: 'client_credentials',
+      client_id: idp.rtsClientId,
+      client_secret: idp.clientSecret,
+    });
+    expect(refused.status).toBe(400);
+    expect(refused.body.error).toBe('invalid_scope');
+    expect(refused.body.access_token).toBeUndefined();
+  });
+
   it('refuses a wrong secret', async () => {
     expect((await graphToken('not-the-secret')).status).toBe(401);
   });

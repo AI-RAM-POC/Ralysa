@@ -1,25 +1,31 @@
 // POST /oauth2/token and POST /oauth2/revoke (F-002 design §3.1, §3.3, §5.3, §5.4; AC-3, AC-8).
 // - No client secret, ever: a `client_secret` parameter or Basic authorization is invalid_client.
-// - Grants: refresh_token and client_credentials here; authorization_code and token exchange are
-//   dispatched by F-002-T10 (until then unsupported_grant_type). Anything else, `password`
-//   included, is unsupported_grant_type.
+// - Grants: token exchange (flow A, F-002-T10), refresh_token and client_credentials;
+//   authorization_code is dispatched by the second part of T10 (until then
+//   unsupported_grant_type). Anything else, `password` included, is unsupported_grant_type.
 // - Responses carry Cache-Control: no-store (RFC 6749 §5.1).
 // - Revocation always answers 200 (RFC 7009); a known refresh token revokes its whole session
 //   and writes auth.sign_out.
-import { CLI_CLIENT_ID, REFRESH_TOKEN_PATTERN, RevokeRequest } from '@ralysa/protocol/auth';
+import {
+  CLI_CLIENT_ID,
+  REFRESH_TOKEN_PATTERN,
+  RevokeRequest,
+  TOKEN_EXCHANGE_GRANT,
+} from '@ralysa/protocol/auth';
 import type { FastifyInstance, FastifyRequest } from 'fastify';
 import { withOrg } from '../../db/kysely.js';
 import { OAuthProblem } from '../../http/errors.js';
 import { ROUTES } from '../../http/contracts.js';
 import { registerFormParser } from '../../http/form.js';
 import { authEvent } from '../audit-events.js';
-import type { RtsDeps } from '../deps.js';
+import { type RtsDeps, exchangeEnv } from '../deps.js';
 import {
   clientCredentialsGrant,
   createServiceKeyCache,
   serviceKeyViolationRecorder,
 } from '../grants/client-credentials.js';
 import { type GrantContext, refreshGrant } from '../grants/refresh-token.js';
+import { tokenExchangeGrant } from '../grants/token-exchange.js';
 import { findRefreshToken, revokeSession } from '../sessions.js';
 
 const context = (request: FastifyRequest): GrantContext => ({
@@ -45,6 +51,7 @@ function formBody(request: FastifyRequest): Record<string, string> {
 
 export function registerTokenRoutes(app: FastifyInstance, deps: RtsDeps): void {
   registerFormParser(app);
+  const env = exchangeEnv(deps);
   const keyFor = createServiceKeyCache({
     custody: deps.custody,
     onCustodyViolation: serviceKeyViolationRecorder(deps),
@@ -59,8 +66,15 @@ export function registerTokenRoutes(app: FastifyInstance, deps: RtsDeps): void {
     if (grant === 'refresh_token') return refreshGrant(deps, body, context(request));
     if (grant === 'client_credentials')
       return clientCredentialsGrant(deps, body, context(request), keyFor);
-    // authorization_code and token exchange (GRANT_TYPES) arrive with F-002-T10; until then they
-    // answer like every other grant RTS doesn't serve, `password` included.
+    if (grant === TOKEN_EXCHANGE_GRANT) {
+      const userAgent = request.headers['user-agent'];
+      return tokenExchangeGrant(env, body, {
+        ...context(request),
+        ...(userAgent === undefined ? {} : { userAgent }),
+      });
+    }
+    // authorization_code (GRANT_TYPES) arrives with the second part of F-002-T10; until then it
+    // answers like every other grant RTS doesn't serve, `password` included.
     throw new OAuthProblem({ error: 'unsupported_grant_type' });
   });
 

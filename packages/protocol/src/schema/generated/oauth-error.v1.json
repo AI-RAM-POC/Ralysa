@@ -41,6 +41,7 @@
             "loopback_ip_mismatch",
             "idp_unavailable",
             "group_overage_unresolved",
+            "internal_error",
             "revoked",
             "reuse_detected",
             "idp_session_revoked"

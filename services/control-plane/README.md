@@ -36,6 +36,10 @@ job exits non-zero, saying the migrations were applied but not recorded.
   - refuses a signing key that is `exportable` or allows plaintext backup;
   - creates or checks the Organization (region, residency and deployment model can't change;
     `access.device_code_enabled` is copied into its settings);
+  - with `access.device_code_enabled: false`, revokes every live flow-A session (`flow =
+    idp_device`) with `auth.session.revoked cause=device_code_disabled` and logs
+    `device_code_disabled` with the count. This runs on every start, so a switch turned off while
+    the service was down takes effect too (SEC-F002-32, D-30);
   - polls the signing key, replays the audit spool every 30 s, runs the session cleanup every
     minute, and listens.
   - writes one `config_loaded` line with the resolved config file path and the names (never the
@@ -47,7 +51,8 @@ job exits non-zero, saying the migrations were applied but not recorded.
   | `GET /.well-known/oauth-authorization-server` | RFC 8414 metadata |
   | `GET /.well-known/jwks.json` | Public keys from `cp.signing_key_version`, with `Cache-Control: public, max-age=60, must-revalidate` |
   | `GET /v1/auth/config` | The enabled flows and IdP endpoints |
-  | `POST /oauth2/token` | `refresh_token` and `client_credentials` grants (T08); `authorization_code` and token exchange arrive with T10 |
+  | `POST /oauth2/token` | Token exchange of an IdP device-flow token (T10), `refresh_token` and `client_credentials` (T08); `authorization_code` arrives with the second part of T10 |
+  | `POST /v1/auth/sign-in-failures` | 202: the CLI's report of an IdP-side flow-A failure, audited as `auth.sign_in failure` (T10) |
   | `POST /oauth2/revoke` | RFC 7009 sign-out: revokes the refresh token's whole session; always 200 |
   | `GET /v1/me` | The signed-in user, the calling session's roles and the user's groups (user token) |
   | `GET /v1/internal/principals/:user_id` | A user's status, roles and groups (service token) |
@@ -108,8 +113,7 @@ job exits non-zero, saying the migrations were applied but not recorded.
     answer is `503 temporarily_unavailable` and the token is **not** consumed. A disabled or
     deleted user, Entra sessions revoked after sign-in, or a user in no configured group is
     refused, and the session (or the user, with `revoked_before` = DB clock + 30 s) is revoked.
-    **Until T10 wires Microsoft Graph, `serve` has no directory: every refresh answers
-    `temporarily_unavailable`** and logs `idp_directory_unconfigured` at start.
+    The directory is Microsoft Graph (see "Sign-in" below).
   - `audience` (default `control-plane`): other audiences need the session role `user`, else
     `invalid_scope`.
   - **Services** use `client_credentials` with an RFC 7523 assertion signed through their own
@@ -141,6 +145,49 @@ job exits non-zero, saying the migrations were applied but not recorded.
     - sessions that ended more than 30 days ago are purged with their refresh tokens. A session
       ends when it is revoked, or at the earlier of its last refresh token's idle expiry and its
       absolute expiry.
+- **Sign-in, flow A** (F-002-T10; `src/auth/idp/`, `sign-in.ts`, `grants/token-exchange.ts`):
+  - The pinned tenant's discovery document is fetched from `idp.issuer` only. Its `issuer` must
+    equal it, and its keys and endpoints must be on the issuer's origin.
+  - The exchange validates the Entra access token: header exactly `alg: RS256`, `typ: JWT`,
+    `kid` (and Entra's `x5t`); an RS256 signature by the tenant's keys; `iss` and `tid` pinned
+    (a token RTS issued is `untrusted_issuer`); `exp`/`nbf` with 60 s skew and `iat` at most
+    10 minutes old; `ver` 2.0, `aud` = `idp.rts_client_id`, `azp` in
+    `idp.allowed_public_client_ids`, `scp` with the sign-in scope, a GUID `oid` and a `uti`.
+  - **Consume first:** the SHA-256 of `uti` is inserted into `cp.idp_token_replay` and committed
+    before anything else, so every presentation burns the IdP token, whatever happens next.
+  - Then: the device-code switch (`unauthorized_client`), MFA evidence when
+    `idp.require_mfa_claim` (default on in production: `amr` has `mfa` or `acrs` is non-empty),
+    Microsoft Graph, the access decision, and provisioning.
+  - The token's `ipaddr` is compared with the client IP. A difference is recorded
+    (`details.ip_mismatch`), counted (`auth_device_ip_mismatch_total`) and logged as
+    `auth_device_ip_mismatch` for the alert rule; it doesn't deny (Q4).
+  - Users are keyed by `(issuer, oid)`; `sub` is never used. Display names are stored as sent
+    (UTF-8, not normalised).
+  - **Microsoft Graph** (`graph-directory.ts`) at every sign-in and refresh:
+    `GET /v1.0/users/{oid}?$select=accountEnabled,signInSessionsValidFromDateTime` and
+    `checkMemberGroups` for exactly `access.access_group_id` and `access.admin_group_id`. Graph
+    decides membership, whatever the token's `groups` claim says; non-GUID claim values are
+    ignored (`idp_group_claims_ignored_total`) and `_claim_sources` is never followed. `404` is a
+    deleted user (denied, and a known user is disabled and revoked). Every call is bounded by
+    `idp.graph_timeout_ms` (≤ 3 s). After 5 consecutive failures the circuit opens for 30 s.
+    Graph is called with an app-only token from the tenant's token endpoint, using the client
+    secret at `idp.client_secret_path` (re-read once on `invalid_client`). Group display names
+    are read for display only (2 s, 20 per sign-in, refreshed daily).
+  - **Roles** (`identity-mapping.ts`): `user` for the access group; `platform_admin` for the
+    admin group only on a strong sign-in (flow B, `acrs` with `access.admin_auth_context`, or
+    `amr` in `access.phishing_resistant_amr`). A user in both groups on a weak sign-in gets
+    `user` with `admin_role_withheld`; an admin-only user is denied
+    `admin_requires_strong_flow`. Other audiences than `control-plane` need `user`.
+  - **Audit:** every attempt writes exactly one `auth.sign_in` with the `policy_version`. A
+    success is written fail-closed after the session is committed: if the write fails, the
+    session is revoked (`audit_unavailable`), the events are spooled, and the answer is 503. A
+    failure before the subject is validated carries `attempted_identifier_hmac` (HMAC-SHA-256 of
+    the unverified `preferred_username` under the key at `audit_hmac_path`) and
+    `identifier_verified: false`, never the name. Device labels and user agents lose control,
+    bidi and zero-width characters.
+  - `POST /v1/auth/sign-in-failures`: 10 per minute per client (a throttled report writes
+    nothing), idempotent per `attempt_id`, at most 60 events a minute for the org, and identical
+    failures per /24 or /64 aggregated past 10 a minute into one event with `suppressed_count`.
 - **Org source** (SEC-F002-31): unauthenticated routes act in `config.org.id`. A header, host,
   path or body never selects the org.
 

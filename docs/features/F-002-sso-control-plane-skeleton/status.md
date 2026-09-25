@@ -1,6 +1,6 @@
 # F-002: SSO sign-in (OIDC) and control-plane skeleton: Status
 
-- **Current phase:** 5 – Development (T01–T08, T16 and the SEC-F002-34 remediation merged: #18, #19, #21, #23, #24, #25, #26; T09 in review; T10 and T11 next)
+- **Current phase:** 5 – Development (T01–T09, T11, T16 and the SEC-F002-34 remediation merged: #18, #19, #21, #23–#28; T10 in review as two stacked PRs; T12 next)
 - **GitHub issue:** https://github.com/AI-RAM-POC/Ralysa/issues/5
 - **Branch / PR:** `feat/F-002-foundations` (T01–T03, #18, merged); `feat/F-002-secrets-db-audit` (T04–T05)
 - **Release:**
@@ -39,3 +39,4 @@
 | 2026-09-25 | T16 (#23) and the T16-1 remediation (#24, SEC-F002-34) merged. T07 (config, guards, HTTP layer, signing keys, discovery, `serve`) implemented on `feat/F-002-app-skeleton`. |
 | 2026-09-25 | T07 (#25) and T08 (#26) merged. T09 (mock IdP: Entra-shaped `oidc-provider`, fixtures, Graph stub, loopback test-control API with a per-run bearer, per-run keys, compose `mock-idp` service) implemented on `feat/F-002-mock-idp`; see implementation-notes.md T09. |
 | 2026-09-25 | T11 (`packages/auth`) implemented on `feat/F-002-auth-package`, in parallel with T09. It covers the verifier, JWKS cache, revocation feed (G-1, freshness and epoch), principal resolver, service-token source and Transit assertion signer, plus the client flows and the single-flight token manager. TC-F-002-10, -11, -12 and -09 (gateway part) pass. TC-F-002-02 passes its client half against fakes; the end-to-end run waits for T09 and T10 (T11-1). Storing `auth.token_rejected` events waits for T12 (T11-2). |
+| 2026-09-26 | T10 part 1 (flow A: Entra token validator with pinned discovery, consume-first replay key, Microsoft Graph directory with timeouts and circuit breaker, identity mapping with the strong-flow admin rule, the sign-in core with fail-closed audit, the token-exchange grant, the device-code switch, `POST /v1/auth/sign-in-failures`) implemented on `feat/F-002-idp-sign-in`, with the R27-N7 mock fix. TC-F-002-02 (end to end through `@ralysa/auth`, closing T11-1), -03, -04, -08 (flow A), -09, -21, -24, -31 and the flow-A part of -07 pass. Flow B (part 2) follows on a stacked branch. See implementation-notes.md T10. |

@@ -10,7 +10,13 @@ import {
   TokenResponse,
 } from '@ralysa/protocol/auth';
 import { Problem } from '@ralysa/protocol/common';
-import { AuthConfig, GovernanceState, Me, Principal } from '@ralysa/protocol/control-plane';
+import {
+  AuthConfig,
+  GovernanceState,
+  Me,
+  Principal,
+  SignInFailureReport,
+} from '@ralysa/protocol/control-plane';
 import { z } from 'zod';
 
 export const Jwks = z.strictObject({
@@ -69,6 +75,9 @@ const oauthError = (description: string) => ({ description, schema: OAuthError }
 /** RFC 7009 §2.2: an empty JSON object, whether or not the token was known. */
 export const RevokeResponse = z.strictObject({});
 
+/** 202 for an accepted report: an empty object. */
+export const Accepted = z.strictObject({});
+
 export const ROUTES = {
   metadata: {
     method: 'GET',
@@ -124,17 +133,19 @@ export const ROUTES = {
     method: 'POST',
     url: '/oauth2/token',
     summary:
-      'Token endpoint: refresh_token and client_credentials (private_key_jwt); authorization_code and token exchange arrive with F-002-T10. No client secret is ever accepted.',
+      'Token endpoint: token exchange of an IdP device-flow access token (RFC 8693), refresh_token and client_credentials (private_key_jwt); authorization_code arrives with the second part of F-002-T10. No client secret is ever accepted.',
     tags: ['oauth'],
     auth: 'client',
     request: { contentType: 'application/x-www-form-urlencoded', schema: TokenRequest },
     responses: {
       200: { description: 'Tokens', schema: TokenResponse },
-      400: oauthError('invalid_request, invalid_grant, invalid_scope or unsupported_grant_type'),
+      400: oauthError(
+        'invalid_request, invalid_grant, invalid_scope, unauthorized_client (device code switched off), access_denied (sign-in refused by policy) or unsupported_grant_type',
+      ),
       401: oauthError('invalid_client'),
       429: oauthError('Rate limited'),
       503: oauthError(
-        'temporarily_unavailable (IdP directory unreachable; the token is not consumed)',
+        'temporarily_unavailable (IdP directory, token signing or audit unavailable; a refresh token is not consumed)',
       ),
     },
     headers: { 'cache-control': 'no-store' },
@@ -153,6 +164,20 @@ export const ROUTES = {
       429: oauthError('Rate limited'),
     },
     headers: { 'cache-control': 'no-store' },
+  },
+  signInFailures: {
+    method: 'POST',
+    url: '/v1/auth/sign-in-failures',
+    summary:
+      'Client-reported IdP-side failures of the device flow (AC-4): audited as auth.sign_in failure, idempotent per attempt_id, rate-limited and aggregated',
+    tags: ['auth'],
+    auth: 'none',
+    request: { contentType: 'application/json', schema: SignInFailureReport },
+    responses: {
+      202: { description: 'Accepted (also for a repeated attempt_id)', schema: Accepted },
+      400: problem('Invalid report'),
+      429: problem('Rate limited'),
+    },
   },
   me: {
     method: 'GET',

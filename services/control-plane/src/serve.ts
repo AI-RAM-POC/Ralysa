@@ -11,7 +11,10 @@ import { createRejectionAggregator } from './audit/rejections.js';
 import { openAuditSpool } from './audit/spool.js';
 import { createAuditWriter } from './audit/writer.js';
 import { CLEANUP_INTERVAL_MS, runCleanup } from './auth/cleanup.js';
-import { unconfiguredDirectory } from './auth/directory-port.js';
+import { revokeDeviceCodeSessions } from './auth/device-code-switch.js';
+import { createGraphDirectory } from './auth/idp/graph-directory.js';
+import { createIdpMetadataSource } from './auth/idp/metadata.js';
+import { createSignInFailureAggregator } from './auth/routes/sign-in-failures.js';
 import { policyVersion } from './auth/policy-version.js';
 import { createSigningKeys } from './auth/tokens/signing-keys.js';
 import { openBaoStorageRefusals, serveProductionRefusals } from './config/guards.js';
@@ -91,6 +94,11 @@ export async function serveCommand(args: string[]): Promise<number> {
   });
   const writer = createAuditWriter({ db: createDb<Database>(writerPool), spool });
   await ensureOrganization(db, config);
+  // Device code off: end every live flow-A session (idempotent; config is authoritative, D-30).
+  if (!config.access.device_code_enabled) {
+    const revoked = await revokeDeviceCodeSessions({ db, orgId: config.org.id, writer });
+    logger.info('device_code_disabled', { revoked_sessions: revoked });
+  }
   const keys = createSigningKeys({
     db,
     custody,
@@ -118,14 +126,37 @@ export async function serveCommand(args: string[]): Promise<number> {
           logger.warn('token_rejected_write_failed', { error: String(error) });
         }),
   });
-  // Until F-002-T10 wires Microsoft Graph, every refresh re-check is `unavailable`: refresh
-  // fails closed with temporarily_unavailable and consumes nothing.
-  logger.warn('idp_directory_unconfigured', { effect: 'refresh answers temporarily_unavailable' });
+  // The pinned tenant (discovery, keys) and Microsoft Graph for sign-in and every refresh (§6.3).
+  const idpMetadata = createIdpMetadataSource({ issuer: config.idp.issuer });
+  const directory = createGraphDirectory({
+    config,
+    secrets,
+    tokenEndpoint: async () => (await idpMetadata.get()).tokenEndpoint,
+  });
+  const signInFailures = createSignInFailureAggregator({
+    emit: (events) => {
+      void writer.writeOrSpool(config.org.id, events).catch((error: unknown) => {
+        logger.warn('sign_in_failure_write_failed', { error: String(error) });
+      });
+    },
+    orgId: config.org.id,
+    policyVersion: policyVersion(config.access),
+  });
 
   const app = await buildApp({
     config,
     keys,
-    rts: { db, custody, directory: unconfiguredDirectory, writer, rejections },
+    rts: {
+      db,
+      custody,
+      directory,
+      writer,
+      rejections,
+      secrets,
+      idpMetadata,
+      signInFailures,
+      logger,
+    },
     logger: pinoLogger,
     pingDatabase: async () => {
       await sql`select 1`.execute(db);
@@ -145,6 +176,7 @@ export async function serveCommand(args: string[]): Promise<number> {
     ),
     setInterval(() => {
       rejections.flush();
+      signInFailures.flush();
     }, 5_000),
     setInterval(
       () =>
@@ -170,6 +202,7 @@ export async function serveCommand(args: string[]): Promise<number> {
   });
   for (const timer of timers) clearInterval(timer);
   rejections.flush(true);
+  signInFailures.flush(true);
   await app.close();
   await Promise.all([pool.end(), writerPool.end()]);
   logger.info('serve_stopped');

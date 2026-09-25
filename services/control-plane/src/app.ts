@@ -6,6 +6,7 @@ import Fastify, { type FastifyBaseLogger, type FastifyInstance, LogController } 
 import { type RtsServices, assembleRtsDeps } from './auth/deps.js';
 import { registerGovernanceFeed } from './auth/governance-feed.js';
 import { registerDiscovery } from './auth/routes/discovery.js';
+import { registerSignInFailures } from './auth/routes/sign-in-failures.js';
 import { registerTokenRoutes } from './auth/routes/token.js';
 import type { SigningKeys } from './auth/tokens/signing-keys.js';
 import type { ServeConfig } from './config/schema.js';
@@ -23,7 +24,7 @@ export const BODY_LIMIT_BYTES = 256 * 1024;
 export interface AppDeps {
   config: ServeConfig;
   keys: SigningKeys;
-  /** Sessions, grants, the governance feed and the directory routes (T08). */
+  /** Sessions, grants, sign-in, the governance feed and the directory routes (T08, T10). */
   rts: RtsServices;
   /** Database liveness for /readyz. */
   pingDatabase: () => Promise<boolean>;
@@ -111,6 +112,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   registerDiscovery(app, { config: deps.config, keys: deps.keys });
   const rts = assembleRtsDeps(deps.config, deps.keys, deps.rts);
   registerTokenRoutes(app, rts);
+  registerSignInFailures(app, rts, rts.signInFailures);
   registerGovernanceFeed(app, rts);
   registerDirectoryRoutes(app, rts);
   await app.ready();

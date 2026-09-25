@@ -23,6 +23,11 @@ export const SIGN_IN_REASON_OUTCOMES = {
   loopback_ip_mismatch: 'denied',
   idp_unavailable: 'error',
   group_overage_unresolved: 'error',
+  /**
+   * An internal fault ended the attempt (token signing or the database). Added by F-002-T10
+   * (T10-4): every attempt is audited exactly once (AC-4), and none of the reasons above fits.
+   */
+  internal_error: 'error',
 } as const satisfies Record<string, ReasonOutcome>;
 
 /** `auth.refresh` reasons (§3.5, §5.3) with their outcome. */

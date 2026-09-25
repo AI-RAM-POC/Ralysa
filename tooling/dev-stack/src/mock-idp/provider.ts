@@ -154,6 +154,15 @@ export function createProvider(setup: ProviderSetup): Provider {
           }
           if (graph) return GRAPH_RESOURCE;
           if (rts) return rtsResource;
+          // Entra refuses an app-only request without a scope (AADSTS900144: "The request body
+          // must contain the following parameter: 'scope'"), rather than issuing a token for no
+          // resource (review of #27, R27-N7).
+          if (ctx.oidc.params?.grant_type === 'client_credentials') {
+            throw new errors.InvalidScope(
+              `client_credentials needs scope ${graphScope}`,
+              typeof scope === 'string' ? scope : '',
+            );
+          }
           return undefined;
         },
         useGrantedResource: () => true,

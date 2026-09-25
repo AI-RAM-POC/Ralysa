@@ -71,16 +71,17 @@ const idp = await startMockIdp({ deviceCodeTtlSeconds: 10, accessGroupId, adminG
   authorization code with PKCE S256 required, and client credentials for Graph). Any of the
   currently valid RTS secrets is accepted, so two can be valid during a rotation.
 - **Tokens**: RS256, header `typ: JWT`, Entra v2 claims (`ver`, `tid`, `oid`, pairwise `sub`,
-  `azp`, `scp`, `uti`, `ipaddr`, `amr`, `acrs`, `name`, `preferred_username`, `groups`). Past 200
-  groups the token carries `_claim_names`/`_claim_sources` instead. Graph app tokens are Entra v1
-  app tokens (issuer `https://sts.windows.net/<tenant>/`, `idtyp: app`, `roles`). `azpacr` is `0`
-  for the CLI and `1` for RTS.
+  `azp`, `scp`, `uti`, `ipaddr`, `amr`, `acrs`, `email` (the optional claim RTS requests), `name`,
+  `preferred_username`, `groups`). Past 200 groups the token carries `_claim_names`/`_claim_sources`
+  instead. Graph app tokens are Entra v1 app tokens (issuer `https://sts.windows.net/<tenant>/`,
+  `idtyp: app`, `roles`). `azpacr` is `0` for the CLI and `1` for RTS.
 - **ID tokens** (flow B) are re-issued in Entra's v2 shape: header `typ: JWT`, pairwise `sub`
   (never the object id), `oid`, `tid`, `uti`, `ver`, and the sign-in's `amr`/`acrs`/`ipaddr`;
   `nonce` is kept.
 - **One resource per request**, as Entra: asking for the RTS API and Graph together is
-  `invalid_scope`; client credentials accept only `https://graph.microsoft.com/.default`; there
-  are no delegated Graph tokens (`invalid_target`). `aud` comes from the resource.
+  `invalid_scope`; client credentials accept only `https://graph.microsoft.com/.default`, and
+  refuse a request without a scope (AADSTS900144); there are no delegated Graph tokens
+  (`invalid_target`). `aud` comes from the resource.
 - **Device authorization response** as Entra's: `interval` (default 5) and `message`, and no
   `verification_uri_complete`.
 - **Sign-in** asks for a fixture username only. There is no password field; MFA is implied by the
