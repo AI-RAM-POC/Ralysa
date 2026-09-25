@@ -19,7 +19,8 @@ import jsxA11y from 'eslint-plugin-jsx-a11y';
 import reactHooks from 'eslint-plugin-react-hooks';
 import globals from 'globals';
 import { dirname } from 'node:path';
-import { boundaryRules, JS_FILES } from './base.js';
+import { boundaryRules, JS_FILES, workspaceGlob, workspaceOf } from './base.js';
+import { LOADING_EXCEPTIONS } from './boundaries.js';
 import { ralysaPlugin } from './rules/index.js';
 import { LOGICAL_IGNORE, NO_THEME_ENTRY_POINT, RESTRICTED_CLASSES } from './tailwind.js';
 import { TEST_FILES } from './tests.js';
@@ -65,12 +66,18 @@ const jsxA11yPlugin = fixupPluginRules(jsxA11y);
  * @param {{
  *   files?: string[],
  *   tailwindEntryPoint?: string,
+ *   workspace?: string,
  * }} [options] `tailwindEntryPoint` is the absolute path of the workspace's Tailwind CSS entry
  *   point, normally `fileURLToPath(import.meta.resolve('@ralysa/ui/tailwind.css'))`. Without it,
- *   every token-backed class is reported as unknown.
+ *   every token-backed class is reported as unknown. `workspace` (repo-relative, derived from the
+ *   working directory like base()'s) places the LOADING_EXCEPTIONS globs; tests override it.
  * @returns {import('eslint').Linter.Config[]}
  */
-export function reactUi({ files = UI_FILES, tailwindEntryPoint = NO_THEME_ENTRY_POINT } = {}) {
+export function reactUi({
+  files = UI_FILES,
+  tailwindEntryPoint = NO_THEME_ENTRY_POINT,
+  workspace = workspaceOf(process.cwd()),
+} = {}) {
   return [
     {
       ...eslintReact.configs['recommended-type-checked'],
@@ -139,5 +146,30 @@ export function reactUi({ files = UI_FILES, tailwindEntryPoint = NO_THEME_ENTRY_
         ],
       },
     },
+    // base() drops the loading ban for reviewed LOADING_EXCEPTIONS files. The block above comes
+    // later and would re-enable it there, so repeat the exception: keep only the UI selector.
+    ...loadingExceptionBlocks(workspace),
   ];
+}
+
+/**
+ * @param {string | undefined} workspace
+ * @returns {import('eslint').Linter.Config[]}
+ */
+function loadingExceptionBlocks(workspace) {
+  if (workspace === undefined) return [];
+  return LOADING_EXCEPTIONS.flatMap((exception) => {
+    const files = exception.files
+      .map((glob) => workspaceGlob(glob, workspace))
+      .filter((glob) => glob !== undefined);
+    if (files.length === 0) return [];
+    return [
+      {
+        name: `ralysa/react-ui/loading-exception/${exception.files.join(',')}`,
+        files,
+        ignores: TEST_FILES,
+        rules: { 'no-restricted-syntax': ['error', ...UI_RESTRICTED_SYNTAX] },
+      },
+    ];
+  });
 }

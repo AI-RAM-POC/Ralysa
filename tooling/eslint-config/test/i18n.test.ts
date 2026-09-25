@@ -4,17 +4,16 @@
 // This is also the ESLint 10 check for eslint-plugin-i18next 6.1.5: no fatal message.
 import { ESLint, type Linter } from 'eslint';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
 import { base, reactUi, tests } from '../index.js';
+import { UI_RESTRICTED_SYNTAX } from '../react-ui.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const FIXTURE_ENTRY = join(here, 'fixtures/tailwind.css');
 const RULE = 'i18next/no-literal-string';
-const require = createRequire(import.meta.url);
 
 // A throwaway project outside the package (so a concurrent lint or typecheck of this package
 // never sees the fixtures), with a tsconfig so the project service can type the .tsx files.
@@ -22,7 +21,7 @@ const scratch = mkdtempSync(join(tmpdir(), 'ralysa-i18n-lint-'));
 writeFileSync(
   join(scratch, 'tsconfig.json'),
   JSON.stringify({
-    extends: require.resolve('@ralysa/tsconfig/react-lib.json'),
+    extends: fileURLToPath(import.meta.resolve('@ralysa/tsconfig/react-lib.json')),
     compilerOptions: { composite: false, noEmit: true, types: [] },
     include: ['*.tsx'],
   }),
@@ -183,7 +182,46 @@ describe('no hard-coded UI strings (AC-5)', () => {
     const [severity, ...entries] = resolved.rules[SYNTAX] ?? [0];
     expect(severity).toBe(2);
     const { RESTRICTED_SYNTAX } = await import('../boundaries.js');
-    for (const entry of RESTRICTED_SYNTAX) expect(entries).toContainEqual(entry);
-    expect(entries.some((e) => e.selector.includes('VariableDeclarator'))).toBe(true);
+    // Every one of main's loading-ban selectors (T04 and the review-nits follow-up), in order,
+    // followed by the UI one: nothing replaces anything.
+    expect(entries).toEqual([...RESTRICTED_SYNTAX, ...UI_RESTRICTED_SYNTAX]);
+    const selectors = entries.map((e) => e.selector);
+    expect(selectors.some((s) => s.includes("property.name='mainModule'"))).toBe(true);
+    expect(selectors.some((s) => s.includes('require'))).toBe(true);
+    expect(selectors.some((s) => s.includes('VariableDeclarator'))).toBe(true);
+  });
+
+  it.each([
+    ['the require handle', 'export const r = module.require.bind(module);\n'],
+    ['process.mainModule', 'export const m = process.mainModule;\n'],
+    ['a non-literal import()', 'const spec = "x";\nexport const p = import(spec);\n'],
+  ])('main loading ban still fires in a UI file: %s', async (_what, code) => {
+    expect(await fileRuleIds(code)).toContain(SYNTAX);
+  });
+
+  it('a LOADING_EXCEPTIONS file keeps the exception and the UI selector', async () => {
+    const { LOADING_EXCEPTIONS, RESTRICTED_SYNTAX } = await import('../boundaries.js');
+    LOADING_EXCEPTIONS.push({ files: ['packages/x/src/legacy/**'], reason: 'test fixture' });
+    try {
+      const withException = new ESLint({
+        cwd: scratch,
+        overrideConfigFile: true,
+        overrideConfig: [
+          ...base({ tsconfigRootDir: scratch, workspace: 'packages/x' }),
+          ...reactUi({ tailwindEntryPoint: FIXTURE_ENTRY, workspace: 'packages/x' }),
+          ...tests(),
+        ],
+      });
+      const rule = async (file: string): Promise<unknown[]> =>
+        (
+          (await withException.calculateConfigForFile(join(scratch, file))) as {
+            rules: Record<string, unknown[]>;
+          }
+        ).rules[SYNTAX] ?? [];
+      expect(await rule('src/legacy/a.tsx')).toEqual([2, ...UI_RESTRICTED_SYNTAX]);
+      expect(await rule('src/a.tsx')).toEqual([2, ...RESTRICTED_SYNTAX, ...UI_RESTRICTED_SYNTAX]);
+    } finally {
+      LOADING_EXCEPTIONS.pop();
+    }
   });
 });

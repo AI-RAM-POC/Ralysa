@@ -20,7 +20,14 @@ export default config;
 **Tailwind entry point.** Pass `reactUi({ tailwindEntryPoint })` with the absolute path of the Ralysa theme entry point, `@ralysa/ui/tailwind.css` (in `packages/ui`: `src/styles/tailwind.css`). `no-unknown-classes` then rejects every class the token theme doesn't define, such as `bg-red-500` or `p-7`. Without the option, the fallback `tailwind/no-theme.css` has an empty theme, so every token-backed class is reported: the lint fails loudly rather than checking against Tailwind's default palette. The mirroring pattern for a directional utility is an `ltr:`/`rtl:` pair (`ltr:translate-x-2 rtl:-translate-x-2`).
 | `tests` | `*.test.*`, `test/**`, `e2e/**` | Relaxes a few type-strictness rules. It never touches the boundary or lint-comment rules; `test/presets.test.ts` checks this. |
 
-`boundaries.js` is the single source for the boundary lists that ESLint, dependency-cruiser and the repo checks share. T02 created the slots, and T04 and T16 fill them.
+`boundaries.js` is the single source for the boundary lists that ESLint, dependency-cruiser (`.dependency-cruiser.cjs`) and the repo checks (`check-banned-deps`, `check-imports`, `check-workspaces`) share (design §6.1):
+
+- `BANNED_PACKAGE_GROUPS`: the Agent SDK, its `@anthropic-ai/sdk` peer, model-provider SDKs and in-process inference runtimes (SR-03), and vendor APM/analytics SDKs (ADR-0024). Each group names the files that may import it (`importAllowedIn`, repo-relative globs) and the dependency paths that may reach it (`graphAllowedThrough`). A package belongs to the first group that matches it.
+- `RESTRICTED_SYNTAX`: the non-literal loading ban (`import(x)`, `require(x)`, `createRequire`, `process.getBuiltinModule`, `eval`, `Function`); `LOADING_EXCEPTIONS` holds reviewed per-path exceptions and starts empty.
+- `PROVIDER_HOSTS` and `PROVIDER_HOSTS_ALLOWED_IN`: the model-provider API hostnames that `check-provider-hosts` bans outside the gateway (SEC-F001-09 d).
+- `WORKSPACE_DEPENDENCY_RULES`, `SPECIFIER_ALLOWLIST`, and the matching helpers.
+
+`base()` derives the workspace from `tsconfigRootDir` (its path under the folder holding `pnpm-workspace.yaml`) and adds a config block only for the allowed paths inside that workspace, so `services/agent-host` gets `src/engine/claude/**` and `services/model-gateway` gets every file. Nothing else relaxes the rules, and `tests` never touches them.
 
 jsx-a11y 6.10.2 declares a peer range of ESLint ≤ 9. It is wrapped with `fixupPluginRules`, and `test/presets.test.ts` asserts that its rules still fire under ESLint 10. The T02 spike result is in `docs/features/F-001-engineering-design-foundations/implementation-notes.md`.
 

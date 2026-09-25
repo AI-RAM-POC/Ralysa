@@ -9,11 +9,22 @@
 //   ralysa-repo check-turbo-config       remote cache off, globalDependencies, uncached checks
 //   ralysa-repo check-i18n               i18n catalogs: parity, plurals, grammar, native review
 //   ralysa-repo check-ui-lint            UI workspaces run eslint (react-ui) and stylelint
+//   ralysa-repo check-banned-deps       banned packages in the lockfile graph (SR-03, ADR-0012)
+//   ralysa-repo check-imports            dependency-cruiser import boundaries (.dependency-cruiser.cjs)
+//   ralysa-repo check-gitleaks-config    the two gitleaks configs (no artefact allow-list, same rules)
+//   ralysa-repo check-ci-invariants      packageManager hash, fetch-depth, gitleaks --config, cancel-in-progress
+//   ralysa-repo check-provider-hosts [--artefacts]   provider API hostnames in source (or shipped artefacts)
+// The secret scans themselves run through secret-scan-cli.ts (dependency-free).
 //   ralysa-repo placeholder-guard        run inside a placeholder package (its four scripts)
 //   ralysa-repo scaffold <path> --kind <kind>
 //   ralysa-repo summary [--file <run.json>] [--out <file>]
 import { appendFileSync } from 'node:fs';
+import { checkBannedDeps } from './check-banned-deps.ts';
+import { checkCiInvariantsFiles } from './check-ci-invariants.ts';
+import { checkGitleaksConfigFiles } from './check-gitleaks-config.ts';
 import { checkI18n } from './check-i18n.ts';
+import { checkImports } from './check-imports.ts';
+import { checkProviderHosts, checkProviderHostsInArtefacts } from './check-provider-hosts.ts';
 import { checkUiLint } from './check-ui-lint.ts';
 import { checkTsrefs } from './check-tsrefs.ts';
 import { checkConfigGate } from './config-gate.ts';
@@ -25,7 +36,7 @@ import { placeholderGuard } from './placeholder-guard.ts';
 import { SCAFFOLD_KINDS, type ScaffoldKind, ScaffoldError, scaffold } from './scaffold.ts';
 import { latestSummaryFile, summaryFromFile } from './summary.ts';
 
-type Check = (root: string) => Finding[];
+type Check = (root: string) => Finding[] | Promise<Finding[]>;
 
 // None of these start pnpm. config-gate runs first; check-workspaces also runs it itself.
 const REPO_CHECKS: Record<string, Check> = {
@@ -33,6 +44,11 @@ const REPO_CHECKS: Record<string, Check> = {
   'check-workspaces': (root) => checkWorkspaces({ root }),
   'check-tsrefs': (root) => checkTsrefs({ root }),
   'check-turbo-config': (root) => checkTurboConfigFile(root),
+  'check-banned-deps': (root) => checkBannedDeps({ root }),
+  'check-imports': (root) => checkImports({ root }),
+  'check-gitleaks-config': (root) => checkGitleaksConfigFiles(root),
+  'check-ci-invariants': (root) => checkCiInvariantsFiles(root),
+  'check-provider-hosts': (root) => checkProviderHosts(root),
   'check-ui-lint': (root) => checkUiLint({ root }),
   'check-i18n': (root) => {
     const { findings, warnings, needsReview } = checkI18n({ root });
@@ -62,7 +78,7 @@ function flag(args: string[], name: string): string | undefined {
   return index === -1 ? undefined : args[index + 1];
 }
 
-function main(argv: string[]): number {
+async function main(argv: string[]): Promise<number> {
   const [command = 'help', ...args] = argv;
   const cwd = process.cwd();
 
@@ -76,7 +92,7 @@ function main(argv: string[]): number {
   if (command === 'repo-check') {
     let ok = true;
     for (const [name, check] of Object.entries(REPO_CHECKS)) {
-      const passed = report(name, check(root));
+      const passed = report(name, await check(root));
       ok &&= passed;
       if (name === 'config-gate' && !passed) {
         console.error('Stopping: fix the config gate findings before running anything else.');
@@ -85,8 +101,11 @@ function main(argv: string[]): number {
     }
     return ok ? 0 : 1;
   }
+  if (command === 'check-provider-hosts' && args.includes('--artefacts')) {
+    return report('check-provider-hosts --artefacts', checkProviderHostsInArtefacts(root)) ? 0 : 1;
+  }
   const check = REPO_CHECKS[command];
-  if (check !== undefined) return report(command, check(root)) ? 0 : 1;
+  if (check !== undefined) return report(command, await check(root)) ? 0 : 1;
 
   if (command === 'scaffold') {
     const [target] = args;
@@ -128,4 +147,4 @@ function main(argv: string[]): number {
   return command === 'help' ? 0 : 2;
 }
 
-process.exitCode = main(process.argv.slice(2));
+process.exitCode = await main(process.argv.slice(2));
