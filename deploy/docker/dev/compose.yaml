@@ -5,6 +5,10 @@
 #   docker compose -f deploy/docker/dev/compose.yaml --env-file deploy/docker/dev/.env up -d --wait
 #   node tooling/dev-stack/src/cli.ts bootstrap                # roles, OpenBao keys, KV, policies
 #
+# The mock IdP (profile `idp`, F-002-T09) is for manual runs; tests start it in-process instead:
+#   pnpm --filter @ralysa/dev-stack build
+#   docker compose -f deploy/docker/dev/compose.yaml --env-file deploy/docker/dev/.env --profile idp up -d --wait mock-idp
+#
 # Every port is bound to 127.0.0.1 only. Images are pinned by digest (checked 2026-09-25; see
 # docs/features/F-002-sso-control-plane-skeleton/implementation-notes.md, T02). No secret value is
 # in this file: the two credentials come from the generated, git-ignored .env.
@@ -57,6 +61,44 @@ services:
       - no-new-privileges:true
     healthcheck:
       test: ['CMD', 'bao', 'status']
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  mock-idp:
+    # Entra-shaped mock IdP and Graph stub (design §8.3). Runs the built dev-stack from a read-only
+    # bind mount of the repository (its node_modules included), so nothing is installed or built
+    # in the container. Never shipped (SEC-F002-13). Its ids match control-plane.serve.dev.yaml.
+    profiles: [idp]
+    image: node:24.21.0-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1
+    user: node
+    working_dir: /repo
+    command: ['node', 'tooling/dev-stack/dist/mock-idp/main.js']
+    environment:
+      # 0.0.0.0 inside the container only, so the published 127.0.0.1 port reaches it. The
+      # test-control API always binds the container's 127.0.0.1 and is not published: use
+      # `docker compose … exec mock-idp node tooling/dev-stack/dist/mock-idp/main.js control GET /users`.
+      MOCK_IDP_HOST: 0.0.0.0
+      MOCK_IDP_IN_CONTAINER: '1'
+      MOCK_IDP_PORT: '59400'
+      MOCK_IDP_PUBLIC_BASE_URL: http://127.0.0.1:59400
+      MOCK_IDP_CONTROL_TOKEN_FILE: /tmp/mock-idp/control-token
+    ports:
+      - '127.0.0.1:59400:59400'
+    volumes:
+      - ../../..:/repo:ro
+    read_only: true
+    tmpfs:
+      - /tmp:uid=1000,gid=1000,mode=0700
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+    healthcheck:
+      test:
+        - CMD
+        - wget
+        - -qO-
+        - http://127.0.0.1:59400/0192a0c0-0000-4000-8000-00000000de01/v2.0/.well-known/openid-configuration
       interval: 2s
       timeout: 5s
       retries: 30
