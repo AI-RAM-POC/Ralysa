@@ -13,6 +13,7 @@
 //   ralysa-repo check-imports            dependency-cruiser import boundaries (.dependency-cruiser.cjs)
 //   ralysa-repo check-gitleaks-config    the two gitleaks configs (no artefact allow-list, same rules)
 //   ralysa-repo check-ci-invariants      packageManager hash, fetch-depth, gitleaks --config, cancel-in-progress
+//   ralysa-repo check-no-password        no password, PIN, OTP or client secret in the OpenAPI docs or client code (AC-3)
 //   ralysa-repo check-provider-hosts [--artefacts]   provider API hostnames in source (or shipped artefacts)
 //   ralysa-repo check-no-demo            demo sentinel and sample text in shipped builds (after a build)
 //   ralysa-repo check-integration-scope  *.int.ts read the dev stack only inside hooks and tests
@@ -28,6 +29,7 @@ import { checkCiInvariantsFiles } from './check-ci-invariants.ts';
 import { checkGitleaksConfigFiles } from './check-gitleaks-config.ts';
 import { checkI18n } from './check-i18n.ts';
 import { checkNoDemo } from './check-no-demo.ts';
+import { checkNoPassword } from './check-no-password.ts';
 import { checkImports } from './check-imports.ts';
 import { checkIntegrationScope } from './check-integration-scope.ts';
 import { checkMigrationsImmutable, writeMigrationsLock } from './check-migrations-immutable.ts';
@@ -56,6 +58,7 @@ const REPO_CHECKS: Record<string, Check> = {
   'check-gitleaks-config': (root) => checkGitleaksConfigFiles(root),
   'check-ci-invariants': (root) => checkCiInvariantsFiles(root),
   'check-provider-hosts': (root) => checkProviderHosts(root),
+  'check-no-password': (root) => checkNoPassword(root),
   'check-ui-lint': (root) => checkUiLint({ root }),
   'check-integration-scope': (root) => checkIntegrationScope({ root }),
   'check-migrations-immutable': (root) =>
