@@ -5,6 +5,11 @@
 - **Branch / PR:** `feat/F-002-foundations` (T01–T03)
 - **Release:**
 
+## Open items
+| Item | Owner / where it lands | Notes |
+|---|---|---|
+| CODEOWNERS entries by folder for `packages/protocol/src/{common,audit,auth,control-plane}` (and `agent` for F-003) [AR-18], deferred from F-002-T01 | F-001-T18 (adds `.github/CODEOWNERS`, SEC-F001-04); the F-002 lines are appended there or in a follow-up once the file exists | `.github/CODEOWNERS` does not exist yet and is a human-merge path. Proposed entries: implementation-notes.md T01-1. Owners must be named by the founder. |
+
 ## Gate log
 | Gate | Artifact | Approver | Date | Result |
 |---|---|---|---|---|

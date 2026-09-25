@@ -134,13 +134,29 @@ describe('OAuth contracts (§3.3, AC-3)', () => {
       code_challenge_method: 'S256',
       state: 's'.repeat(16),
     };
-    for (const uri of ['http://127.0.0.1:53123/callback', 'http://[::1]:8080/callback']) {
+    for (const uri of [
+      'http://127.0.0.1:53123/callback',
+      'http://[::1]:8080/callback',
+      'http://127.0.0.1:1/callback',
+      'http://127.0.0.1:9999/callback',
+      'http://127.0.0.1:59999/callback',
+      'http://127.0.0.1:64999/callback',
+      'http://127.0.0.1:65499/callback',
+      'http://127.0.0.1:65529/callback',
+      'http://[::1]:65535/callback',
+    ]) {
       expect(AuthorizeQuery.safeParse({ ...base, redirect_uri: uri }).success).toBe(true);
     }
     for (const uri of [
       'http://localhost:53123/callback',
       'https://127.0.0.1:53123/callback',
       'http://127.0.0.1:0/callback',
+      'http://127.0.0.1:01/callback',
+      'http://127.0.0.1:65536/callback',
+      'http://127.0.0.1:65540/callback',
+      'http://127.0.0.1:66000/callback',
+      'http://[::1]:99999/callback',
+      'http://127.0.0.1:100000/callback',
       'http://127.0.0.1:53123/other',
       'http://127.0.0.1.evil.test:1/callback',
     ]) {

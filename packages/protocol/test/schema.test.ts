@@ -3,7 +3,13 @@
 // no construct without a JSON Schema form, and no generated contract has a password-like field.
 import { z } from 'zod';
 import { describe, expect, it } from 'vitest';
-import { SCHEMA_REGISTRY, generateSchemas, toJsonSchema } from '../src/schema/generator.js';
+import * as protocol from '../src/index.js';
+import {
+  SCHEMA_REGISTRY,
+  findCustomChecks,
+  generateSchemas,
+  toJsonSchema,
+} from '../src/schema/generator.js';
 
 declare global {
   interface ImportMeta {
@@ -44,6 +50,44 @@ describe('JSON Schema generation', () => {
     expect(() =>
       toJsonSchema({ file: 'x.v1.json', title: 'X', schema: withTransform, io: 'output' }),
     ).toThrow();
+  });
+
+  it.each([
+    ['refine', z.strictObject({ a: z.string().refine((v) => v !== '') })],
+    ['superRefine', z.strictObject({ b: z.array(z.number()).superRefine(() => undefined) })],
+    ['check(refine)', z.strictObject({ c: z.string().check(z.refine(() => true)) })],
+    [
+      'a refinement nested in a union member',
+      z.union([
+        z.strictObject({
+          d: z
+            .string()
+            .optional()
+            .refine(() => true),
+        }),
+        z.number(),
+      ]),
+    ],
+  ])('refuses a contract with %s: zod would drop it from the JSON Schema', (_name, schema) => {
+    expect(findCustomChecks(schema)).not.toEqual([]);
+    expect(() => toJsonSchema({ file: 'x.v1.json', title: 'X', schema, io: 'input' })).toThrow(
+      /custom refinements/,
+    );
+  });
+
+  it('built-in checks (regex, length, int) are not custom refinements', () => {
+    expect(findCustomChecks(z.string().regex(/^a$/).min(1).max(2))).toEqual([]);
+    expect(findCustomChecks(z.number().int().min(0))).toEqual([]);
+  });
+
+  it('no exported protocol schema uses a custom refinement (registered or not)', () => {
+    const found: string[] = [];
+    for (const [family, exports] of Object.entries(protocol)) {
+      for (const [name, value] of Object.entries(exports as Record<string, unknown>)) {
+        found.push(...findCustomChecks(value, `${family}.${name}`));
+      }
+    }
+    expect(found).toEqual([]);
   });
 
   it('AC-3: no generated contract has a password, PIN, OTP or client_secret field', () => {

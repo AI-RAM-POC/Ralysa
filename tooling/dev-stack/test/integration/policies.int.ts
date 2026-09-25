@@ -3,7 +3,7 @@
 // migrator or sealer credentials or sign checkpoints; one service can't sign with another's key;
 // no non-operator identity can reach key config, export, backup, restore, import or rotate.
 import { describe, expect, it } from 'vitest';
-import { ENTRY_POINT_POLICIES, servicePolicy } from '../../src/bootstrap-vault.ts';
+import { denyRules, ENTRY_POINT_POLICIES, servicePolicy } from '../../src/bootstrap-vault.ts';
 import {
   type BaoRequest,
   baoClient,
@@ -112,6 +112,42 @@ describe.skipIf(stack === undefined)('OpenBao per-entry-point policies (SEC-F002
           status: DENIED,
         });
       }
+    }
+  });
+
+  // Review finding 4 and the reason for T02-3. OpenBao applies only the highest-priority
+  // matching pattern. Against the deny `transit/keys/+/config`, the allow `transit/keys/*` loses
+  // (same first-wildcard position, and a trailing `*` ranks lower), so the deny wins. A narrower
+  // glob like `transit/keys/ralysa-*` has its first wildcard later and outranks the deny, which is
+  // why no Ralysa allow rule uses a glob. Both probes use a throwaway key and a harmless config
+  // change, so no real key can become exportable.
+  it.each([
+    ['transit/keys/*', DENIED],
+    ['transit/keys/ralysa-*', ALLOWED],
+  ])('with the standard denies, a %s allow gets %i on key config', async (glob, expected) => {
+    const root = rootBao(stack!);
+    const key = 'ralysa-test-glob-probe';
+    const policy = `ralysa-test-glob-${expected === DENIED ? 'broad' : 'narrow'}`;
+    if ((await root('GET', `transit/keys/${key}`)).status === 404) {
+      expectOk(await root('POST', `transit/keys/${key}`, { type: 'ecdsa-p256' }), 'probe key');
+    }
+    const hcl = [
+      `path "${glob}" {\n  capabilities = ["create", "update", "read"]\n}\n`,
+      ...denyRules('transit').map((r) => `path "${r.path}" {\n  capabilities = ["deny"]\n}\n`),
+    ].join('\n');
+    expectOk(await root('PUT', `sys/policies/acl/${policy}`, { policy: hcl }), 'probe policy');
+    try {
+      const auth = expectOk(
+        await root('POST', 'auth/token/create', { policies: [policy], ttl: '2m' }),
+        'probe token',
+      ).auth as { client_token: string };
+      const bao = baoClient(stack!.openbao.addr, auth.client_token);
+      // Reads are allowed by both globs, so the token works; only config is decided by the deny.
+      expect((await bao('GET', `transit/keys/${key}`)).status).toBe(ALLOWED);
+      const config = await bao('POST', `transit/keys/${key}/config`, { min_decryption_version: 1 });
+      expect(config.status === 204 ? ALLOWED : config.status).toBe(expected);
+    } finally {
+      await root('DELETE', `sys/policies/acl/${policy}`);
     }
   });
 

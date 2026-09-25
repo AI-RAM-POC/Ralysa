@@ -24,6 +24,7 @@ import {
   TRANSIT_MOUNT,
   serviceKey,
   type DbRoleKey,
+  BOOTSTRAP_MARKER,
 } from './stack.ts';
 
 export interface PolicyContext {
@@ -110,7 +111,9 @@ export function policyRules(ctx: PolicyContext = DEFAULT_POLICY_CONTEXT): Record
     [OPERATOR_POLICY]: [
       // Key rotation and KV writes by a human operator identity (runbooks, F-002-T13).
       { path: `${t}/keys/+/rotate`, capabilities: ['update'] },
-      { path: `${ctx.kvMount}/data/${CP_KV_PREFIX}/*`, capabilities: ['create', 'update', 'read'] },
+      // §6.5: KV create/update only. No `read` on data, so the operator identity can write a new
+      // secret version but never read one back; metadata shows version numbers, not values.
+      { path: `${ctx.kvMount}/data/${CP_KV_PREFIX}/*`, capabilities: ['create', 'update'] },
       { path: `${ctx.kvMount}/metadata/${CP_KV_PREFIX}/*`, capabilities: ['read', 'list'] },
     ],
   };
@@ -186,13 +189,31 @@ export const TRANSIT_KEYS = (services: string[] = DEV_SERVICES): string[] => [
   ...services.map(serviceKey),
 ];
 
-async function ensureMount(bao: BaoRequest, path: string, type: string, options?: object) {
+/**
+ * Mounts `path` unless it exists. An existing mount must match the type and every requested
+ * option (for KV that is `version: '2'`: the control plane reads versioned KV v2 paths, and a
+ * KV v1 mount at the same path would silently serve unversioned secrets).
+ */
+export async function ensureMount(
+  bao: BaoRequest,
+  path: string,
+  type: string,
+  options?: Record<string, string>,
+): Promise<void> {
   const mounts = dataOf(expectOk(await bao('GET', 'sys/mounts'), 'list mounts'));
   const existing = mounts[`${path}/`] as
-    { type?: string; options?: { version?: string } } | undefined;
+    { type?: string; options?: Record<string, string> | null } | undefined;
   if (existing !== undefined) {
     if (existing.type !== type)
       throw new Error(`mount ${path}/ exists with type ${String(existing.type)}`);
+    for (const [key, value] of Object.entries(options ?? {})) {
+      const actual = existing.options?.[key];
+      if (actual !== value) {
+        throw new Error(
+          `mount ${path}/ exists with ${key}=${String(actual)}, expected ${value}; remove it or reset the dev stack (down -v)`,
+        );
+      }
+    }
     return;
   }
   expectOk(await bao('POST', `sys/mounts/${path}`, { type, options }), `mount ${path}`);
@@ -292,6 +313,31 @@ export async function bootstrapVault(
 }
 
 /** Reads a DB role password from KV with an operator/root token (bootstrap-db only). */
+/** Records a completed bootstrap (see BOOTSTRAP_MARKER). Call after the Postgres roles exist. */
+export async function markBootstrapped(
+  bao: BaoRequest,
+  roles: readonly string[],
+  kvMount: string = KV_MOUNT,
+): Promise<void> {
+  expectOk(
+    await bao('POST', `${kvMount}/data/${BOOTSTRAP_MARKER}`, {
+      data: { roles: roles.join(','), at: new Date().toISOString() },
+    }),
+    'write bootstrap marker',
+  );
+}
+
+/** Whether a completed bootstrap is recorded (see BOOTSTRAP_MARKER). */
+export async function isBootstrapped(
+  bao: BaoRequest,
+  kvMount: string = KV_MOUNT,
+): Promise<boolean> {
+  const marker = await bao('GET', `${kvMount}/data/${BOOTSTRAP_MARKER}`);
+  if (marker.status === 404) return false;
+  expectOk(marker, 'read bootstrap marker');
+  return true;
+}
+
 export async function readDbPassword(
   bao: BaoRequest,
   key: DbRoleKey,

@@ -8,10 +8,10 @@
 import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { connect } from 'node:net';
-import { appRoleLogin } from '../bootstrap-vault.ts';
+import { appRoleLogin, isBootstrapped } from '../bootstrap-vault.ts';
 import { readEnvFile } from '../env.ts';
 import { type BaoRequest, baoClient } from '../openbao.ts';
-import { DEFAULT_ENV_FILE, OPENBAO_ADDR, POSTGRES, TRANSIT_MOUNT } from '../stack.ts';
+import { DEFAULT_ENV_FILE, OPENBAO_ADDR, POSTGRES, PROBE_POLICY, TRANSIT_MOUNT } from '../stack.ts';
 
 export { appRoleLogin } from '../bootstrap-vault.ts';
 export { type BaoRequest, type BaoResponse, baoClient, dataOf, expectOk } from '../openbao.ts';
@@ -70,6 +70,21 @@ export async function probeDevStack(envFile: string = DEFAULT_ENV_FILE): Promise
       return {
         ok: false,
         reason: 'OpenBao is up but not bootstrapped (run the bootstrap command)',
+      };
+    }
+    // A bootstrap that stopped half-way (for example psql failed after the OpenBao part) leaves
+    // the Transit mount but no Postgres roles: require the policy and the completion marker.
+    if ((await root('GET', `sys/policies/acl/${PROBE_POLICY}`)).status !== 200) {
+      return {
+        ok: false,
+        reason: `OpenBao has no ${PROBE_POLICY} policy (run the bootstrap command)`,
+      };
+    }
+    if (!(await isBootstrapped(root))) {
+      return {
+        ok: false,
+        reason:
+          'the last bootstrap did not finish (the Postgres roles step never completed); run the bootstrap command again',
       };
     }
   } catch {

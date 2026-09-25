@@ -5,7 +5,7 @@
 // `env` writes deploy/docker/dev/.env; `bootstrap` sets up OpenBao, then the Postgres roles.
 import { parseArgs } from 'node:util';
 import { rolesScript, runPsql, verifiersFor } from './bootstrap-db.ts';
-import { bootstrapVault, readDbPassword } from './bootstrap-vault.ts';
+import { bootstrapVault, markBootstrapped, readDbPassword } from './bootstrap-vault.ts';
 import { EnvFileError, readEnvFile, writeEnvFile } from './env.ts';
 import { baoClient } from './openbao.ts';
 import { COMPOSE_FILE, DB_ROLES, DEFAULT_ENV_FILE, OPENBAO_ADDR } from './stack.ts';
@@ -61,6 +61,12 @@ async function bootstrapCommand(args: string[]): Promise<void> {
   console.log(`postgres: UTF8 checked; login roles ${DB_ROLES.map((r) => r.role).join(', ')}`);
   // Both migration sets join this command with F-002-T05, which adds them (design §8.2).
   console.log('postgres: no migrations yet (F-002-T05 adds the cp and audit sets)');
+  // Last step: the harness treats the stack as ready only once this marker exists.
+  await markBootstrapped(
+    root,
+    DB_ROLES.map((r) => r.role),
+  );
+  console.log('dev-stack: bootstrap complete');
 }
 
 async function main(argv: string[]): Promise<number> {

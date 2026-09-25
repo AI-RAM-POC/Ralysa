@@ -4,7 +4,8 @@
 // drift, and a unit test compares the committed files with this output.
 //
 // Generation uses `unrepresentable: 'throw'`, so a transform or any other construct that has no
-// JSON Schema form fails here: the contracts stay plain shapes, and the schema is the wire.
+// JSON Schema form fails here, and `findCustomChecks` fails on `.refine()`/`.superRefine()`, which
+// zod would otherwise drop silently: the contracts stay plain shapes, and the schema is the wire.
 import { z } from 'zod';
 import { AuditEvent, AuditEventInput } from '../audit/envelope.js';
 import {
@@ -149,7 +150,56 @@ export const SCHEMA_REGISTRY: readonly RegisteredSchema[] = [
   },
 ];
 
+// zod internals read by findCustomChecks (zod 4: every schema and check carries `_zod.def`).
+interface ZodInternals {
+  _zod: { def: Record<string, unknown> & { checks?: ZodInternals[]; check?: string } };
+}
+const isZod = (value: unknown): value is ZodInternals =>
+  typeof value === 'object' && value !== null && '_zod' in value;
+
+/**
+ * Paths inside `schema` that carry a custom check (`.refine()`, `.superRefine()`, `.check()` with
+ * a function). zod's JSON Schema output drops these silently, even with `unrepresentable: 'throw'`,
+ * so the generated contract would accept what the zod schema refuses: the wire shape and the
+ * schema would disagree. Contracts must express every rule in a representable form (regex,
+ * length, enum, literal, discriminated union) instead.
+ */
+export function findCustomChecks(schema: unknown, path = '$'): string[] {
+  const found: string[] = [];
+  const seen = new Set<unknown>();
+  const visit = (node: unknown, at: string): void => {
+    if (!isZod(node) || seen.has(node)) return;
+    seen.add(node);
+    const def = node._zod.def;
+    for (const check of def.checks ?? []) {
+      if (check._zod.def.check === 'custom') found.push(at);
+    }
+    for (const [key, value] of Object.entries(def)) {
+      if (key === 'checks') continue;
+      if (key === 'getter' && typeof value === 'function') {
+        visit((value as () => unknown)(), at);
+      } else if (isZod(value)) {
+        visit(value, `${at}.${key}`);
+      } else if (Array.isArray(value)) {
+        value.forEach((item, index) => {
+          visit(item, `${at}.${key}[${String(index)}]`);
+        });
+      } else if (key === 'shape' && typeof value === 'object' && value !== null) {
+        for (const [name, member] of Object.entries(value)) visit(member, `${at}.${name}`);
+      }
+    }
+  };
+  visit(schema, path);
+  return found;
+}
+
 export function toJsonSchema(entry: RegisteredSchema): Record<string, unknown> {
+  const custom = findCustomChecks(entry.schema, entry.title);
+  if (custom.length > 0) {
+    throw new Error(
+      `${entry.title}: custom refinements have no JSON Schema form and would be dropped from the contract: ${custom.join(', ')}`,
+    );
+  }
   const generated = z.toJSONSchema(entry.schema, {
     target: 'draft-2020-12',
     io: entry.io,

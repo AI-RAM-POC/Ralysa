@@ -23,6 +23,15 @@ export const KV_MOUNT = 'kv';
 export const TRANSIT_MOUNT = 'transit';
 /** KV v2 prefix of every control-plane secret: `kv/ralysa/control-plane/...` (§4.1, §6.5). */
 export const CP_KV_PREFIX = 'ralysa/control-plane';
+/**
+ * Written by `bootstrap` (root token) only after OpenBao **and** the Postgres roles are done, so
+ * the harness can tell a finished bootstrap from one that stopped half-way. Outside
+ * CP_KV_PREFIX: no Ralysa policy can read it. OpenBao dev storage is in-memory, so a restarted
+ * stack loses it and asks for a new bootstrap, which it needs anyway.
+ */
+export const BOOTSTRAP_MARKER = 'ralysa/dev-stack/bootstrapped';
+/** A policy the harness checks for as well (the serve entry point's). */
+export const PROBE_POLICY = 'ralysa-cp-serve';
 
 /**
  * Database login roles (§4.1) and the KV entry holding each password

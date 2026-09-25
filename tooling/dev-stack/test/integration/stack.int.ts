@@ -2,24 +2,31 @@
 // the attributable log prefix; every Ralysa login role exists without elevated attributes and
 // logs in with its OpenBao KV password; OpenBao has the non-exportable Transit keys.
 import pg from 'pg';
-import { afterAll, describe, expect, it } from 'vitest';
-import { readDbPassword, TRANSIT_KEYS } from '../../src/bootstrap-vault.ts';
+import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { isBootstrapped, readDbPassword, TRANSIT_KEYS } from '../../src/bootstrap-vault.ts';
 import { dataOf, devStackOrSkip, expectOk, rootBao } from '../../src/harness/index.ts';
 import { DB_ROLES } from '../../src/stack.ts';
 
 const stack = await devStackOrSkip();
 
 describe.skipIf(stack === undefined)('dev stack smoke (F-002-T02)', () => {
-  const s = stack!;
-  const superuser = new pg.Client({ ...s.postgres });
-  const connected = superuser.connect();
+  // `stack` is only read inside hooks and tests: the describe body still runs at collection time
+  // when the suite is skipped, and must not touch the stack there (see static-guard.test.ts).
+  let superuser: pg.Client | undefined;
+  beforeAll(async () => {
+    superuser = new pg.Client({ ...stack!.postgres });
+    await superuser.connect();
+  });
+  const db = (): pg.Client => {
+    if (superuser === undefined) throw new Error('beforeAll did not connect');
+    return superuser;
+  };
   afterAll(async () => {
-    await superuser.end();
+    await superuser?.end();
   });
 
   const setting = async (name: string): Promise<string> => {
-    await connected;
-    const result = await superuser.query<{ value: string }>('SELECT current_setting($1) AS value', [
+    const result = await db().query<{ value: string }>('SELECT current_setting($1) AS value', [
       name,
     ]);
     return result.rows[0]!.value;
@@ -33,8 +40,7 @@ describe.skipIf(stack === undefined)('dev stack smoke (F-002-T02)', () => {
   });
 
   it('creates every login role with no elevated attribute and a SCRAM password', async () => {
-    await connected;
-    const result = await superuser.query<{
+    const result = await db().query<{
       rolname: string;
       elevated: boolean;
       scram: boolean;
@@ -55,8 +61,8 @@ describe.skipIf(stack === undefined)('dev stack smoke (F-002-T02)', () => {
   it.each(DB_ROLES.map((r) => [r.role, r.key] as const))(
     '%s logs in with the password from KV (verifier computed by the bootstrap)',
     async (role, key) => {
-      const password = await readDbPassword(rootBao(s), key);
-      const client = new pg.Client({ ...s.postgres, user: role, password });
+      const password = await readDbPassword(rootBao(stack!), key);
+      const client = new pg.Client({ ...stack!.postgres, user: role, password });
       await client.connect();
       try {
         const result = await client.query<{ who: string }>('SELECT current_user AS who');
@@ -67,8 +73,12 @@ describe.skipIf(stack === undefined)('dev stack smoke (F-002-T02)', () => {
     },
   );
 
+  it('bootstrap recorded its completion marker (read by the harness probe)', async () => {
+    expect(await isBootstrapped(rootBao(stack!))).toBe(true);
+  });
+
   it('OpenBao is an unsealed dev server with non-exportable ecdsa-p256 Transit keys', async () => {
-    const bao = rootBao(s);
+    const bao = rootBao(stack!);
     const health = await bao('GET', 'sys/health');
     expect(health.body).toMatchObject({ initialized: true, sealed: false });
     // Recorded for the PR (T02 DoD "OpenBao flags"): the dev server reports in-memory storage,

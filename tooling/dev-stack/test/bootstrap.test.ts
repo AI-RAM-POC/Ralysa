@@ -8,11 +8,15 @@ import {
   ENTRY_POINT_POLICIES,
   OPERATOR_POLICY,
   denyRules,
+  ensureMount,
+  isBootstrapped,
+  markBootstrapped,
   kubernetesAuthRoles,
   policyRules,
   renderPolicy,
   servicePolicy,
 } from '../src/bootstrap-vault.ts';
+import type { BaoRequest } from '../src/openbao.ts';
 import { scramKeys, scramVerifier } from '../src/scram.ts';
 import { DB_ROLES, DEV_SERVICES } from '../src/stack.ts';
 
@@ -107,6 +111,16 @@ describe('OpenBao policies (§6.5; SEC-F002-02, -11)', () => {
     expect(readers('db/audit_sealer')).toEqual(['ralysa-cp-sealer']);
   });
 
+  it('the operator writes KV secrets but can not read them back (§6.5)', () => {
+    const kvData = (rules[OPERATOR_POLICY] ?? []).filter((r) => r.path.startsWith('kv/data/'));
+    expect(kvData).toEqual([
+      { path: 'kv/data/ralysa/control-plane/*', capabilities: ['create', 'update'] },
+    ]);
+    for (const rule of rules[OPERATOR_POLICY] ?? []) {
+      if (rule.path.startsWith('kv/data/')) expect(rule.capabilities).not.toContain('read');
+    }
+  });
+
   it('a service policy signs only with its own key', () => {
     for (const service of DEV_SERVICES) {
       expect(paths(servicePolicy(service))).toEqual([
@@ -160,5 +174,68 @@ describe('Kubernetes-auth role template (SEC-F002-22)', () => {
       expect(role.audience).toBe('openbao');
       expect(role.token_policies).toEqual([role.role]);
     }
+  });
+});
+
+describe('ensureMount', () => {
+  const fakeBao = (mounts: Record<string, unknown>) => {
+    const calls: [string, string, unknown][] = [];
+    const bao: BaoRequest = (method, path, body) => {
+      calls.push([method, path, body]);
+      return Promise.resolve(
+        method === 'GET'
+          ? { status: 200, body: { data: mounts } }
+          : { status: 204, body: undefined },
+      );
+    };
+    return { bao, calls };
+  };
+
+  it('mounts KV v2 when absent', async () => {
+    const { bao, calls } = fakeBao({});
+    await ensureMount(bao, 'kv', 'kv', { version: '2' });
+    expect(calls[1]).toEqual(['POST', 'sys/mounts/kv', { type: 'kv', options: { version: '2' } }]);
+  });
+
+  it('accepts an existing KV v2 mount without changing it', async () => {
+    const { bao, calls } = fakeBao({ 'kv/': { type: 'kv', options: { version: '2' } } });
+    await ensureMount(bao, 'kv', 'kv', { version: '2' });
+    expect(calls).toHaveLength(1);
+  });
+
+  it.each([
+    ['KV v1', { type: 'kv', options: { version: '1' } }],
+    ['KV with no version option', { type: 'kv', options: null }],
+  ])('refuses an existing %s mount', async (_name, mount) => {
+    const { bao } = fakeBao({ 'kv/': mount });
+    await expect(ensureMount(bao, 'kv', 'kv', { version: '2' })).rejects.toThrow(/expected 2/);
+  });
+
+  it('refuses an existing mount of another type', async () => {
+    const { bao } = fakeBao({ 'kv/': { type: 'transit' } });
+    await expect(ensureMount(bao, 'kv', 'kv', { version: '2' })).rejects.toThrow(/type transit/);
+  });
+});
+
+describe('bootstrap completion marker', () => {
+  it('is written under the dev-stack prefix, outside every Ralysa policy', async () => {
+    const writes: [string, unknown][] = [];
+    const bao: BaoRequest = (_method, path, body) => {
+      writes.push([path, body]);
+      return Promise.resolve({ status: 200, body: {} });
+    };
+    await markBootstrapped(bao, ['ralysa_cp_app']);
+    expect(writes[0]?.[0]).toBe('kv/data/ralysa/dev-stack/bootstrapped');
+    for (const rules of Object.values(policyRules())) {
+      for (const rule of rules) expect(rule.path).not.toContain('dev-stack');
+    }
+  });
+
+  it.each([
+    [200, true],
+    [404, false],
+  ])('isBootstrapped with status %i is %s', async (status, expected) => {
+    const bao: BaoRequest = () => Promise.resolve({ status, body: {} });
+    expect(await isBootstrapped(bao)).toBe(expected);
   });
 });

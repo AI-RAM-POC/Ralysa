@@ -26,11 +26,17 @@ export const GRANT_TYPES = [
   'client_credentials',
 ] as const;
 
-/** Flow B leg 1. RFC 8252 §7.3: IP-literal loopback, any port, fixed path. */
+/** A TCP port, 1–65535, as decimal without leading zeros. */
+const PORT =
+  '([1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-5])';
+
+/** Flow B leg 1. RFC 8252 §7.3: IP-literal loopback, any valid port, fixed path. */
 export const AuthorizeQuery = z.strictObject({
   response_type: z.literal('code'),
   client_id: z.literal(CLI_CLIENT_ID),
-  redirect_uri: z.string().regex(/^http:\/\/(127\.0\.0\.1|\[::1\]):([1-9][0-9]{0,4})\/callback$/),
+  redirect_uri: z
+    .string()
+    .regex(new RegExp(`^http://(127\\.0\\.0\\.1|\\[::1\\]):${PORT}/callback$`)),
   code_challenge: z.string().regex(/^[A-Za-z0-9_-]{43}$/),
   code_challenge_method: z.literal('S256'),
   state: z.string().min(16).max(128),
