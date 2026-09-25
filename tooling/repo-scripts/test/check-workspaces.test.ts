@@ -282,6 +282,90 @@ describe('check-workspaces: dependency specifiers (TC-F-001-42, SEC-F001-09 a, -
   });
 });
 
+describe('check-workspaces: development-only packages in shipped workspaces (F-002-T01, SEC-F002-13, AR-12)', () => {
+  const lib = (dir: string, name: string, overrides: Record<string, unknown> = {}) => ({
+    dir,
+    pkg: validWorkspacePackage(name, {
+      ralysa: { kind: 'library', runtime: 'isomorphic', shipped: false, ui: false },
+      ...overrides,
+    }),
+  });
+
+  it('fails when a shipped workspace depends on oidc-provider directly', () => {
+    const findings = run({
+      workspaces: [service({ dependencies: { 'oidc-provider': '9.11.5' } })],
+    });
+    expect(findings).toContainEqual(
+      expect.objectContaining({
+        rule: 'deps/dev-only-in-shipped',
+        path: 'services/demo/package.json',
+      }),
+    );
+  });
+
+  it('fails through another workspace, as optional or peer dependency, and names the path', () => {
+    const findings = run({
+      workspaces: [
+        service({ dependencies: { '@ralysa/middle': 'workspace:*' } }),
+        lib('packages/middle', '@ralysa/middle', {
+          optionalDependencies: { '@ralysa/leaf': 'workspace:*' },
+        }),
+        lib('packages/leaf', '@ralysa/leaf', { peerDependencies: { 'oidc-provider': '^9' } }),
+      ],
+    });
+    const hit = findings.filter((f) => f.rule === 'deps/dev-only-in-shipped');
+    expect(hit).toHaveLength(1);
+    expect(hit[0]?.message).toContain(
+      '@ralysa/demo → @ralysa/middle → @ralysa/leaf → oidc-provider',
+    );
+  });
+
+  it('fails when a shipped workspace lists @ralysa/dev-stack as a production dependency', () => {
+    const findings = run({
+      workspaces: [
+        service({ dependencies: { '@ralysa/dev-stack': 'workspace:*' } }),
+        {
+          dir: 'tooling/dev-stack',
+          pkg: validWorkspacePackage('@ralysa/dev-stack', {
+            ralysa: { kind: 'tooling', shipped: false, ui: false, artefacts: [] },
+          }),
+        },
+      ],
+    });
+    expect(rules(findings)).toContain('deps/dev-only-in-shipped');
+  });
+
+  it('allows devDependencies, and production use in a workspace that is not shipped', () => {
+    const findings = run({
+      workspaces: [
+        service({
+          dependencies: { '@ralysa/middle': 'workspace:*' },
+          devDependencies: { '@ralysa/dev-stack': 'workspace:*', 'oidc-provider': '9.11.5' },
+        }),
+        lib('packages/middle', '@ralysa/middle', {
+          devDependencies: { 'oidc-provider': '9.11.5' },
+        }),
+        lib('packages/unshipped', '@ralysa/unshipped', {
+          dependencies: { 'oidc-provider': '9.11.5' },
+        }),
+        {
+          dir: 'tooling/dev-stack',
+          pkg: validWorkspacePackage('@ralysa/dev-stack', {
+            ralysa: { kind: 'tooling', shipped: false, ui: false, artefacts: [] },
+            devDependencies: { 'oidc-provider': '9.11.5' },
+          }),
+        },
+      ],
+    });
+    expect(rules(findings)).not.toContain('deps/dev-only-in-shipped');
+  });
+
+  it('the real repository has no development-only package in a shipped closure', () => {
+    const findings = checkWorkspaces({ root: findRepoRoot() });
+    expect(findings.filter((f) => f.rule === 'deps/dev-only-in-shipped')).toEqual([]);
+  });
+});
+
 describe('check-workspaces: Python ban (TC-F-001-43, RC-7)', () => {
   it.each([
     'services/extraction/main.py',

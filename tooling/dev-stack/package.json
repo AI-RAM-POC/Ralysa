@@ -1,8 +1,9 @@
 {
-  "name": "@ralysa/control-plane",
+  "name": "@ralysa/dev-stack",
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "description": "Local dev and test stack for F-002: .env generator, Postgres and OpenBao bootstrap, integration-test harness, mock IdP. Never shipped.",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -26,12 +27,9 @@
     "vitest": "catalog:"
   },
   "ralysa": {
-    "kind": "service",
-    "shipped": true,
+    "kind": "tooling",
+    "shipped": false,
     "ui": false,
-    "artefacts": [
-      "dist"
-    ]
-  },
-  "description": "Ralysa control plane: token service (RTS), directory, audit ingest and query, sealer (F-002)."
+    "artefacts": []
+  }
 }

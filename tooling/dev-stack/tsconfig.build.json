@@ -1,0 +1,6 @@
+{
+  "extends": ["./tsconfig.json", "@ralysa/tsconfig/build.json"],
+  "compilerOptions": {
+    "rewriteRelativeImportExtensions": true
+  }
+}
