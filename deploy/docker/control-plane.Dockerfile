@@ -35,6 +35,13 @@ RUN pnpm install --frozen-lockfile --filter "@ralysa/control-plane..."
 RUN pnpm --filter "@ralysa/control-plane..." run build
 # Production dependencies only; workspace packages are copied in (their `files`: dist only).
 RUN pnpm --filter @ralysa/control-plane deploy --prod /out
+# Third-party packages publish their own tests; none is needed at run time, and their fixtures
+# (zod's include sample JWTs) would be shipped content. Remove them, then prove the service's
+# module graph still loads (serve.js imports everything `serve` runs).
+RUN find /out/node_modules/.pnpm -mindepth 4 \
+      \( -type d \( -name test -o -name tests -o -name __tests__ \) \
+         -o -type f \( -name '*.test.*' -o -name '*.spec.*' \) \) -prune -exec rm -rf {} + \
+    && cd /out && node --input-type=module -e "await import('./dist/serve.js'); await import('./dist/app.js');"
 
 FROM node:24.21.0-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS runtime
 # The runtime needs node only: drop the package managers the base image ships.
