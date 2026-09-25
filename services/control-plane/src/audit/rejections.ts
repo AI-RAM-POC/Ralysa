@@ -17,6 +17,13 @@ import type { Metrics } from '../observability/metrics.js';
 import { noopMetrics } from '../observability/metrics.js';
 
 export interface Rejection {
+  /**
+   * The org the rejection is aggregated under. It MUST come from deployment config
+   * (`config.org.id`) or another verified source, never from the `tid` of the token being
+   * rejected: that token is unverified, and a caller choosing orgIds could open a fresh set of
+   * buckets and overflow keys per value and defeat the output and memory bounds above
+   * (code review of PR #21). T07 (control plane) and T11 (packages/auth verifiers) wire it so.
+   */
   orgId: string;
   clientIp: string;
   reason: string;

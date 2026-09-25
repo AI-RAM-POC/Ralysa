@@ -111,15 +111,16 @@ export async function verifySeals(seals: readonly SealRecord[]): Promise<ChainVe
   return { ok: true, length: seals.length, head: seals.length === 0 ? null : toHex(prev) };
 }
 
-/**
- * Reads one (org, shard) chain with a role that can SELECT seals and events (reader or sealer)
- * and verifies it from genesis. Used by `audit-verify` (T16) and F-011's `ralysa audit verify`.
- */
-export async function verifyChain(
+export interface StoredSeal extends SealRecord {
+  sealed_at: Date;
+}
+
+/** One (org, shard) chain in seq order, with its events, for a role that can SELECT both. */
+export async function readSeals(
   db: Kysely<Database>,
   orgId: string,
   shard: string,
-): Promise<ChainVerdict> {
+): Promise<StoredSeal[]> {
   const rows = await withOrg(db, orgId, (trx) =>
     trx
       .selectFrom('audit.audit_seal as s')
@@ -130,18 +131,32 @@ export async function verifyChain(
         's.event_hash as seal_event_hash',
         's.prev_hash as seal_prev_hash',
         's.hash as seal_hash',
+        's.sealed_at as seal_sealed_at',
       ])
       .where('s.shard', '=', shard)
       .orderBy('s.seq')
       .execute(),
   );
-  return verifySeals(
-    rows.map(({ seal_seq, seal_event_hash, seal_prev_hash, seal_hash, ...event }) => ({
+  return rows.map(
+    ({ seal_seq, seal_event_hash, seal_prev_hash, seal_hash, seal_sealed_at, ...event }) => ({
       seq: Number(seal_seq),
       event_hash: seal_event_hash,
       prev_hash: seal_prev_hash,
       hash: seal_hash,
+      sealed_at: seal_sealed_at,
       event,
-    })),
+    }),
   );
+}
+
+/**
+ * Reads one (org, shard) chain with a role that can SELECT seals and events (reader or sealer)
+ * and verifies it from genesis. audit-verify also compares it with the signed checkpoints.
+ */
+export async function verifyChain(
+  db: Kysely<Database>,
+  orgId: string,
+  shard: string,
+): Promise<ChainVerdict> {
+  return verifySeals(await readSeals(db, orgId, shard));
 }

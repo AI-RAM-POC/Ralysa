@@ -102,6 +102,8 @@ export function policyRules(ctx: PolicyContext = DEFAULT_POLICY_CONTEXT): Record
     ],
     'ralysa-cp-sealer': [
       dbRead(ctx, 'audit_sealer'),
+      // Insert-only writer for the sealer's own secret.custody_violation events (F-002-T16).
+      dbRead(ctx, 'audit_writer'),
       ...signWith(ctx, CHECKPOINT_KEY),
       readKey(ctx, CHECKPOINT_KEY),
     ],

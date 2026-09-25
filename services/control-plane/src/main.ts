@@ -5,16 +5,23 @@
 //   control-plane migrate --config <file>           cp set, as ralysa_migrator
 //   control-plane migrate --audit --config <file>   audit set, as ralysa_audit_migrator (break-glass)
 //   control-plane sealer --config <file>            the sealer process, as ralysa_audit_sealer
+//   control-plane audit-verify --config <file> [--org <uuid>] [--shard <s>] [--log-checkpoints <jsonl>]
 //
-// `serve`, `audit-verify` and `bootstrap-org` arrive with F-002-T07 and T16.
+// `serve` and `bootstrap-org` arrive with F-002-T07.
 // The config path may also come from RALYSA_CONFIG.
+import { readFileSync } from 'node:fs';
 import { parseArgs } from 'node:util';
+import { Source } from '@ralysa/protocol/audit';
+import { CustodyViolationError } from '@ralysa/secrets';
 import { migrationAppliedEvents } from './audit/events.js';
+import { createCheckpointSigner } from './audit/sealer/checkpoint.js';
 import { runSealerLoop } from './audit/sealer/sealer.js';
+import { auditVerify, parseCheckpointLog } from './audit/verify/audit-verify.js';
 import { createAuditWriter } from './audit/writer.js';
 import { commonProductionRefusals } from './config/guards.js';
 import { ConfigError, loadConfigFile } from './config/load.js';
 import {
+  AuditVerifyConfig,
   type CommonConfig,
   MigrateAuditConfig,
   MigrateConfig,
@@ -28,7 +35,8 @@ import type { Database } from './db/types.js';
 import { createJsonLogger } from './observability/logger.js';
 import { openVault } from './secrets/vault.js';
 
-const USAGE = 'usage: control-plane <migrate [--audit] | sealer> --config <file>';
+const USAGE =
+  'usage: control-plane <migrate [--audit] | sealer | audit-verify [--org <uuid>] [--shard <s>] [--log-checkpoints <jsonl>]> --config <file>';
 const logger = createJsonLogger();
 
 function configPath(value: string | undefined): string {
@@ -102,7 +110,7 @@ async function sealerCommand(args: string[]): Promise<number> {
   const { values } = parseArgs({ args, options: { config: { type: 'string' } }, strict: true });
   const config = loadConfigFile(SealerConfig, configPath(values.config));
   refuseUnsafe(config);
-  const { secrets } = openVault(config);
+  const { secrets, keys } = openVault(config);
   const pool = createPool(
     config.db,
     {
@@ -111,13 +119,32 @@ async function sealerCommand(args: string[]): Promise<number> {
     },
     { applicationName: 'ralysa-control-plane:sealer', max: 2 },
   );
+  const writerPool = createPool(
+    config.db,
+    {
+      user: 'ralysa_audit_writer',
+      password: async () => (await secrets.get(config.db_credentials.audit_writer)).value,
+    },
+    { applicationName: 'ralysa-control-plane:sealer', max: 1 },
+  );
   const controller = new AbortController();
   for (const signal of ['SIGTERM', 'SIGINT'] as const) {
     process.once(signal, () => {
       controller.abort();
     });
   }
-  logger.info('sealer_started', { org_id: config.org.id, interval_ms: config.interval_ms });
+  const signer = createCheckpointSigner({
+    custody: keys,
+    key: config.checkpoint_key,
+    orgId: config.org.id,
+    writer: createAuditWriter({ db: createDb<Database>(writerPool) }),
+    logger,
+  });
+  logger.info('sealer_started', {
+    org_id: config.org.id,
+    interval_ms: config.interval_ms,
+    checkpoint_interval_s: config.checkpoint_interval_s,
+  });
   try {
     await runSealerLoop({
       db: createDb<Database>(pool),
@@ -126,12 +153,81 @@ async function sealerCommand(args: string[]): Promise<number> {
       sweepEveryMs: config.sweep_interval_s * 1000,
       logger,
       signal: controller.signal,
+      checkpoints: {
+        signer,
+        intervalMs: config.checkpoint_interval_s * 1000,
+        custodyPollMs: config.custody_poll_s * 1000,
+      },
     });
   } finally {
-    await pool.end();
+    await Promise.all([pool.end(), writerPool.end()]);
   }
   logger.info('sealer_stopped');
   return 0;
+}
+
+async function auditVerifyCommand(args: string[]): Promise<number> {
+  const { values } = parseArgs({
+    args,
+    options: {
+      config: { type: 'string' },
+      org: { type: 'string' },
+      shard: { type: 'string' },
+      'log-checkpoints': { type: 'string' },
+    },
+    strict: true,
+  });
+  const config = loadConfigFile(AuditVerifyConfig, configPath(values.config));
+  refuseUnsafe(config);
+  const { secrets, keys } = openVault(config);
+  let publicKeys: Map<number, (typeof described.versions)[number]['jwk']>;
+  let described: Awaited<ReturnType<typeof keys.describe>>;
+  try {
+    described = await keys.describe(config.checkpoint_key);
+    publicKeys = new Map(described.versions.map((v) => [v.version, v.jwk]));
+  } catch (error) {
+    if (error instanceof CustodyViolationError) {
+      logger.error('audit_verify_failed', {
+        reason: 'checkpoint key custody violation',
+        key: error.key,
+      });
+      return 1;
+    }
+    throw error;
+  }
+  const shard = values.shard;
+  if (shard !== undefined && !(Source.options as readonly string[]).includes(shard)) {
+    throw new ConfigError(`unknown shard ${shard}`);
+  }
+  const pool = createPool(
+    config.db,
+    {
+      user: 'ralysa_audit_reader',
+      password: async () => (await secrets.get(config.db_credentials.audit_reader)).value,
+    },
+    { applicationName: 'ralysa-control-plane:audit-verify', max: 2 },
+  );
+  try {
+    const logPath = values['log-checkpoints'];
+    const result = await auditVerify({
+      db: createDb<Database>(pool),
+      orgId: values.org ?? config.org.id,
+      shards: shard === undefined ? Source.options : [shard],
+      publicKeys,
+      ...(logPath === undefined
+        ? {}
+        : { logCheckpoints: parseCheckpointLog(readFileSync(logPath, 'utf8')) }),
+    });
+    for (const finding of result.findings) logger.error('audit_verify_finding', { ...finding });
+    for (const report of result.shards) logger.info('audit_verify_shard', { ...report });
+    logger.info('audit_verify', {
+      ok: result.findings.length === 0,
+      findings: result.findings.length,
+    });
+    return result.findings.length === 0 ? 0 : 1;
+  } finally {
+    await pool.end();
+  }
 }
 
 export async function main(argv: string[]): Promise<number> {
@@ -139,6 +235,7 @@ export async function main(argv: string[]): Promise<number> {
   try {
     if (command === 'migrate') return await migrateCommand(rest);
     if (command === 'sealer') return await sealerCommand(rest);
+    if (command === 'audit-verify') return await auditVerifyCommand(rest);
     process.stderr.write(`${USAGE}\n`);
     return 2;
   } catch (error) {

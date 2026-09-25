@@ -183,7 +183,7 @@ export function checkMigrationsImmutable(options: CheckMigrationsOptions): Findi
   return findings;
 }
 
-/** Records every migration file's hash (new migrations only; a check still guards the base). */
+/** The generated TypeScript module holding the lock's hashes (compiled into the service). */
 export function renderChecksumsModule(lock: MigrationsLock): string {
   const entries = Object.entries(lock.migrations)
     .map(([name, entry]) => `  '${name}': {\n    sha256: '${entry.sha256}',\n  },`)
@@ -197,6 +197,7 @@ ${entries}
 `;
 }
 
+/** Records every migration file's hash (new migrations only; a check still guards the base). */
 export function writeMigrationsLock(root: string): MigrationsLock {
   const lock: MigrationsLock = {
     version: 2,

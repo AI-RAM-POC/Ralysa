@@ -406,3 +406,60 @@ Branch `feat/F-002-audit-core`, stacked on `feat/F-002-secrets-db-audit` (#19).
 | # | Item | Where it lands |
 |---|---|---|
 | OI-3 | Reconcile for missed `db.migration.applied`: compare `ralysa_meta*.migration` (name, `executed_at`) with the recorded events and write any missing ones (marked `details.server.reconciled=true`), from the migrate job at start or from `audit-verify`. | T16 (`audit-verify`) or a follow-up; T06-7 makes the gap visible (exit 1) meanwhile. |
+
+### Nits folded in after #21 merged
+
+- The `writeMigrationsLock` doc comment is back above its function; `renderChecksumsModule` has its own.
+- `Rejection.orgId` is documented: it must come from deployment config or another verified source, never from the rejected (unverified) token's `tid`, because the aggregator's output and memory bounds depend on it. **T07 and T11 must wire it that way** (tracked below as OI-4).
+
+| # | Item | Where it lands |
+|---|---|---|
+| OI-4 | The rejection aggregators must take `orgId` from `config.org.id` (control plane) or the verifier's configured org (`packages/auth`), never from an unverified token. | T07 (control-plane verifier path) and T11 (packages/auth rejections); each adds a test. |
+
+## T16: signed chain-head checkpoints and `audit-verify`
+
+Branch `feat/F-002-checkpoints` (on `main` after #21).
+
+### What landed
+
+- `@ralysa/protocol/audit`: `checkpointPayload()` (the JCS of `{org_id, shard, seq, hash, checkpoint_ts}` with input checks) and `CHECKPOINT_KEY`. T03-9 deferred this here. It lives in the protocol package so F-011's verifiers use the same bytes.
+- `src/audit/sealer/checkpoint.ts`:
+  - `createCheckpointSigner()`: the custody monitor. `poll()` describes the key and stays unhealthy until the first successful describe. A flag flip writes one `secret.custody_violation` per violation and sets the `secret_custody_violation` gauge to 1. Signing resumes when the flags clear. A describe failure keeps the last state and never signs blind.
+  - `checkpointOnce()`: per shard, under the seal pass's advisory lock; head versus last checkpoint; the database clock (ms) for `checkpoint_ts`; signs with the latest version; inserts the row; logs one `audit_checkpoint` line with the same values (signature base64url).
+- `runSealerLoop` takes `checkpoints: { signer, intervalMs (60 s), custodyPollMs (30 s) }`.
+- `src/audit/verify/audit-verify.ts`:
+  - `auditVerify()` checks signatures (WebCrypto ECDSA P-256 SHA-256 against each version's JWK), recomputes the chain **from the events** (and reports stored-seal inconsistencies as `chain_broken`), checks each checkpoint's agreement with it (`checkpoint_mismatch`, `checkpoint_beyond_chain`), checks cadence (`checkpoint_gap`), and compares the logged checkpoints (`checkpoint_missing`, `checkpoint_log_mismatch`). It reports the first divergent seq per shard.
+  - `parseCheckpointLog()` reads JSONL.
+- Config: `SealerConfig` gains `checkpoint_key`, `checkpoint_interval_s`, `custody_poll_s` and `db_credentials.audit_writer`. New `AuditVerifyConfig` (`checkpoint_key`, reader only).
+- `main.ts`: the sealer runs with checkpoints. New `audit-verify` command: exit 1 on any finding, and on a checkpoint-key custody violation. Dev configs and `audit-verify`/`audit-verify:dev` scripts.
+- The dev-stack policy `ralysa-cp-sealer` also reads `db/audit_writer`.
+
+### Recorded decisions and deviations
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T16-1 | **Design gap, filled** | The sealer writes `secret.custody_violation` through the insert-only **`ralysa_audit_writer`** credential. Its config and OpenBao policy gain `db/audit_writer`, and `ralysa_audit_sealer` keeps SELECT on events only. | §3.5 has the sealer write that event, but §4.1 gives the sealer role no INSERT on events, and `audit/0001` is released (immutable). The writer role is the least privilege that works: it can only insert writer columns, like the migrate jobs' use of it. |
+| T16-2 | Interpretation | During a custody violation the sealer **keeps sealing** and only stops checkpoint signing. | §3.2.4 says "stops signing". The hash chain uses no key, and stopping it would add a second gap. `audit-verify` reports the missing checkpoints as `checkpoint_gap`. The sealer has no HTTP `/readyz`, so the "unready" signal is the `secret_custody_violation` gauge plus an error log (the alert input). |
+| T16-3 | Implementation choice | `audit-verify` compares checkpoints with the chain **recomputed from events**, not with the stored seals. The stored seals are also checked separately (`chain_broken`). | An owner who rewrites an event and recomputes every later seal leaves stored seals that are self-consistent (`verifyChain` passes: tested), so only the recompute from events against the signed hash catches it (§4.5 residual, SEC-F002-01 c). |
+| T16-4 | Implementation choice | The cadence check uses each seal's `sealed_at` for the "newest seal older than 120 s" rule. `now` is injectable. | The design's rule is about sealed data not covered by a checkpoint. Injecting `now` lets the test assert the gap without waiting 2 minutes. |
+| T16-5 | Implementation choice | A checkpoint-key custody violation makes `audit-verify` fail (exit 1) without verifying. | `describe()` refuses such a key, and signatures made with a key that may have been exported can't vouch for the chain. |
+| T16-6 | Scope note | The reconcile of missed `db.migration.applied` events (OI-3) isn't in this PR. | It needs history-table access that the reader role doesn't have (`ralysa_meta*` belongs to the migrators). It stays an open item for a follow-up with its own grant. |
+
+### Tests (T16)
+
+- **Unit:**
+  - `checkpointPayload`: the exact JCS bytes, and malformed hash, ts and seq refused (protocol, +4).
+  - `checkpoint.test.ts` (+7):
+    - the signer isn't healthy before its first poll;
+    - it signs with the latest version, and the signature verifies over the payload with WebCrypto;
+    - flipping `exportable` or `allow_plaintext_backup` stops signing and writes exactly **one** `secret.custody_violation` across repeated polls; signing resumes when the flags clear;
+    - the sealer and audit-verify configs name only their own credentials;
+    - `parseCheckpointLog` keeps only well-formed lines.
+- **Integration** (`test/integration/checkpoint.int.ts`, TC-F-002-29 and the sealer part of TC-33, with a throwaway Transit key per run):
+  - the running loop (2 s checkpoint interval) writes checkpoints; **the logged lines equal the rows**; the last checkpoint covers the head; `audit-verify` with the log is clean;
+  - **a stopped sealer gives `checkpoint_gap`** at the uncovered seq, and it clears after a checkpoint;
+  - **the audit owner (via `ralysa_audit_migrator`) disables triggers, rewrites seq 2 and recomputes every seal**: `verifyChain` on the stored seals passes, while `audit-verify` reports `checkpoint_mismatch` at **the first checkpoint covering seq 2**, and nothing before it;
+  - **the owner deletes the newest checkpoint**: nothing is reported without the log, and `checkpoint_missing` is reported with it;
+  - **flipping `exportable` on the checkpoint key at runtime**: `poll()` returns false, no checkpoint is signed, and one `secret.custody_violation` (`actor.service=sealer`, `flag=exportable`) is in the store.
+  - 3 consecutive full runs: 46/46.
+- **Manual (dev stack):** `start:sealer:dev` wrote a checkpoint and its log line. `audit-verify:dev --shard control-plane --log-checkpoints sealer.log` checked 66 seals and 1 checkpoint: ok, 0 findings, exit 0.

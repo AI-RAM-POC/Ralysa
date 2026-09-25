@@ -9,6 +9,7 @@ export {
   outcomeAllowed,
   serviceMayBeAllowListed,
 } from './actions.js';
+export { CHECKPOINT_KEY, type CheckpointHead, checkpointPayload } from './checkpoint.js';
 export {
   AUDIT_BODY_MAX_BYTES,
   CLIENT_ACTION_ALLOWLIST,

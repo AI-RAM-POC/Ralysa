@@ -61,6 +61,7 @@ const CASES: [string, Op, string, number][] = [
   ['ralysa-cp-serve', 'read', `transit/keys/${serviceKey('model-gateway')}`, ALLOWED],
   ['ralysa-cp-serve', 'read', `transit/keys/${CHECKPOINT_KEY}`, DENIED],
   ['ralysa-cp-sealer', 'read', db('audit_sealer'), ALLOWED],
+  ['ralysa-cp-sealer', 'read', db('audit_writer'), ALLOWED],
   ['ralysa-cp-sealer', 'read', db('cp_app'), DENIED],
   ['ralysa-cp-sealer', 'read', db('migrator'), DENIED],
   ['ralysa-cp-sealer', 'sign', CHECKPOINT_KEY, ALLOWED],
