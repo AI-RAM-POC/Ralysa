@@ -159,6 +159,10 @@ jobs:
       # AR-4 b: the image brings its own Node; stop here if it is outside engines.node.
       - name: Node satisfies engines.node
         run: node tooling/repo-scripts/src/check-node-engine.ts
+      # The container runs as root over a checkout owned by the runner user; without this, git
+      # refuses the repo and Turbo falls back from its git-based file hashing.
+      - name: Trust the checkout for git
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: Enable pnpm through Corepack
         run: |
           corepack enable
