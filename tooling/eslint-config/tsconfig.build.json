@@ -1,0 +1,17 @@
+{
+  "extends": ["./tsconfig.json", "@ralysa/tsconfig/build.json"],
+  "compilerOptions": {
+    "emitDeclarationOnly": true,
+    "rootDir": "${configDir}",
+    "outDir": "${configDir}/dist"
+  },
+  "include": [
+    "base.js",
+    "boundaries.js",
+    "index.js",
+    "isomorphic.js",
+    "react-ui.js",
+    "tests.js",
+    "types"
+  ]
+}

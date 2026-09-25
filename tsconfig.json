@@ -1,0 +1,8 @@
+{
+  "files": [],
+  "references": [
+    { "path": "tooling/eslint-config" },
+    { "path": "tooling/repo-scripts" },
+    { "path": "tooling/vitest-config" }
+  ]
+}

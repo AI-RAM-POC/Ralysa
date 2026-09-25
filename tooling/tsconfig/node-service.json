@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "display": "Ralysa Node service",
+  "extends": "./lib-node.json",
+  "compilerOptions": {
+    "lib": ["ES2024"],
+    "target": "ES2024"
+  }
+}

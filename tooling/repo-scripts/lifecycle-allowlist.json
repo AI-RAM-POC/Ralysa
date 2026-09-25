@@ -1,0 +1,4 @@
+{
+  "$comment": "Reviewed lifecycle scripts (preinstall, install, postinstall, prepare, prepack, postpack, prepublish, prepublishOnly, publish, postpublish) in the root or a workspace package.json. Each entry needs package, script, the exact command, an owner and a reason. check-workspaces fails on any lifecycle script that is not listed here (F-001 design §2.1, SEC-F001-11).",
+  "entries": []
+}

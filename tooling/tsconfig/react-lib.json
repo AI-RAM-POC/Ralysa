@@ -1,0 +1,8 @@
+{
+  "$schema": "https://json.schemastore.org/tsconfig",
+  "display": "Ralysa React library",
+  "extends": "./lib-dom.json",
+  "compilerOptions": {
+    "jsx": "react-jsx"
+  }
+}

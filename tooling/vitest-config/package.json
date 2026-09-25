@@ -1,0 +1,36 @@
+{
+  "name": "@ralysa/vitest-config",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared Vitest presets (node, jsdom).",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "peerDependencies": {
+    "vitest": "^4.1.11"
+  },
+  "devDependencies": {
+    "@ralysa/eslint-config": "workspace:*",
+    "@ralysa/tsconfig": "workspace:*",
+    "@types/node": "catalog:",
+    "eslint": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "ralysa": {
+    "kind": "tooling",
+    "shipped": false,
+    "ui": false,
+    "artefacts": []
+  }
+}
