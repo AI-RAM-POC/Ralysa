@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ralysa:schema:sign-in-failure-report.v1",
+  "title": "SignInFailureReport",
+  "type": "object",
+  "properties": {
+    "attempt_id": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+    },
+    "flow": {
+      "type": "string",
+      "const": "idp_device"
+    },
+    "error": {
+      "type": "string",
+      "enum": [
+        "authorization_declined",
+        "expired_token",
+        "access_denied",
+        "bad_verification_code",
+        "conditional_access_blocked",
+        "other"
+      ]
+    },
+    "idp_error_code": {
+      "type": "string",
+      "maxLength": 64
+    },
+    "device_label": {
+      "type": "string",
+      "maxLength": 64
+    }
+  },
+  "required": [
+    "attempt_id",
+    "flow",
+    "error"
+  ],
+  "additionalProperties": false
+}

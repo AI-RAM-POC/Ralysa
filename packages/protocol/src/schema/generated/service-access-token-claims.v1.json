@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ralysa:schema:service-access-token-claims.v1",
+  "title": "ServiceAccessTokenClaims",
+  "type": "object",
+  "properties": {
+    "iss": {
+      "type": "string",
+      "format": "uri"
+    },
+    "aud": {
+      "type": "string",
+      "const": "control-plane"
+    },
+    "sub": {
+      "type": "string",
+      "pattern": "^svc:[a-z][a-z0-9-]{1,40}$"
+    },
+    "client_id": {
+      "type": "string",
+      "maxLength": 64
+    },
+    "tid": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+    },
+    "token_use": {
+      "type": "string",
+      "const": "service"
+    },
+    "iat": {
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991
+    },
+    "nbf": {
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991
+    },
+    "exp": {
+      "type": "integer",
+      "minimum": -9007199254740991,
+      "maximum": 9007199254740991
+    },
+    "jti": {
+      "type": "string",
+      "format": "uuid",
+      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+    }
+  },
+  "required": [
+    "iss",
+    "aud",
+    "sub",
+    "client_id",
+    "tid",
+    "token_use",
+    "iat",
+    "nbf",
+    "exp",
+    "jti"
+  ],
+  "additionalProperties": {}
+}

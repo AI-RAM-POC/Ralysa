@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ralysa:schema:oauth-authorize-query.v1",
+  "title": "AuthorizeQuery",
+  "type": "object",
+  "properties": {
+    "response_type": {
+      "type": "string",
+      "const": "code"
+    },
+    "client_id": {
+      "type": "string",
+      "const": "ralysa-cli"
+    },
+    "redirect_uri": {
+      "type": "string",
+      "pattern": "^http:\\/\\/(127\\.0\\.0\\.1|\\[::1\\]):([1-9][0-9]{0,4})\\/callback$"
+    },
+    "code_challenge": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{43}$"
+    },
+    "code_challenge_method": {
+      "type": "string",
+      "const": "S256"
+    },
+    "state": {
+      "type": "string",
+      "minLength": 16,
+      "maxLength": 128
+    }
+  },
+  "required": [
+    "response_type",
+    "client_id",
+    "redirect_uri",
+    "code_challenge",
+    "code_challenge_method",
+    "state"
+  ],
+  "additionalProperties": false
+}

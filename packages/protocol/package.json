@@ -3,6 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
+  "description": "Shared zod contracts: common primitives, audit envelope, token claims, control-plane REST types (F-002); Agent Protocol (F-003).",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -23,13 +24,19 @@
     "./control-plane": {
       "types": "./dist/control-plane/index.d.ts",
       "default": "./dist/control-plane/index.js"
-    }
+    },
+    "./schema/*.json": "./src/schema/generated/*.json"
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "check:generated": "tsc -p tsconfig.build.json && node scripts/generate-schemas.js",
     "lint": "eslint .",
     "test": "vitest run",
     "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "canonicalize": "4.0.0",
+    "zod": "catalog:"
   },
   "devDependencies": {
     "@ralysa/eslint-config": "workspace:*",
@@ -44,6 +51,5 @@
     "runtime": "isomorphic",
     "shipped": false,
     "ui": false
-  },
-  "description": "Shared zod contracts: common primitives, audit envelope, token claims, control-plane REST types (F-002); Agent Protocol (F-003)."
+  }
 }

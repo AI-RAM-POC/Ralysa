@@ -96,3 +96,48 @@ Checked for later tasks and **not added**, because no code uses them yet: `kysel
   - The gate rule fails on pnpm, corepack, `$(pnpm …)`, npx, turbo, `setup-node cache: pnpm` and `pnpm/action-setup` before the gate, and on pnpm earlier in the same step. It passes the right orders and look-alike words, and it covers every workflow file.
   - The integration job fails on `secrets.*`, missing or wider permissions, persisted credentials, OpenBao or all-service logs, and missing or long retention. The real `ci.yml` passes.
 - `test/check-turbo-config.test.ts`: a package-level `test:integration` with `cache: true` fails (SEC-F002-28; the root-level case already existed).
+
+## T03: contracts in `packages/protocol`
+
+### What landed
+
+- `common`: `TraceId`, `SpanId`, `Sha256Hex`, `Region`; shared `ERROR_CODES` (incl. `audit_unavailable`) and the RFC 9457 `Problem` with `i18n_key`; W3C `traceparent` parse, format and id generation.
+- `audit`:
+  - the envelope (`AuditEventInput`, `AuditEvent`, `Outcome` with `failure`, `Source`, `Actor`, `IJson`), `AUDIT_SCHEMA_VERSION`;
+  - the F-002 event catalogue, reserved namespaces and the two service exceptions (`auth.token_rejected`, `secret.rotated`), `outcomeAllowed()` for [AR-3];
+  - the client allow-list, size limits, `RESERVED_DETAIL_KEYS` with `findReservedKeys()`;
+  - `jcs.ts`: RFC 8785 through `canonicalize`, the I-JSON check, the omit-null canonical envelope, `eventHash`, `chainHash`, `GENESIS_PREV_HASH`, `canonicalSize`.
+- `auth`: `Audience`, `Surface`, `AccessTokenHeader`, user and service claims, `FORBIDDEN_JOSE_HEADERS`, `kidPattern`/`kidFor`, `TokenRejectReason`, lifetimes; the OAuth requests (authorize, the four grants as a discriminated union, revoke), `TokenResponse`, `OAuthError`, RFC 8414 metadata, opaque-token patterns; `SignInReason`, `RefreshReason`, `RalysaErrorCode` and the i18n keys (`AUTH_I18N_KEYS`).
+- `control-plane`: `AuthConfig`, `SignInFailureReport`, `Me`, `GroupView`, `Principal`, `GovernanceState` (+ feed timing constants), the service and client audit APIs, `IntentAck`, `AuditQuery`, `AuditQueryResponse`; `/v1` and API version constants.
+- `schema/generator.ts` (the one generator) with 23 registered contracts, `scripts/generate-schemas.js` and `check:generated`, and the committed `src/schema/generated/*.json`.
+
+### Versions (checked 2026-09-25)
+
+| Item | Pinned | Evidence |
+|---|---|---|
+| `canonicalize` | **4.0.0** (dependency of `@ralysa/protocol`) | The design names this package for RFC 8785. The 5.x line started 2026-09-08 (17 days), so under the 30-day rule; 4.0.0 is from 2026-08-12. Apache-2.0, ESM with types, no dependencies, no install scripts. No 4.x or earlier version has provenance (5.x does, which is newer, so `trustPolicy: no-downgrade` doesn't apply). It refuses NaN, Infinity and lone surrogates itself; our I-JSON check runs first anyway. |
+| `zod` | 4.6.5 (existing catalog entry) | Unchanged. `z.toJSONSchema()` is the generator. |
+
+### Recorded decisions and deviations
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T03-1 | **Interpretation** of the omit-null rule | Null or absent **top-level** envelope members are omitted, and so are null members of `actor`, `act` and `resource` (flat objects of envelope columns). `details` is hashed exactly as stored, nulls included. | §4.6 says "null or absent fields omitted" without saying whether nested. A future nullable actor column (for example `actor.on_behalf_of`) must not change old hashes either, so the envelope's structured members are included. `details` holds client and service data where `null` is a value, so omitting there would make `{"x": null}` and `{}` hash alike. Both behaviours are pinned by tests. |
+| T03-2 | Interpretation of I-JSON | Integral numbers outside ±(2^53 − 1) are refused, as are non-finite numbers, lone surrogates (values and member names), non-plain objects, `undefined` and nesting deeper than 64. | Design: "numbers must be safe integers or finite doubles". At the JS level, an integral double can't be told apart from a large integer literal whose precision was lost in parsing, so the check refuses both; audit `details` have no need for such numbers. |
+| T03-3 | Implementation choice | WebCrypto and `TextEncoder` are reached through `src/platform.ts` with structural types, not through global type declarations. | `lib-isomorphic.json` has neither DOM nor Node types (T01-3 confirmed this), and declaring the globals would clash with `@types/node` in consumers. Typing only what is called keeps the base strict. `@ralysa/secrets` does the same in T04. |
+| T03-4 | Small design gap, filled | `OAuthError.ralysa_error.code` is `RalysaErrorCode` (sign-in **and** refresh reasons), not only `SignInReason`. | §5.3 returns `invalid_grant` "with `ralysa_error`" for refresh denials such as `idp_session_revoked` and `reuse_detected`, which aren't sign-in reasons. The i18n key is per outcome (`auth.failed.expired` for sign-in, `auth.denied.expired` for refresh), so both lists map separately. |
+| T03-5 | Additions | `ClientCredentialsRequest` (RFC 7523, the fourth grant) and `TokenRequest` as a discriminated union over the four grants; `AuthorizationServerMetadata` (RFC 8414); `ServiceEventsRequest/Response`; `AuditQuery`, `AuditEventView`, `AuditQueryResponse`; `Problem`. | §3.1 and §3.4 describe these routes and bodies in prose without zod. They are the same fields the prose names. `AuditQuery.limit` stays a string pattern (1–500) because a zod coercion would be a transform. |
+| T03-6 | Hardening | Length limits the design's snippets don't state: `client_id` 64, `amr` 16 × 32, `region` 40, `redirect_uri` on code redemption 64, `act.sub` 200, `scope` 256, cursors 256, `reason_category` 64. | Bounded input on every external body; no field changes meaning or type. |
+| T03-7 | Implementation choice | `check:generated` runs `tsc -p tsconfig.build.json` and then `scripts/generate-schemas.js` against `dist/`. `scripts/` is outside the isomorphic lint scope. The drift unit test reads the committed files with a literal `import.meta.glob` and compares them with the generator output. | `src/` uses `.js` import specifiers (NodeNext), which Node's type stripping can't run from source. The script is Node tooling that nothing imports. The glob keeps the test hermetic without `node:fs`, which the isomorphic preset bans. |
+| T03-8 | Implementation choice | `src/schema/generated/` is in `.prettierignore`. | The generator owns the format (`JSON.stringify(…, 2)`); Prettier would collapse short arrays and create drift, as with the F-001 i18n types (T08-11). |
+| T03-9 | Scope note | `checkpointPayload` (the JCS of `{org_id, shard, seq, hash, checkpoint_ts}`) is not in T03. | It belongs to T16 with the sealer. |
+
+### Tests (T03)
+
+147 tests in `packages/protocol/test/`:
+- `jcs.test.ts`: RFC 8785 §3.2.2 (the example, byte for byte) and §3.2.3 (UTF-16 key order); ECMAScript number serialisation; Arabic with harakat unchanged; I-JSON refusals (NaN, Infinity, unsafe integers, a large integral double, lone surrogates in values and member names, `undefined`, Date, function, bigint, depth); the omit-null canonical form; **a golden event hash and chain hash** (`939a8a46…`, `18c0ae2e…`, cross-checked with `shasum -a 256` and Python `hashlib`); **the same hash after adding nullable columns** (`grant_id`, `approval_id`, `content_ref`, `rows`, `masked_entity_counts`, `endpoint_region`, `actor.on_behalf_of`) [AR-7]; every value change changes the hash; `details` nulls are data; non-I-JSON `details` can't be hashed; the FIPS 180-2 "abc" vector.
+- `audit.test.ts`: the envelope accepts the AC-11/AC-13 fields and refuses server-assigned fields in input, unknown members, `ts` without exactly 3 digits and `Z` [AR-5], bad action names and regions; `failure` on `auth.*` only; the reserved namespaces and the two service exceptions [SEC-F002-03]; the client allow-list; reserved keys at any depth [SEC-F002-15].
+- `auth.test.ts`: header `alg`/`typ` refusals (`none`, `HS256`, `RS256`, `ES384`, `typ: JWT`), `kid` pattern, single audience, service claims; loopback-only redirects; the four grants accepted, `password` and unknown grants refused; no `client_secret` on any user grant (AC-3); opaque-token and verifier formats; the i18n key per outcome.
+- `control-plane.test.ts`: the auth config switch, the IdP-neutral `idp_error_code` [AR-18], Arabic display names byte-identical (AC-15), UUID-only groups, the governance feed, client-event allow-list and batch limits, a forged `actor` refused by the schema, the service batch limit, `AuditQuery` limits.
+- `schema.test.ts`: the committed files are exactly the registry and equal the generator output; URN `$id`s; a transform fails generation; no password, PIN, OTP or `client_secret` property in any generated contract (the AC-3 check on contracts; TC-F-002-05 on the OpenAPI document is T07's); the audit schema lists `endpoint_region` and `inference_region`.
+- **Drift proof (manual, 2026-09-25):** changing one value in `audit-event.v1.json` made `schema.test.ts` fail, and `git diff` showed the file changed (CI's porcelain check); `check:generated` rewrote it and `git diff` was empty again.

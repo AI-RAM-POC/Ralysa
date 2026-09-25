@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:ralysa:schema:oauth-token-request.v1",
+  "title": "TokenRequest",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "grant_type": {
+          "type": "string",
+          "const": "authorization_code"
+        },
+        "client_id": {
+          "type": "string",
+          "const": "ralysa-cli"
+        },
+        "code": {
+          "type": "string",
+          "pattern": "^rly_ac_[A-Za-z0-9_-]{43}$"
+        },
+        "redirect_uri": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "code_verifier": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._~-]{43,128}$"
+        }
+      },
+      "required": [
+        "grant_type",
+        "client_id",
+        "code",
+        "redirect_uri",
+        "code_verifier"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "grant_type": {
+          "type": "string",
+          "const": "refresh_token"
+        },
+        "client_id": {
+          "type": "string",
+          "const": "ralysa-cli"
+        },
+        "refresh_token": {
+          "type": "string",
+          "pattern": "^rly_rt_[A-Za-z0-9_-]{43}$"
+        },
+        "audience": {
+          "type": "string",
+          "enum": [
+            "control-plane",
+            "agent-host",
+            "model-gateway",
+            "mcp-gateway",
+            "workspace-runtime"
+          ]
+        }
+      },
+      "required": [
+        "grant_type",
+        "client_id",
+        "refresh_token"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "grant_type": {
+          "type": "string",
+          "const": "urn:ietf:params:oauth:grant-type:token-exchange"
+        },
+        "client_id": {
+          "type": "string",
+          "const": "ralysa-cli"
+        },
+        "subject_token": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 8192
+        },
+        "subject_token_type": {
+          "type": "string",
+          "const": "urn:ietf:params:oauth:token-type:access_token"
+        },
+        "audience": {
+          "type": "string",
+          "enum": [
+            "control-plane",
+            "agent-host",
+            "model-gateway",
+            "mcp-gateway",
+            "workspace-runtime"
+          ]
+        },
+        "device_label": {
+          "type": "string",
+          "maxLength": 64
+        }
+      },
+      "required": [
+        "grant_type",
+        "client_id",
+        "subject_token",
+        "subject_token_type"
+      ],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "grant_type": {
+          "type": "string",
+          "const": "client_credentials"
+        },
+        "client_assertion_type": {
+          "type": "string",
+          "const": "urn:ietf:params:oauth:client-assertion-type:jwt-bearer"
+        },
+        "client_assertion": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 4096
+        },
+        "client_id": {
+          "type": "string",
+          "maxLength": 64
+        }
+      },
+      "required": [
+        "grant_type",
+        "client_assertion_type",
+        "client_assertion"
+      ],
+      "additionalProperties": false
+    }
+  ]
+}
