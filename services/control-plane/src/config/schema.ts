@@ -82,8 +82,9 @@ export const MigrateAuditConfig = z.strictObject({
 export type MigrateAuditConfig = z.infer<typeof MigrateAuditConfig>;
 
 /**
- * The sealer process (§4.6, §4.7; SEC-F002-02, -26): the audit_sealer credential, plus the
- * insert-only audit_writer for its own secret.custody_violation events, and the checkpoint key.
+ * The sealer process (§4.6, §4.7; SEC-F002-02, -26): the audit_sealer credential only. It records
+ * checkpoint-key custody violations through audit.record_custody_violation() (audit/0002), not
+ * a writer credential (SEC-F002-34).
  */
 export const SealerConfig = z.strictObject({
   ...Common,
@@ -92,7 +93,7 @@ export const SealerConfig = z.strictObject({
   sweep_interval_s: z.int().min(60).max(86_400).default(3600),
   checkpoint_interval_s: z.int().min(1).max(3600).default(60),
   custody_poll_s: z.int().min(1).max(300).default(30),
-  db_credentials: z.strictObject({ audit_sealer: KvPath, audit_writer: KvPath }),
+  db_credentials: z.strictObject({ audit_sealer: KvPath }),
 });
 export type SealerConfig = z.infer<typeof SealerConfig>;
 

@@ -16,6 +16,9 @@ import { type MigrateResult, runMigrations } from '../../../src/db/migrate.js';
 import type { DbEndpoint } from '../../../src/db/pools.js';
 import type { AuditEventTable } from '../../../src/db/types.js';
 
+/** Serialises bootstrap-roles.sql across parallel test files. */
+const BOOTSTRAP_LOCK = 7_300_216;
+
 export const ROLE_OF: Record<DbRoleKey, string> = {
   migrator: 'ralysa_migrator',
   audit_migrator: 'ralysa_audit_migrator',
@@ -54,7 +57,20 @@ export async function createTestDatabase(
   }
   const superuser = new pg.Client({ ...stack.postgres, database: name });
   await superuser.connect();
-  if (options.bootstrap !== false) await superuser.query(readFileSync(BOOTSTRAP_ROLES_SQL, 'utf8'));
+  if (options.bootstrap !== false) {
+    // bootstrap-roles.sql ALTERs cluster-wide roles; test files run in parallel, and concurrent
+    // ALTER ROLE fails with "tuple concurrently updated" (XX000). Advisory locks are per
+    // database, so serialise on one held in the shared admin database.
+    const lock = new pg.Client({ ...stack.postgres });
+    await lock.connect();
+    try {
+      await lock.query('select pg_advisory_lock($1)', [BOOTSTRAP_LOCK]);
+      await superuser.query(readFileSync(BOOTSTRAP_ROLES_SQL, 'utf8'));
+    } finally {
+      await lock.query('select pg_advisory_unlock($1)', [BOOTSTRAP_LOCK]).catch(() => undefined);
+      await lock.end();
+    }
+  }
   const endpoint: DbEndpoint = {
     host: stack.postgres.host,
     port: stack.postgres.port,

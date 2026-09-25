@@ -27,6 +27,7 @@ import {
   type CheckpointSigner,
   checkpointOnce,
   createCheckpointSigner,
+  dbCustodyRecorder,
 } from '../../src/audit/sealer/checkpoint.js';
 import { runSealerLoop, sealOnce } from '../../src/audit/sealer/sealer.js';
 import { auditVerify, parseCheckpointLog } from '../../src/audit/verify/audit-verify.js';
@@ -55,6 +56,7 @@ describe.skipIf(stack === undefined)(
     let readerDb: Kysely<Database>;
     let writerDb: Kysely<Database>;
     const key = uniqueName('ralysa-test-t16-ckpt');
+    const backupKey = uniqueName('ralysa-test-t16-bak');
     const logLines: string[] = [];
     const logger: Logger = createJsonLogger((line) => logLines.push(line));
     const t = (): TestDatabase => {
@@ -93,19 +95,22 @@ describe.skipIf(stack === undefined)(
       sealerDb = createDb<Database>(await db.pool('audit_sealer', 3));
       readerDb = createDb<Database>(await db.pool('audit_reader', 2));
       writerDb = createDb<Database>(await db.pool('audit_writer', 2));
+      // The Transit key is a throwaway (a flag flip can't be undone); the recorder records the
+      // logical key name, which audit.record_custody_violation() allow-lists.
       signer = createCheckpointSigner({
         custody,
         key,
-        orgId: ORG,
-        writer: createAuditWriter({ db: writerDb }),
+        recordViolation: dbCustodyRecorder(sealerDb, ORG),
         logger,
       });
     }, 60_000);
 
     afterAll(async () => {
       const root = rootBao(stack!);
-      await root('POST', `transit/keys/${key}/config`, { deletion_allowed: true });
-      await root('DELETE', `transit/keys/${key}`);
+      for (const name of [key, backupKey]) {
+        await root('POST', `transit/keys/${name}/config`, { deletion_allowed: true });
+        await root('DELETE', `transit/keys/${name}`);
+      }
       await db?.drop();
     });
 
@@ -276,11 +281,29 @@ describe.skipIf(stack === undefined)(
       });
     });
 
-    it('flipping exportable on the checkpoint key stops signing and writes secret.custody_violation (TC-F-002-33)', async () => {
+    const custodyRows = async () =>
+      (
+        await t().superuser.query<{
+          key: string;
+          flag: string;
+          service: string;
+          exportable: boolean;
+          backup: boolean;
+          via: string;
+        }>(
+          `SELECT details->>'key' AS key, details->>'flag' AS flag, actor_service AS service,
+                  (details->>'exportable')::boolean AS exportable,
+                  (details->>'allow_plaintext_backup')::boolean AS backup, details->>'via' AS via
+             FROM audit.audit_event WHERE action = 'secret.custody_violation' ORDER BY ingest_seq`,
+        )
+      ).rows;
+
+    it('flipping exportable on the checkpoint key stops signing and records ONE secret.custody_violation (TC-F-002-33, T10)', async () => {
       expectOk(
         await rootBao(stack!)('POST', `transit/keys/${key}/config`, { exportable: true }),
         'flip',
       );
+      await expect(signer.poll()).resolves.toBe(false);
       await expect(signer.poll()).resolves.toBe(false);
       expect(signer.healthy()).toBe(false);
       await createAuditWriter({ db: writerDb }).write(ORG, [event(6)]);
@@ -288,11 +311,56 @@ describe.skipIf(stack === undefined)(
       await expect(
         checkpointOnce({ db: sealerDb, orgId: ORG, shards: [SHARD], signer, logger: silentLogger }),
       ).resolves.toEqual([]);
-      const { rows } = await t().superuser.query<{ key: string; flag: string; service: string }>(
-        `SELECT details->>'key' AS key, details->>'flag' AS flag, actor_service AS service
-         FROM audit.audit_event WHERE action = 'secret.custody_violation'`,
+      expect(await custodyRows()).toEqual([
+        {
+          key: 'ralysa-audit-checkpoint',
+          flag: 'exportable',
+          service: 'sealer',
+          exportable: true,
+          backup: false,
+          via: 'audit.record_custody_violation',
+        },
+      ]);
+    });
+
+    it('OpenBao 2.6.2 refuses to clear the flag again: the violation is permanent (SEC-F002-35 a)', async () => {
+      // OpenBao 2.6.2 answers 200 but ignores the request: the flag stays set (checked
+      // 2026-09-25), as Vault documents ("cannot be disabled").
+      await rootBao(stack!)('POST', `transit/keys/${key}/config`, { exportable: false });
+      await expect(custody.describe(key)).rejects.toMatchObject({ exportable: true });
+      await expect(signer.poll()).resolves.toBe(false);
+    });
+
+    it('flipping allow_plaintext_backup alone is recorded with that flag pair (review of #23)', async () => {
+      expectOk(
+        await rootBao(stack!)('POST', `transit/keys/${backupKey}`, { type: 'ecdsa-p256' }),
+        'key',
       );
-      expect(rows).toEqual([{ key, flag: 'exportable', service: 'sealer' }]);
+      const backupSigner = createCheckpointSigner({
+        custody,
+        key: backupKey,
+        recordViolation: dbCustodyRecorder(sealerDb, ORG),
+        logger: silentLogger,
+      });
+      await expect(backupSigner.poll()).resolves.toBe(true);
+      expectOk(
+        await rootBao(stack!)('POST', `transit/keys/${backupKey}/config`, {
+          allow_plaintext_backup: true,
+        }),
+        'flip',
+      );
+      await expect(backupSigner.poll()).resolves.toBe(false);
+      await rootBao(stack!)('POST', `transit/keys/${backupKey}/config`, {
+        allow_plaintext_backup: false,
+      });
+      await expect(custody.describe(backupKey)).rejects.toMatchObject({
+        allowPlaintextBackup: true,
+      });
+      expect((await custodyRows()).at(-1)).toMatchObject({
+        flag: 'allow_plaintext_backup',
+        exportable: false,
+        backup: true,
+      });
     });
   },
 );

@@ -907,7 +907,7 @@ One Postgres database per deployment (`ralysa`), with schemas `cp` (operational)
 | `ralysa_cp_app` | yes | Per-table `SELECT/INSERT/UPDATE` (and `DELETE` only on short-lived tables: `authorization_code` tombstones after expiry, `idp_auth_request`, `idp_token_replay`, `client_assertion_replay`, expired `refresh_token`); nothing on `audit.*`; no `BYPASSRLS` | `serve` |
 | `ralysa_audit_writer` | yes | `USAGE` on `audit`; **`INSERT` only** on `audit.audit_event`, and only on the columns a writer may set (column-level grant excludes `ts`, `ingest_seq`, `schema_version`); no `SELECT`, `UPDATE`, `DELETE` or `TRUNCATE` | `serve`, migrate jobs (for `db.migration.applied`) |
 | `ralysa_audit_reader` | yes | `SELECT` on `audit.audit_event`, `audit.audit_seal`, `audit.audit_checkpoint` | `serve` (query), `audit-verify` |
-| `ralysa_audit_sealer` | yes | `SELECT` on `audit.audit_event`; `SELECT, INSERT` on `audit.audit_seal` and `audit.audit_checkpoint`; nothing else [AR-6] | `sealer` (its own process) |
+| `ralysa_audit_sealer` | yes | `SELECT` on `audit.audit_event`; `SELECT, INSERT` on `audit.audit_seal` and `audit.audit_checkpoint`; `EXECUTE` on `audit.record_custody_violation` (audit/0002, SEC-F002-34); nothing else [AR-6] | `sealer` (its own process) |
 | `ralysa_usage_writer` | yes | `INSERT` on `cp.usage_record` only | model-gateway (F-004) |
 
 No Ralysa role is granted `SET` on `session_replication_role` (PostgreSQL 15+) [SEC-F002-25].
@@ -1040,7 +1040,7 @@ PII classes are data-model §4: **N** none, **W** workforce identifiers, **C** c
 
 ### 4.6 Sealer and hash chain (AC-17, ADR-0021)
 
-- The sealer runs as **its own process** (`control-plane sealer`, its own deployment and OpenBao role), holding only the `audit_sealer` credential and the checkpoint signing right [SEC-F002-02, -26].
+- The sealer runs as **its own process** (`control-plane sealer`, its own deployment and OpenBao role), holding only the `audit_sealer` credential and the checkpoint signing right [SEC-F002-02, -26]. *Implementation note (2026-09-25):* T16 first gave the sealer the writer credential for `secret.custody_violation` (deviation T16-1, SEC-F002-34); it was remediated before G6 by the `audit.record_custody_violation()` function (audit/0002), so SEC-F002-02 and -26 are met as designed.
 - **Shard** = `source` in Phase 0 (`control-plane`, `model-gateway`, `agent-host-local`, …); one chain per `(org_id, shard)`. Genesis `prev_hash` = 32 zero bytes.
 - [AR-5] `event_hash = SHA-256(JCS(AuditEvent))`, built by one function `rowToEnvelope()` shared by the sealer and `verifyChain()`, so the canonical form comes from the stored row, never from the request. Canonical form: RFC 8785 over the envelope with **null or absent fields omitted** (adding a nullable column later does not change older hashes); `details` limited to I-JSON (RFC 7493), refused at ingest with `422`; `ts` as RFC 3339 UTC with 3 fractional digits and `Z`; `schema_version` included. Unit vectors cover an event before and after a new nullable column is added (ADR-0021, clarified 2026-09-25).
 - `hash = SHA-256(prev_hash ‖ event_hash)`.
@@ -1390,7 +1390,7 @@ Why: the only option that runs the same way on-prem, air-gapped and in dev is a 
 | OpenBao policy (role) | Entry point / identity | Allowed |
 |---|---|---|
 | `ralysa-cp-serve` | `serve` | `read` `kv/data/ralysa/control-plane/db/{cp_app,audit_writer,audit_reader}`, `…/idp-client-secret`, `…/audit-hmac`; `update` `transit/sign/ralysa-rts-signing`; `read` `transit/keys/ralysa-rts-signing`, `transit/keys/ralysa-svc-*` (public keys) |
-| `ralysa-cp-sealer` | `sealer` | `read` `…/db/audit_sealer`; `update` `transit/sign/ralysa-audit-checkpoint`; `read` `transit/keys/ralysa-audit-checkpoint` |
+| `ralysa-cp-sealer` | `sealer` | `read` `…/db/audit_sealer`; `update` `transit/sign/ralysa-audit-checkpoint`; `read` `transit/keys/ralysa-audit-checkpoint` (no writer credential: deviation T16-1 remediated by audit/0002, SEC-F002-34) |
 | `ralysa-cp-migrate` | `migrate` job | `read` `…/db/migrator`, `…/db/audit_writer` |
 | `ralysa-cp-migrate-audit` | `migrate --audit` job (break-glass) | `read` `…/db/audit_migrator`, `…/db/audit_writer` |
 | `ralysa-cp-verify` | `audit-verify` | `read` `…/db/audit_reader`; `read` `transit/keys/ralysa-audit-checkpoint` |

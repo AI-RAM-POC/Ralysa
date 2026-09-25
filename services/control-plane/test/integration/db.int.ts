@@ -51,7 +51,7 @@ describe.skipIf(stack === undefined)('database (F-002-T05)', () => {
   beforeAll(async () => {
     db = await createTestDatabase(stack!);
     const first = await db.migrate(ORG_A);
-    expect(first.audit.applied).toEqual(['0001_audit_store']);
+    expect(first.audit.applied).toEqual(['0001_audit_store', '0002_custody_violation_fn']);
     expect(first.cp.applied).toEqual([
       '0001_schemas_and_rls_helpers',
       '0002_cp_identity',

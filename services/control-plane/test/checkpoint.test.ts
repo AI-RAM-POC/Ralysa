@@ -4,29 +4,30 @@ import { webcrypto } from 'node:crypto';
 import { checkpointPayload } from '@ralysa/protocol/audit';
 import { createInMemoryKeyCustody } from '@ralysa/secrets';
 import { describe, expect, it } from 'vitest';
-import type { StoredEventInput } from '../src/audit/columns.js';
-import { createCheckpointSigner } from '../src/audit/sealer/checkpoint.js';
+import {
+  type CustodyFlags,
+  type CustodyRecorder,
+  createCheckpointSigner,
+} from '../src/audit/sealer/checkpoint.js';
 import { parseCheckpointLog } from '../src/audit/verify/audit-verify.js';
-import type { AuditWriter } from '../src/audit/writer.js';
 import { parseConfig } from '../src/config/load.js';
 import { AuditVerifyConfig, SealerConfig } from '../src/config/schema.js';
 import { silentLogger } from '../src/observability/logger.js';
 
 const ORG = '0192f0a0-7b3c-7d4e-8f00-00000000000f';
 
-function recordingWriter() {
-  const events: StoredEventInput[] = [];
-  const writer: AuditWriter = {
-    write: (_org, e) => {
-      events.push(...e);
-      return Promise.resolve(e.map((x) => ({ event_id: x.event_id, status: 'stored' as const })));
-    },
-    writeOrSpool: (_org, e) => {
-      events.push(...e);
-      return Promise.resolve({ results: [] });
-    },
+function recordingRecorder(failures = 0) {
+  const calls: { flags: CustodyFlags }[] = [];
+  let remainingFailures = failures;
+  const recordViolation: CustodyRecorder = (flags) => {
+    calls.push({ flags });
+    if (remainingFailures > 0) {
+      remainingFailures--;
+      return Promise.reject(new Error('audit store down'));
+    }
+    return Promise.resolve(true);
   };
-  return { writer, events };
+  return { recordViolation, calls };
 }
 
 describe('checkpoint signer and custody monitor', () => {
@@ -34,8 +35,8 @@ describe('checkpoint signer and custody monitor', () => {
     const custody = createInMemoryKeyCustody();
     await custody.rotate('ralysa-audit-checkpoint');
     await custody.rotate('ralysa-audit-checkpoint');
-    const { writer } = recordingWriter();
-    const signer = createCheckpointSigner({ custody, orgId: ORG, writer, logger: silentLogger });
+    const { recordViolation } = recordingRecorder();
+    const signer = createCheckpointSigner({ custody, recordViolation, logger: silentLogger });
     expect(signer.healthy()).toBe(false); // not polled yet: never sign blind
     await expect(signer.poll()).resolves.toBe(true);
     const payload = checkpointPayload({
@@ -61,37 +62,73 @@ describe('checkpoint signer and custody monitor', () => {
   });
 
   it.each([
-    [{ exportable: true }, 'exportable'],
-    [{ allowPlaintextBackup: true }, 'allow_plaintext_backup'],
+    [{ exportable: true }, { exportable: true, allowPlaintextBackup: false }],
+    [{ allowPlaintextBackup: true }, { exportable: false, allowPlaintextBackup: true }],
+    [
+      { exportable: true, allowPlaintextBackup: true },
+      { exportable: true, allowPlaintextBackup: true },
+    ],
   ] as const)(
-    'a runtime flip of %o stops signing and writes ONE secret.custody_violation',
-    async (flags, flag) => {
+    'a runtime flip of %o stops signing and records the violation with both flags once (SEC-F002-40)',
+    async (set, recorded) => {
       const custody = createInMemoryKeyCustody();
       await custody.rotate('ralysa-audit-checkpoint');
-      const { writer, events } = recordingWriter();
-      const signer = createCheckpointSigner({ custody, orgId: ORG, writer, logger: silentLogger });
+      const { recordViolation, calls } = recordingRecorder();
+      const signer = createCheckpointSigner({ custody, recordViolation, logger: silentLogger });
       await signer.poll();
-      custody.setFlags('ralysa-audit-checkpoint', flags);
+      custody.setFlags('ralysa-audit-checkpoint', set);
       await expect(signer.poll()).resolves.toBe(false);
       await expect(signer.poll()).resolves.toBe(false);
       expect(signer.healthy()).toBe(false);
       await expect(signer.sign(new Uint8Array([1]))).rejects.toThrow(/custody/);
-      expect(events).toHaveLength(1);
-      expect(events[0]).toMatchObject({
-        action: 'secret.custody_violation',
-        outcome: 'error',
-        actor: { type: 'system', service: 'sealer' },
-        details: { key: 'ralysa-audit-checkpoint', flag },
-      });
-      // Restored: signing resumes.
-      custody.setFlags('ralysa-audit-checkpoint', {
-        exportable: false,
-        allowPlaintextBackup: false,
-      });
-      await expect(signer.poll()).resolves.toBe(true);
-      expect(signer.healthy()).toBe(true);
+      expect(calls).toEqual([{ flags: recorded }]);
     },
   );
+
+  it('a violation is terminal: the key reading clean again never resumes signing (SEC-F002-35 a, -37)', async () => {
+    const custody = createInMemoryKeyCustody();
+    await custody.rotate('ralysa-audit-checkpoint');
+    const { recordViolation } = recordingRecorder();
+    const signer = createCheckpointSigner({ custody, recordViolation, logger: silentLogger });
+    await signer.poll();
+    custody.setFlags('ralysa-audit-checkpoint', { exportable: true });
+    await signer.poll();
+    // Only possible in the double (OpenBao can't clear the flag): the key "recreated" clean.
+    custody.setFlags('ralysa-audit-checkpoint', { exportable: false });
+    await expect(signer.poll()).resolves.toBe(false);
+    expect(signer.healthy()).toBe(false);
+    await expect(signer.sign(new Uint8Array([1]))).rejects.toThrow(/custody/);
+  });
+
+  it('retries recording on every poll until the database confirms it (SEC-F002-39)', async () => {
+    const custody = createInMemoryKeyCustody();
+    await custody.rotate('ralysa-audit-checkpoint');
+    const { recordViolation, calls } = recordingRecorder(2);
+    const signer = createCheckpointSigner({ custody, recordViolation, logger: silentLogger });
+    await signer.poll();
+    custody.setFlags('ralysa-audit-checkpoint', { exportable: true });
+    await signer.poll(); // fails
+    await signer.poll(); // fails
+    await signer.poll(); // recorded
+    await signer.poll(); // already recorded: no call
+    expect(calls).toHaveLength(3);
+  });
+
+  it('a second flag appearing later is a new pair and is recorded too', async () => {
+    const custody = createInMemoryKeyCustody();
+    await custody.rotate('ralysa-audit-checkpoint');
+    const { recordViolation, calls } = recordingRecorder();
+    const signer = createCheckpointSigner({ custody, recordViolation, logger: silentLogger });
+    await signer.poll();
+    custody.setFlags('ralysa-audit-checkpoint', { exportable: true });
+    await signer.poll();
+    custody.setFlags('ralysa-audit-checkpoint', { allowPlaintextBackup: true });
+    await signer.poll();
+    expect(calls.map((c) => c.flags)).toEqual([
+      { exportable: true, allowPlaintextBackup: false },
+      { exportable: true, allowPlaintextBackup: true },
+    ]);
+  });
 });
 
 describe('sealer and audit-verify configs (SEC-F002-02)', () => {
@@ -109,31 +146,29 @@ describe('sealer and audit-verify configs (SEC-F002-02)', () => {
   };
   const kv = (key: string) => `kv/ralysa/control-plane/db/${key}`;
 
-  it('the sealer names its own credential and the insert-only writer, nothing else', () => {
+  it('the sealer names its own credential only; a writer credential is refused (T9, SEC-F002-34)', () => {
     const config = parseConfig(SealerConfig, {
       ...common,
-      db_credentials: { audit_sealer: kv('audit_sealer'), audit_writer: kv('audit_writer') },
+      db_credentials: { audit_sealer: kv('audit_sealer') },
     });
     expect(config).toMatchObject({
       checkpoint_interval_s: 60,
       custody_poll_s: 30,
       interval_ms: 1000,
     });
-    expect(() =>
-      parseConfig(SealerConfig, {
-        ...common,
-        db_credentials: {
-          audit_sealer: kv('audit_sealer'),
-          audit_writer: kv('audit_writer'),
-          migrator: kv('migrator'),
-        },
-      }),
-    ).toThrow(/Unrecognized key/);
+    for (const extra of ['audit_writer', 'migrator']) {
+      expect(() =>
+        parseConfig(SealerConfig, {
+          ...common,
+          db_credentials: { audit_sealer: kv('audit_sealer'), [extra]: kv(extra) },
+        }),
+      ).toThrow(/Unrecognized key/);
+    }
     expect(() =>
       parseConfig(SealerConfig, {
         ...common,
         checkpoint_key: 'ralysa-rts-signing',
-        db_credentials: { audit_sealer: kv('audit_sealer'), audit_writer: kv('audit_writer') },
+        db_credentials: { audit_sealer: kv('audit_sealer') },
       }),
     ).toThrow();
   });

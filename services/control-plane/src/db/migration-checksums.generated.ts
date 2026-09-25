@@ -8,6 +8,9 @@ export const MIGRATION_CHECKSUMS: Readonly<Record<string, { sha256: string }>> =
   'audit/0001_audit_store.ts': {
     sha256: '270c76df980ce8167085281f12641165c0c9e9c30ed8e4e545070057e8747cce',
   },
+  'audit/0002_custody_violation_fn.ts': {
+    sha256: 'd372cdd6db7d640e47f7c3a6a8e98a002516930d3b0a73264c7965d9a4b2e01e',
+  },
   'cp/0001_schemas_and_rls_helpers.ts': {
     sha256: '1b3b30e86b3c6d6ab229449a099460a46a63f192fa542e8f9f7a697d3361fc42',
   },

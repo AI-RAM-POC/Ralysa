@@ -121,21 +121,25 @@ export async function readSeals(
   orgId: string,
   shard: string,
 ): Promise<StoredSeal[]> {
-  const rows = await withOrg(db, orgId, (trx) =>
-    trx
-      .selectFrom('audit.audit_seal as s')
-      .innerJoin('audit.audit_event as e', 'e.event_id', 's.event_id')
-      .selectAll('e')
-      .select([
-        's.seq as seal_seq',
-        's.event_hash as seal_event_hash',
-        's.prev_hash as seal_prev_hash',
-        's.hash as seal_hash',
-        's.sealed_at as seal_sealed_at',
-      ])
-      .where('s.shard', '=', shard)
-      .orderBy('s.seq')
-      .execute(),
+  const rows = await withOrg(
+    db,
+    orgId,
+    (trx) =>
+      trx
+        .selectFrom('audit.audit_seal as s')
+        .innerJoin('audit.audit_event as e', 'e.event_id', 's.event_id')
+        .selectAll('e')
+        .select([
+          's.seq as seal_seq',
+          's.event_hash as seal_event_hash',
+          's.prev_hash as seal_prev_hash',
+          's.hash as seal_hash',
+          's.sealed_at as seal_sealed_at',
+        ])
+        .where('s.shard', '=', shard)
+        .orderBy('s.seq')
+        .execute(),
+    { readOnly: true },
   );
   return rows.map(
     ({ seal_seq, seal_event_hash, seal_prev_hash, seal_hash, seal_sealed_at, ...event }) => ({

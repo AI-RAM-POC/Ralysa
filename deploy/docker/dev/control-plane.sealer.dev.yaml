@@ -22,4 +22,3 @@ db:
 checkpoint_key: ralysa-audit-checkpoint
 db_credentials:
   audit_sealer: kv/ralysa/control-plane/db/audit_sealer
-  audit_writer: kv/ralysa/control-plane/db/audit_writer

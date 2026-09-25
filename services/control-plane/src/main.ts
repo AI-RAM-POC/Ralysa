@@ -14,7 +14,7 @@ import { parseArgs } from 'node:util';
 import { Source } from '@ralysa/protocol/audit';
 import { CustodyViolationError } from '@ralysa/secrets';
 import { migrationAppliedEvents } from './audit/events.js';
-import { createCheckpointSigner } from './audit/sealer/checkpoint.js';
+import { createCheckpointSigner, dbCustodyRecorder } from './audit/sealer/checkpoint.js';
 import { runSealerLoop } from './audit/sealer/sealer.js';
 import { auditVerify, parseCheckpointLog } from './audit/verify/audit-verify.js';
 import { createAuditWriter } from './audit/writer.js';
@@ -119,25 +119,19 @@ async function sealerCommand(args: string[]): Promise<number> {
     },
     { applicationName: 'ralysa-control-plane:sealer', max: 2 },
   );
-  const writerPool = createPool(
-    config.db,
-    {
-      user: 'ralysa_audit_writer',
-      password: async () => (await secrets.get(config.db_credentials.audit_writer)).value,
-    },
-    { applicationName: 'ralysa-control-plane:sealer', max: 1 },
-  );
+  const sealerDb = createDb<Database>(pool);
   const controller = new AbortController();
   for (const signal of ['SIGTERM', 'SIGINT'] as const) {
     process.once(signal, () => {
       controller.abort();
     });
   }
+  // Custody violations are recorded through audit.record_custody_violation() on the sealer's
+  // own pool: the sealer holds no writer credential (SEC-F002-34).
   const signer = createCheckpointSigner({
     custody: keys,
     key: config.checkpoint_key,
-    orgId: config.org.id,
-    writer: createAuditWriter({ db: createDb<Database>(writerPool) }),
+    recordViolation: dbCustodyRecorder(sealerDb, config.org.id),
     logger,
   });
   logger.info('sealer_started', {
@@ -147,7 +141,7 @@ async function sealerCommand(args: string[]): Promise<number> {
   });
   try {
     await runSealerLoop({
-      db: createDb<Database>(pool),
+      db: sealerDb,
       orgId: config.org.id,
       intervalMs: config.interval_ms,
       sweepEveryMs: config.sweep_interval_s * 1000,
@@ -160,7 +154,7 @@ async function sealerCommand(args: string[]): Promise<number> {
       },
     });
   } finally {
-    await Promise.all([pool.end(), writerPool.end()]);
+    await pool.end();
   }
   logger.info('sealer_stopped');
   return 0;

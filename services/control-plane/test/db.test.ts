@@ -8,7 +8,10 @@ import { WRITER_COLUMNS } from '../src/db/migrations/audit/0001_audit_store.js';
 
 describe('migration sets', () => {
   it('are ordered, up-only and keep their history in the ralysa_meta schemas', () => {
-    expect(Object.keys(MIGRATION_SETS.audit.migrations)).toEqual(['0001_audit_store']);
+    expect(Object.keys(MIGRATION_SETS.audit.migrations)).toEqual([
+      '0001_audit_store',
+      '0002_custody_violation_fn',
+    ]);
     expect(Object.keys(MIGRATION_SETS.cp.migrations)).toEqual([
       '0001_schemas_and_rls_helpers',
       '0002_cp_identity',
