@@ -9,7 +9,8 @@
   },
   "exports": {
     "./check-contrast": "./src/check-contrast.ts",
-    "./check-i18n": "./src/check-i18n.ts"
+    "./check-i18n": "./src/check-i18n.ts",
+    "./node-engine": "./src/node-engine.ts"
   },
   "scripts": {
     "build": "echo \"@ralysa/repo-scripts: runs from source on Node 24 (type stripping), nothing to build\"",

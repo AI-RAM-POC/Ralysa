@@ -906,6 +906,54 @@ The `quality` job of PR #17 (run 36137033999) failed twice; neither showed up lo
 | 5 | `T.tsx`: literal invisible characters (U+2068, U+2069, U+E000, U+E001). | Written as `\u` escapes, and the marker regex gets the `u` flag. The same fix is applied to the literal controls in `test/text.test.tsx` and `test/font-coverage.test.ts`. A scan of `packages/ui` and both apps finds no others. | The existing `<T>` / `isolate()` and font-coverage tests pass unchanged. |
 | 6 | `workspace-dir.test.ts`: the driver matched lint results to files by index. | Results are keyed by `result.filePath` (absolute; the driver resolves each argument), and a missing result throws. | The same 3 tests pass. |
 
+## T13: Playwright harness and the `ui-e2e` job (branch `feat/F-001-e2e`)
+
+### What landed
+
+- **Harness** in `apps/ui-lab`: `playwright.config.ts` (projects `chromium`, and `firefox` for the keyboard spec; `vite preview` servers for the ui-lab and `apps/web` production builds on 127.0.0.1:4173/4174), `e2e/global-setup.ts` (Node check, builds present), and helpers: `fixtures.ts` (automatic console guard, `openLab`), `axe.ts` (WCAG 2.0/2.1 A+AA, fails on serious/critical, attaches every violation as JSON), `keyboard.ts` (the walker), `catalogs.ts`, `urls.ts`.
+- **Specs:** `a11y` (TC-F-001-20: showcase, whole gallery, tokens × en/ar × light/dark = 12 scans, plus a gallery-coverage guard), `a11y-selftest` (TC-F-001-21), `keyboard` (TC-F-001-24, chromium and firefox), `locale` (TC-F-001-11), `mirroring` (TC-F-001-13), `no-demo-in-web` (TC-F-001-28), `harness-selftest` (walker and console-guard self-tests).
+- **CI job `ui-e2e`** in the image `mcr.microsoft.com/playwright:v1.63.0-noble@sha256:eff16c30…a4a27` with `--ipc=host --init`: checkout, pre-install gate, `check-node-engine.ts`, pnpm, `turbo run build --filter=@ralysa/ui-lab... --filter=@ralysa/web`, `playwright test`, report and `test-results` upload on failure (7 days). `required-checks.json` adds `ui-e2e`.
+- **Local runner** `apps/ui-lab/scripts/e2e-container.sh` (`pnpm --filter @ralysa/ui-lab e2e:container`): the same image digest, a hermetic copy of the files git knows about, frozen install, build, Playwright; the report comes back to `playwright-report/`.
+- **`check-node-engine.ts`** and `node-engine.ts` in `@ralysa/repo-scripts` (AR-4 b), exported as `@ralysa/repo-scripts/node-engine` for the global setup.
+- **`check-ci-invariants`** now reads every `apps/ui-lab/scripts/*.sh` for Playwright image references (it read only `e2e-update.sh`, which T14 adds), and the digest check is live: the job and `e2e-container.sh` share one digest.
+- Local result (container, linux/arm64, 2026-09-25): **61 passed** (61 tests; the 2 Firefox backward-walk cases pass as expected failures, T13-11), about 25 s of test time after install and build.
+
+### Versions (npm registry and MCR, 2026-09-25)
+
+| Package / image | Design | Pinned | Evidence |
+|---|---|---|---|
+| `@playwright/test` | 1.63.x | **1.63.0** (catalog) | Published 2026-09-04 (21 days). **Deviation from the 30-day policy**, as with Vite 8.3.0: the design names the 1.63 line, and 1.62.1 would not match the pinned image's browsers. 1.64 is alpha only. No install scripts (browsers come from the image); `strictDepBuilds` passed with `allowBuilds` unchanged. |
+| `@axe-core/playwright` | 4.13.x | **4.13.0** (catalog) | Published 2026-08-11 (45 days); `axe-core` 4.13.0. MPL-2.0. |
+| Playwright image | `v1.63.0-noble` by digest | `sha256:eff16c30e6f3f4af0a03fa4b706120d5e9b0891c344a27d64559aff5900a4a27` | The **multi-arch index** digest (amd64 `bc6ab0d6…`, arm64 `a0f44989…`), so CI (amd64) and Apple-silicon machines resolve the same pinned image. Node **v24.20.0** inside, which satisfies `engines.node` `>=24.12 <25`, so no Node setup step is needed (AR-4 b); git and corepack are present. |
+
+### Recorded decisions and deviations
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T13-1 | Design detail | `a11y.spec.ts` scans the **whole** gallery page (`?view=components`, every example of every component) in each configuration, rather than one URL per component. A coverage test requires at least 20 components and 30 examples on that page. | The same examples in fewer page loads; the coverage guard stops an empty gallery from passing axe vacuously. |
+| T13-2 | Deviation (T09-9) | TC-F-001-13 reads the computed **`scale`** (`-1 1` in ar, `none` in en) with `transform: none`, instead of `transform: matrix(-1, 0, 0, 1, 0, 0)`. | Tailwind v4's `rtl:-scale-x-100` sets the `scale` property. Same visual result. |
+| T13-3 | Implementation choice | The walker treats a roving-tabindex group (Radix RadioGroup) as one tab stop: the focused item maps to its nearest indexed ancestor (the group element, `tabindex=0`, which forwards focus). | That is how Radix builds the one-stop group; without it the walker reported the group as skipped and the item as unknown. |
+| T13-4 | Implementation choice | "Tab past the end leaves the page" accepts two endings: focus leaves the document (Chromium: `<body>`), or it **stays** on the last element (Playwright's Firefox has no browser UI to move to). A trap is focus returning to an **earlier** stop, which fails. | Checked in both engines; the self-test proves a real trap is still caught (`cycled`). |
+| T13-5 | Implementation choice | RadioGroup arrow keys are held for 100 ms (`down`, wait, `up`) instead of `press`. | Radix moves focus in a task after keydown and checks the item only while an arrow key is down; an instant press releases first. A person's key press lasts longer. |
+| T13-6 | Implementation choice | Arabic Select typeahead dispatches one `keydown` per letter (with `key` = the letter) to the focused element. Latin uses `keyboard.type`. | Playwright's keyboard knows only the US layout: other characters are inserted as text with no keydown, which a typeahead never sees. The typed prefix is computed as the shortest one unique among the options, since every Arabic department starts with "ال". A physical Arabic layout stays with the manual TC-F-001-25. |
+| T13-7 | Fix found while testing | `vite preview` binds `--host 127.0.0.1`, and the servers start through `node node_modules/vite/bin/vite.js`, not `pnpm exec`. | In the container `localhost` resolved to `::1`, so the server never answered on 127.0.0.1; and with `pnpm exec` the run finished but hung, because stopping the wrapper didn't stop Vite. |
+| T13-8 | Addition to the design's file list | `e2e/harness-selftest.spec.ts`: the walker detects a trap, a reading-order violation, a missing ring and a faint ring; the console guard fails a test on an uncaught error (`test.fail`). | "Harness self-tests" in T13; §8.4 names only the axe one (TC-F-001-21). Each check that could fail silently now has a fixture that makes it fail. |
+| T13-9 | Implementation choice | The Node check is `tooling/repo-scripts/src/check-node-engine.ts` (built-ins only, run before pnpm in `ui-e2e`) and is repeated in the E2E global setup. | AR-4 b asks to confirm the image's Node; failing before `corepack enable` gives the clearest message. |
+| T13-10 | Implementation choice | The local runner is `scripts/e2e-container.sh`; T14's `e2e-update.sh` will call it with snapshot writing on. `check-ci-invariants` reads every `apps/ui-lab/scripts/*.sh`. | One place for the image digest outside CI. The runner copies the files `git ls-files --cached --others --exclude-standard` lists, so the host's macOS `node_modules` and `dist/` never enter the Linux container. |
+| T13-11 | **Defect found (open), D-F001-E2E-1** | In Playwright's Firefox, **Shift+Tab can't leave the Radix RadioGroup** backwards: focus lands on the group element, which hands it straight back to the checked item. Chromium is fine. The backward-walk test is `test.fail` in Firefox (so it turns red once fixed) and still gates in Chromium; the forward walk gates in both. | Not confirmed in a stock Firefox (none on the build machine; Playwright's Firefox is patched). If a stock Firefox reproduces it, it is a WCAG 2.1.2 keyboard trap in `RadioGroup` (packages/ui, Radix `RovingFocusGroup`) and needs a fix before release. Tracked for the manual TC-F-001-25 run. |
+| T13-12 | CI detail | `ui-e2e` sets `HOME=/root`. | GitHub sets `HOME=/github/home` in container jobs, and Firefox refuses to start as root under a home it doesn't own. |
+
+### Not done in this PR
+
+- **TC-F-001-25** (manual keyboard-only run in en and ar, including Safari) is **not recorded**: it needs a person at a keyboard. It must also confirm or clear D-F001-E2E-1 in a stock Firefox.
+- The first `ui-e2e` run on GitHub (amd64) is the first run on CI's platform; the local runs were linux/arm64.
+
+### Tests added (T13)
+
+- The seven spec files above (61 tests across chromium and firefox; the 2 Firefox backward walks are expected failures, T13-11).
+- `tooling/repo-scripts/test/node-engine.test.ts` (16): each supported comparator form, out-of-range versions, unsupported forms throw (all comparators are parsed before any is evaluated), and the CLI passes on the real repo.
+- `tooling/repo-scripts/test/check-ci-invariants.test.ts` (+2): the real `ui-e2e` job and `e2e-container.sh` share one digest; a stray digest in any `apps/ui-lab/scripts/*.sh` fails.
+
 ## Version confirmations (npm registry, 2026-09-25 ~08:20 UTC)
 
 Policy (§2.2): the latest patch of a line GA for at least 30 days, and `minimumReleaseAge` holds back anything under 3 days old. Cut-off for the 3-day rule: 2026-09-22T08:20Z.
@@ -945,7 +993,7 @@ No dependency added by T01 to T03 runs a build script: `allowBuilds` is still `{
   - Native-speaker review of every `ar` string (OQ-D8, still open externally). After T12: 95 catalog strings open in the three `review.json` files (`ui` 24, `web` 1, `lab` 70), plus the 20 Arabic samples in `apps/ui-lab/src/samples/arabic-samples.json`.
   - `color.bg.surfaceRaised`: done in T11 (T06-5).
   - Bump `jsdom` to 30.1.1 once it is outside the 3-day window.
-  - TC-F-001-11 (E2E locale switch) and the Playwright console listener for runtime missing keys arrive with T13.
+  - TC-F-001-11 (E2E locale switch) and the Playwright console listener for runtime missing keys: done in T13.
 - **T09 to T12 follow-ups (for T13 and T14):**
   - TC-F-001-13 should read the mirrored icon's computed `scale` (`-1 1`), not `transform` (T09-9).
   - The AC-13 E2E (TC-F-001-28, `vite preview` of `apps/web` at `/ui-lab`, `/demo`, `?view=showcase`) is T13's; `check-no-demo` (TC-F-001-27) covers the build output now.

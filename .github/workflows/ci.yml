@@ -134,6 +134,66 @@ jobs:
           path: ${{ runner.temp }}/secret-scan-reports
           if-no-files-found: ignore
 
+  # Playwright E2E (F-001 design §8.2; T13, T14): axe, keyboard, locale, mirroring and the AC-13
+  # apps/web preview spec, against `vite preview` of the production builds. Runs in the pinned
+  # Playwright image: the digest must equal apps/ui-lab/scripts/e2e-container.sh's
+  # (check-ci-invariants, ci/playwright-digest), so local runs and baselines match CI. Browsers
+  # are in the image, so nothing is downloaded. Parallel with quality; builds through Turbo.
+  ui-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      image: mcr.microsoft.com/playwright:v1.63.0-noble@sha256:eff16c30e6f3f4af0a03fa4b706120d5e9b0891c344a27d64559aff5900a4a27
+      options: --ipc=host --init
+    env:
+      # GitHub sets HOME=/github/home in containers; Firefox refuses to start as root under a
+      # HOME it doesn't own.
+      HOME: /root
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # Before ANY pnpm command (ci/pre-install-gate-first). The image's own Node runs it.
+      - name: Pre-install config gate
+        run: node tooling/repo-scripts/src/pre-install-gate.ts
+      # AR-4 b: the image brings its own Node; stop here if it is outside engines.node.
+      - name: Node satisfies engines.node
+        run: node tooling/repo-scripts/src/check-node-engine.ts
+      - name: Enable pnpm through Corepack
+        run: |
+          corepack enable
+          pnpm --version
+      - name: Locate pnpm store
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-e2e-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: pnpm-store-e2e-${{ runner.os }}-
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/cache@v4
+        with:
+          path: .turbo/cache
+          key: turbo-e2e-${{ runner.os }}-${{ github.sha }}
+          restore-keys: turbo-e2e-${{ runner.os }}-
+      - name: Build ui-lab and web
+        run: pnpm exec turbo run build --filter=@ralysa/ui-lab... --filter=@ralysa/web
+      - name: Playwright
+        working-directory: apps/ui-lab
+        run: pnpm exec playwright test
+      # The HTML report holds traces, failure screenshots, image diffs and every axe JSON.
+      - name: Upload the Playwright report
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            apps/ui-lab/playwright-report
+            apps/ui-lab/test-results
+          if-no-files-found: ignore
+          retention-days: 7
+
   # Service-backed tests (test:integration, F-002 design §8.5). Postgres and OpenBao come from the
   # same compose file developers use, so dev and CI can't drift (D-19, AR-13). The job runs PR
   # code, so it is least-privilege (SEC-F002-27): read-only token, no persisted credentials, no

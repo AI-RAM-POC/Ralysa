@@ -31,6 +31,8 @@ trustPolicyExclude:
 
 # One version per shared toolchain package, referenced as "catalog:" (architect review AR-7).
 catalog:
+  '@axe-core/playwright': 4.13.0
+  '@playwright/test': 1.63.0
   '@radix-ui/react-direction': 1.1.4
   '@tailwindcss/vite': 4.3.3
   '@types/node': 24.13.6

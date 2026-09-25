@@ -7,6 +7,8 @@
     "build": "vite build",
     "check:generated": "i18next-cli types --quiet",
     "dev": "vite",
+    "e2e": "playwright test",
+    "e2e:container": "sh scripts/e2e-container.sh",
     "lint": "eslint . && stylelint \"**/*.css\" --allow-empty-input && i18next-cli extract --ci --dry-run --quiet",
     "preview": "vite preview",
     "test": "vitest run",
@@ -20,6 +22,8 @@
     "react-i18next": "catalog:"
   },
   "devDependencies": {
+    "@axe-core/playwright": "catalog:",
+    "@playwright/test": "catalog:",
     "@ralysa/eslint-config": "workspace:*",
     "@ralysa/repo-scripts": "workspace:*",
     "@ralysa/stylelint-config": "workspace:*",

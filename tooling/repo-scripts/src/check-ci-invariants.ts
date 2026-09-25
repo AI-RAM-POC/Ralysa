@@ -6,8 +6,9 @@
 // - A job that scans a commit range or history checks out with `fetch-depth: 0`.
 // - Every direct gitleaks call passes --config (workflows, .githooks and tooling/repo-scripts/bin).
 // - The `secret-scan` job runs no install and no build.
-// - Every Playwright image reference is pinned by digest, and all use the same digest (CI and
-//   apps/ui-lab/scripts/e2e-update.sh), once T13/T14 add them.
+// - Every Playwright image reference is pinned by digest, and all use the same digest (the CI
+//   ui-e2e job and every script in apps/ui-lab/scripts/: e2e-container.sh, which e2e-update.sh
+//   runs).
 // F-002-T02 (design §2, §8.5; SEC-F002-27, -28):
 // - `ci/pre-install-gate-first`: in every job of every workflow, the pre-install gate runs before
 //   anything that invokes a package manager: a `run` line calling pnpm, pnpx, npx, npm, yarn,
@@ -24,7 +25,7 @@ import { type Finding, isRecord, readJson, readYaml } from './lib/repo.ts';
 
 const WORKFLOWS_DIR = '.github/workflows';
 const PLAYWRIGHT_IMAGE = /mcr\.microsoft\.com\/playwright:[^\s'"`]+/g;
-const E2E_UPDATE = 'apps/ui-lab/scripts/e2e-update.sh';
+const E2E_SCRIPTS_DIR = 'apps/ui-lab/scripts';
 /** A gitleaks subcommand invocation: `gitleaks dir|git|detect|protect|directory|file|stdin`. */
 const GITLEAKS_CALL = /\bgitleaks(?:["']|\s)+(?:dir|git|detect|protect|directory|file|stdin)\b/;
 const RANGE_SCAN = /secret-scan(?:-cli\.ts)?["']?\s+(?:pr|history)\b/;
@@ -276,7 +277,7 @@ export function checkCiInvariants(files: CiFiles): Finding[] {
     findings.push({
       rule: 'ci/playwright-digest',
       path: [...new Set([...images.values()].flat())].join(', '),
-      message: `CI and e2e-update.sh must use one Playwright image digest; found ${String(digests.size)}`,
+      message: `CI and apps/ui-lab/scripts must use one Playwright image digest; found ${String(digests.size)}`,
     });
   }
   return findings;
@@ -294,7 +295,11 @@ function readScripts(root: string): Map<string, string> {
       add(`${dir}/${entry}`);
     }
   }
-  add(E2E_UPDATE);
+  if (existsSync(join(root, E2E_SCRIPTS_DIR))) {
+    for (const entry of readdirSync(join(root, E2E_SCRIPTS_DIR)).sort()) {
+      if (entry.endsWith('.sh')) add(`${E2E_SCRIPTS_DIR}/${entry}`);
+    }
+  }
   return scripts;
 }
 

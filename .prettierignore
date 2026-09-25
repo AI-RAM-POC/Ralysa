@@ -19,3 +19,5 @@ docs/
 
 # Unchanged by F-001 (hardening deferred with T25, design §11.8)
 .github/workflows/release.yml
+test-results/
+playwright-report/
