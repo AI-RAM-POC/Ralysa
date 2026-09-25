@@ -329,3 +329,61 @@ Checked for later tasks and **not added**, because no code uses them yet: `kysel
 |---|---|---|
 | OI-1 | The DDL event trigger attributes an event to the caller's `app.org_id`, else the single organization, else the nil UUID (T05-5). Once there are several orgs, a DDL statement belongs to no org. This needs a system scope or one event per org. | Revisit with multi-org (F-006+); the DDL change must also be recorded for off-host log checks. |
 | OI-2 | `KvPath` in the config accepts `<any mount>/ralysa/control-plane/…` but isn't cross-checked against `vault.kv_mount`. | F-002-T07 (config work): a refinement at load time. It must be a load-time check, not a zod refinement, because R-6 bans refinements on wire schemas. |
+
+## T06: audit core
+
+Branch `feat/F-002-audit-core`, stacked on `feat/F-002-secrets-db-audit` (#19).
+
+### What landed
+
+- `src/audit/columns.ts`: `toColumns()` maps the envelope to the `audit_event` columns (the writer's side). `StoredEventInput` is the input envelope plus the server-assigned `source`, `attestation` and `client_seq`.
+- `src/audit/sealer/chain.ts`: `rowToEnvelope()` (the only way back from a row), `rowEventHash()`, `verifySeals()` (reports the first divergent seq, with a reason of `seq_gap`, `prev_hash_mismatch`, `event_hash_mismatch` or `hash_mismatch`), and `verifyChain(db, org, shard)`.
+- `src/audit/writer.ts`: `createAuditWriter()`.
+  - `write()` fails closed with savepoint inserts, `23505` → `duplicate`, a 250 ms bound (JS race plus a transaction-local `statement_timeout`), and `AuditUnavailableError`.
+  - `writeOrSpool()` sends the batch to the spool on unavailability.
+  - `validateStoredEvent()` applies the strict input schema, I-JSON, `failure` only on `auth.*`, and `client_seq` only on client events.
+- `src/audit/spool.ts`, `src/audit/rejections.ts`, and `src/audit/events.ts` (the `systemEvent`, `tokenRejectedEvent` and `migrationAppliedEvents` builders).
+- `src/audit/sealer/sealer.ts`: `sealOnce()` (per-shard transaction with `pg_try_advisory_xact_lock`, head, 10,000-row lookback with an anti-join, batch of 1,000, lag gauge; the sweep drops the lookback and counts `audit_seal_late_total`) and `runSealerLoop()`.
+- `main.ts`: the `sealer` entry point (`SealerConfig`: `audit_sealer` credential only). Both migrate jobs now write `db.migration.applied` through the writer role.
+- `@ralysa/protocol/common` `uuidv7()` (RFC 9562), used for control-plane event ids.
+- `src/observability/`: `Metrics` and `Logger` ports with no-op, in-memory and JSON-line implementations.
+
+### Recorded decisions and deviations
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T06-1 | Deviation from §2.2 | UUIDv7 comes from a 20-line `uuidv7()` in `@ralysa/protocol/common` (WebCrypto randomness), not the `uuid` package. | One small, fully tested function is less supply-chain surface than a dependency, and the protocol package is isomorphic anyway. |
+| T06-2 | Scope split with T16 | `SealerConfig` has `interval_ms`, `sweep_interval_s` and `db_credentials.audit_sealer`. T16 adds `checkpoint_key` and `checkpoint_interval_s` when the sealer starts signing. | Checkpoints are T16's (design §10). |
+| T06-3 | Design gap, filled | Metrics and logs go through minimal ports (`Metrics.increment/gauge`, a JSON-line `Logger`). T07 binds them to the service's exporter and pino with its redaction. | The design names the metrics (`audit_write_failures_total`, `audit_spool_lost_total`, `audit_seal_lag_seconds`, `audit_seal_late_total`) but the service's metrics and logging stack is T07's. |
+| T06-4 | Interpretation | "Seal lag" is the age of the oldest event sealed in a pass, measured on the database clock at sealing. Above 5 s the loop logs `audit_seal_lag_high`. The alert itself is on the gauge. | §4.6 sets the target (≤ 5 s) and the metric but not how it's measured. The database clock avoids host skew. |
+| T06-5 | Interpretation | `writeOrSpool()` spools only on `AuditUnavailableError`. An invalid event (a programming error) is thrown, never spooled. The spool isn't wired to an entry point yet: `serve` (T07) opens it with `persistent` from config. | A bad event can never become valid, so spooling it would just replay a failure forever. |
+| T06-6 | Implementation choice | `auth.token_rejected` has `actor.type=user` with every id null (the caller is unauthenticated), plus `details.client_network` (the /24 or /64 aggregation key) alongside `client_ip`. | The catalogue lists `audience`, `reason`, `client_ip` and `suppressed_count`. The network makes the summary rows auditable. |
+| T06-7 | Implementation choice | If `db.migration.applied` can't be written after the migrations committed, the migrate job exits 1 with "migrations applied but db.migration.applied was not recorded". | SR-29 requires the migration path to be audited. The migrations can't be undone, so a visible failure is the honest outcome, and the job is one-shot and operator-run. |
+| T06-8 | Hardening | `validateStoredEvent` rejects `client_seq` on a server-attested event and reserved keys under `details.client`. | Server provenance stays unambiguous ahead of T12's client path. |
+
+### Tests (T06)
+
+- **Unit** (39 new cases):
+  - `audit-chain.test.ts`:
+    - **the stored row hashes to the protocol's frozen golden vector** (`939a8a46…`, and chain `18c0ae2e…`), so `toColumns` → row → `rowToEnvelope` round-trips byte-exactly;
+    - absent and null fields hash alike;
+    - `ts` always has 3 digits and `Z`;
+    - structured members and bigint map back;
+    - every value change changes the hash;
+    - `verifySeals` accepts an intact chain and pinpoints a changed event, a broken link, a missing seal and a wrong `prev_hash`.
+  - `audit-writer.test.ts`: validation refusals; UUIDv7 system events; `db.migration.applied` with the lock checksum (`unknown` when absent); `auth.token_rejected` with and without `suppressed_count`.
+  - `audit-spool.test.ts`: directory `0700` and files `0600`; replay order, `original_ts` and `spooled`, then deletion; stop-and-keep on failure; a symlinked directory refused; `audit_spool_lost_total` only when not persistent.
+  - `audit-rejections.test.ts`: /24 and /64, including mapped IPv4 and `::`; 20 then a summary with `suppressed_count`; per-key isolation; the 600 per minute instance cap.
+- **Integration** (`test/integration/audit.int.ts`, 11 cases):
+  - `db.migration.applied` for all 5 migrations with checksums;
+  - store and duplicate (a duplicate mid-batch doesn't fail it) [AR-8];
+  - **fail-closed in under 1 s** while the table is locked, with the metric incremented;
+  - **a spooled denial replayed** with `details.server.spooled` and `original_ts` [SEC-F002-24];
+  - the aggregator writes 2 events and then one summary with `suppressed_count=3`;
+  - all shards sealed and `verifyChain` ok, and a second pass is a no-op;
+  - **the running loop seals a new event within 5 s**;
+  - **three concurrent sealers (two pools, batch 7) never fork: 30 seals and a valid chain** [SEC-F002-26];
+  - **a late-committing event is sealed on the next pass** at seq 2;
+  - **a superuser rewrite of a sealed event (triggers disabled) is reported at seq 2 as `event_hash_mismatch`**, and the event trigger recorded the `ALTER TABLE`s [AR-6];
+  - the sealer role can't update seals or insert events.
+- **Manual:** the built CLI against the dev database. `migrate:audit:dev` and `migrate:dev` recorded 5 `db.migration.applied` events. `start:sealer` sealed the 66 events in the `control-plane` shard, including the DDL events from the migrations, and stopped cleanly on SIGTERM (exit 0).

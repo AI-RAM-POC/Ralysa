@@ -81,4 +81,16 @@ export const MigrateAuditConfig = z.strictObject({
 });
 export type MigrateAuditConfig = z.infer<typeof MigrateAuditConfig>;
 
-export type CommonConfig = MigrateConfig | MigrateAuditConfig;
+/**
+ * The sealer process (§4.6; SEC-F002-02, -26): only the audit_sealer credential. T16 adds the
+ * checkpoint key and cadence (`checkpoint_key`, `checkpoint_interval_s`).
+ */
+export const SealerConfig = z.strictObject({
+  ...Common,
+  interval_ms: z.int().min(100).max(60_000).default(1000),
+  sweep_interval_s: z.int().min(60).max(86_400).default(3600),
+  db_credentials: z.strictObject({ audit_sealer: KvPath }),
+});
+export type SealerConfig = z.infer<typeof SealerConfig>;
+
+export type CommonConfig = MigrateConfig | MigrateAuditConfig | SealerConfig;
