@@ -16,7 +16,8 @@
 | 2026-09-25 | 2 | **Architect review applied**: "Architect review notes" section (Part A) inserted; body edits [AR-1] to [AR-18] (RC-1 to RC-12); ADR-0021 and ADR-0025 clarified (wording only). AD-1 to AD-4 accepted with conditions. G3 escalations listed (ADR-0004 decision 4, proposed ADR-0030, ADR-0031). **Security review applied** ([security.md](./security.md), copied verbatim): all ten §5 required changes (SEC-F002-01 to -08, -11 to -15) plus Q1, Q2 and Q8 decided under the standing authorization: Transit-signed chain-head checkpoints and `audit-verify` brought into F-002 (new task T16); flow-B callback/redemption IP mismatch denied by default; switching device code off revokes flow-A sessions. Dedicated `ralysa_audit_owner` role and a break-glass audit-migration path; per-entry-point OpenBao policies and configs; per-service audit action allow-list; consume-first IdP-token replay key; GUID-only groups with Graph always authoritative; runtime custody monitoring; single `env` source with production guards; enforced mock-IdP exclusion; server-issued client-audit sessions. Low and Info findings (SEC-F002-09, -10, -16 to -33) added to task Definitions of Done. OQ-D1, -D2, -D3, -D4, -D5, -D7, -D8 decided. AC→design→test table and task list updated. |
 | 2026-09-25 | 3 | Implementation feedback (F-002-T08, code review of #26), recorded under the standing authorization: §3.5 `auth.session.revoked` gains cause `not_in_access_group` and is written only when a revocation changed something. The governance feed's `cursor` lags `issued_at` by 60 s, and revocation transactions are capped at 15 s so that overlap always covers them (implementation notes T08-1, R26-3). |
 | 2026-09-26 | 4 | Implementation feedback (F-002-T10), recorded under the standing authorization: §3.5 `auth.sign_in` gains `error: internal_error` for a signing or database fault that ends an attempt (every attempt is audited exactly once, AC-4); an IdP token issued before Entra's `signInSessionsValidFromDateTime` is refused at sign-in as `failure expired` with `details.cause = idp_sessions_revoked`; §4.4 `cp.authorization_code` gains `sign_in jsonb` (migration cp/0006), the callback's facts for the success event written at redemption (implementation notes T10-2, T10-4, T10-22). |
-| 2026-09-26 | 5 | Implementation feedback (F-002-T12), recorded under the standing authorization: §3.4.4 `auth.token_rejected` reports from services are aggregated per service at the control plane and answered `aggregated` (a new `ServiceEventsResponse` status; `TokenRejectedReportDetails` in the protocol); `source` comes from the service name, and a registered service whose name is not an audit `Source` can write no audit. §3.4.5 a null client `outcome` is stored as `success`; the 503 body is problem+json with `acks` (`ClientEventsUnavailable`); gaps become final after 15 min idle and the unterminated sweep uses 24 h without an event. §3.6 `@ralysa/auth` gains `createServiceTokenVerifier` and `createRejectionReporter` (implementation notes T12-2, T12-7 to T12-16). |
+| 2026-09-26 | 5 | Implementation feedback (F-002-T12 part 1, T11-11), recorded under the standing authorization: §3.6 `@ralysa/auth` gains `createServiceTokenVerifier` (the same header, signature and claim checks for `token_use: service` tokens, `aud: control-plane`, registered clients only), and the control plane uses both package verifiers over its own JWKS rows with a database `RevocationSource`; a database fault there is 503, never `auth.token_rejected` (implementation notes T12-2 to T12-6, R32-1 to R32-4). |
+| 2026-09-26 | 6 | Implementation feedback (F-002-T12 part 2), recorded under the standing authorization: §3.4.4 `auth.token_rejected` reports from services are aggregated per service at the control plane and answered `aggregated` (a new `ServiceEventsResponse` status; `TokenRejectedReportDetails` in the protocol); `source` comes from the service name, and a registered service whose name is not an audit `Source` can write no audit. §3.4.5 a null client `outcome` is stored as `success`; the 503 body is problem+json with `acks` (`ClientEventsUnavailable`); gaps become final after 15 min idle and the unterminated sweep uses 24 h without an event. §3.6 `@ralysa/auth` gains `createRejectionReporter` (implementation notes T12-7 to T12-21). |
 
 ---
 
@@ -547,7 +548,7 @@ Response `201 { results: [{ event_id, status: 'stored' | 'duplicate' }] }`. Erro
 | Body fails the schema, or `details` is not I-JSON | `422` |
 | Insert fails or exceeds 250 ms | `503` with problem type `audit_unavailable` |
 
-*Implementation note (rev 5, T12):* `auth.token_rejected` events from a service go through a per-service rejection aggregator (§6.4) and are answered `aggregated`; `source` is derived from the service name (`agent-host` → `agent-host-server`), and a service whose name is not a `Source` value can write no audit (403, `audit.ingest_rejected reason_code=no_audit_source`).
+*Implementation note (rev 6, T12):* `auth.token_rejected` events from a service go through a per-service rejection aggregator (§6.4) and are answered `aggregated`; `source` is derived from the service name (`agent-host` → `agent-host-server`), and a service whose name is not a `Source` value can write no audit (403, `audit.ingest_rejected reason_code=no_audit_source`).
 
 Services must set `actor` only to the validated user of the request they serve (observability-audit §3.3). F-002 can check existence, not provenance (residual, §6.4). F-004 uses this API, not a direct INSERT (D-35).
 
@@ -611,7 +612,7 @@ Server rules (observability-audit §3.3):
 - If the insert fails or exceeds 250 ms, the response is `503` with `ack=false` for every intent, so the honest host runs no local tool (G-5, G-6) [SEC-F002-14].
 - Limit: 600 events per minute per user.
 - These events never count toward the 100 % model and remote-tool audit NFR.
-- *Implementation note (rev 5, T12):* a null `outcome` is stored as `success` (the envelope's `outcome` is required); the 503 body is problem+json with `acks`; the unterminated sweep flags sessions with no event for 24 h.
+- *Implementation note (rev 6, T12):* a null `outcome` is stored as `success` (the envelope's `outcome` is required); the 503 body is problem+json with `acks`; the unterminated sweep flags sessions with no event for 24 h.
 
 #### 3.4.6 Audit query (AC-12)
 
@@ -745,6 +746,13 @@ export function createAccessTokenVerifier(opts: {
   clockSkewSeconds?: number;          // default 30
   onReject?: (r: { reason: TokenRejectReason; clientIp?: string; traceId?: string }) => void;
 }): { verify(bearer: string): Promise<VerifyResult> };
+
+/** Rev 5 (T12): the control plane verifies service tokens with the same checks. */
+export function createServiceTokenVerifier(opts: {
+  issuer: string; jwksUrl: string; kidPrefix: string; orgId?: string;
+  isRegistered?: (clientId: string) => boolean;   // unregistered → wrong_token_use
+  keySet?: KeyResolver; onReject?: (r: RejectInfo) => void;
+}): { verify(bearer: string): Promise<ServiceVerifyResult> };
 
 export function createRevocationFeed(opts: {
   url: string; serviceTokens: ServiceTokenSource; pollMs?: number /* 5000 */; staleAfterMs?: number /* 60000 */;
