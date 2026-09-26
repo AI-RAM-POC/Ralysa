@@ -1,0 +1,50 @@
+{
+  "$comment": "H-2 merge-gate scenarios. The test repo's origin/main holds .github/required-checks.json (a copy of the real one) plus mainFiles; the PR is a real commit pushed to origin as refs/pull/12/head, made by 'change' (modify: paths written; rename: [from, to] pairs of files that exist on main; many: N extra files). '<head>' stands for that commit's SHA. 'base' is a PR that may be merged: open, not a draft, feature branch into main, the code-reviewer marker for its head, and every required check passing (plus one skipped check). Each scenario changes one thing. prPatch replaces PR fields (changedFiles defaults to git's count); checksPatch sets a check's bucket; checksRemove drops checks; worktreeFiles are written to the working tree but not committed.",
+  "base": {
+    "pr": {
+      "state": "OPEN",
+      "isDraft": false,
+      "baseRefName": "main",
+      "headRefName": "feat/F-001-x",
+      "headRefOid": "<head>",
+      "comments": [{ "body": "Approve.\n\ncode-reviewer: APPROVED head=<head>" }]
+    },
+    "change": { "modify": ["packages/ui/src/index.ts"] },
+    "extraChecks": [{ "name": "optional-lint", "state": "SKIPPED", "bucket": "skipping" }]
+  },
+  "scenarios": {
+    "ok": {},
+    "ui-e2e-pending": { "checksPatch": { "ui-e2e": "pending" } },
+    "required-check-missing": { "checksRemove": ["ui-e2e"] },
+    "check-failed": { "checksPatch": { "quality": "fail" } },
+    "head-moved": { "prPatch": { "headRefOid": "2222222222222222222222222222222222222222" } },
+    "no-marker-for-head": {
+      "prPatch": { "comments": [{ "body": "code-reviewer: APPROVED head=2222222222222222222222222222222222222222" }] }
+    },
+    "draft": { "prPatch": { "isDraft": true } },
+    "count-mismatch": { "prPatch": { "changedFiles": 150 } },
+    "touches-claude-settings": { "change": { "modify": ["packages/ui/src/index.ts", ".claude/settings.json"] } },
+    "touches-claude-md": { "change": { "modify": ["CLAUDE.md"] } },
+    "touches-codeowners": { "change": { "modify": [".github/CODEOWNERS"] } },
+    "touches-required-checks": { "change": { "modify": [".github/required-checks.json"] } },
+    "touches-githooks": { "change": { "modify": [".githooks/pre-commit"] } },
+    "touches-repo-scripts-bin": { "change": { "modify": ["tooling/repo-scripts/bin/install-tool.sh"] } },
+    "touches-release-workflow": { "change": { "modify": [".github/workflows/release.yml"] } },
+    "renames-out-of-claude": { "change": { "rename": [[".claude/settings.json", "docs/settings.json"]] } },
+    "many-files": { "change": { "modify": [], "many": 101 } },
+    "many-files-hiding-claude": { "change": { "modify": [".claude/agents/extra.md"], "many": 100 } },
+    "required-checks-from-main": {
+      "checksPatch": { "ui-e2e": "pending" },
+      "worktreeFiles": { ".github/required-checks.json": "[\"quality\"]\n" }
+    },
+    "codeowners-path-no-review": {
+      "mainFiles": { ".github/CODEOWNERS": "/tooling/ @owner\n" },
+      "change": { "modify": ["tooling/repo-scripts/src/new-check.ts"] }
+    },
+    "codeowners-path-reviewed": {
+      "mainFiles": { ".github/CODEOWNERS": "/tooling/ @owner\n" },
+      "change": { "modify": ["tooling/repo-scripts/src/new-check.ts"] },
+      "prPatch": { "comments": [{ "body": "code-reviewer: APPROVED head=<head> protected-paths-reviewed" }] }
+    }
+  }
+}
