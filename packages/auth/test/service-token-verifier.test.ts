@@ -128,4 +128,13 @@ describe('createServiceTokenVerifier', () => {
     await expect(v.verify(await mintService())).rejects.toBeInstanceOf(VerifierUnavailableError);
     expect(rejections).toEqual([]);
   });
+
+  it('VerifierUnavailableError carries the key set fault as its cause (R32 follow-up)', async () => {
+    const fault = new Error('database down');
+    const v = verifier({ keySet: () => Promise.reject(fault) });
+    const error = await v.verify(await mintService()).catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(VerifierUnavailableError);
+    expect((error as Error).cause).toBe(fault);
+    expect((error as Error).message).not.toContain('database down');
+  });
 });

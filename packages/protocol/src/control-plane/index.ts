@@ -15,6 +15,7 @@ export {
   ClientEventsUnavailable,
   IngestStatus,
   IntentAck,
+  ServiceAuditEventInput,
   ServiceEventsRequest,
   ServiceEventsResponse,
   ServiceIngestStatus,

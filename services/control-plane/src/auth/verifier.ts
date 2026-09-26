@@ -56,8 +56,12 @@ export function createDbRevocationSource(db: Kysely<Database>, orgId: string): R
             .executeTakeFirst(),
         { readOnly: true },
       );
-    } catch {
-      throw new VerifierUnavailableError('the revocation state could not be read');
+    } catch (error) {
+      // The fault goes along as the cause, so route-auth can log a scrubbed summary of it (R32
+      // follow-up); the message stays generic.
+      throw new VerifierUnavailableError('the revocation state could not be read', {
+        cause: error,
+      });
     }
   };
   return {

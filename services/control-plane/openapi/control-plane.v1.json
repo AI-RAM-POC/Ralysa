@@ -1517,8 +1517,7 @@
                       "properties": {
                         "event_id": {
                           "type": "string",
-                          "format": "uuid",
-                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                         },
                         "client_seq": {
                           "type": "integer",
@@ -2458,8 +2457,7 @@
                       "properties": {
                         "event_id": {
                           "type": "string",
-                          "format": "uuid",
-                          "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                          "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
                         },
                         "action": {
                           "type": "string",
@@ -3345,7 +3343,7 @@
         }
       },
       "get": {
-        "summary": "Audit query (AC-12): session role platform_admin and a current admin-group membership; audit.query is committed before any result is read; keyset paging on (ts, event_id)",
+        "summary": "Audit query (AC-12): session role platform_admin and a current admin-group membership; audit.query is committed before any result is read; keyset paging on (ts, event_id), not a snapshot: an event committed late with a ts before the last key already read is not on the next page, and re-running the query over the same range returns it",
         "tags": [
           "audit"
         ],

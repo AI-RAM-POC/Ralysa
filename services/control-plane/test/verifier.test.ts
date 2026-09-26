@@ -8,7 +8,9 @@ import { buildApp } from '../src/app.js';
 import type { Rejection } from '../src/audit/rejections.js';
 import { createClientRegistry } from '../src/auth/clients.js';
 import { mintAccessToken } from '../src/auth/tokens/mint.js';
+import { VERIFIER_UNAVAILABLE_LOG_EVERY_MS } from '../src/auth/route-auth.js';
 import { createControlPlaneVerifier, createOwnKeySet } from '../src/auth/verifier.js';
+import { createPinoLogger } from '../src/observability/pino.js';
 import { fakeKeys } from './fixtures/fake-keys.js';
 import { fakeRts } from './fixtures/fake-rts.js';
 import { ORG_ID, serveConfig } from './fixtures/serve-config.js';
@@ -109,13 +111,27 @@ describe('route authentication', () => {
         size: () => ({ keys: 0, overflow: 0 }),
       },
     });
+    const lines: string[] = [];
     const instance = await buildApp({
       config: serveConfig(),
       keys: fake.keys,
       rts,
+      logger: createPinoLogger('info', { write: (line: string) => lines.push(line) }),
       pingDatabase: () => Promise.resolve(true),
     });
-    return { instance, rejected, fake };
+    const unavailable = () =>
+      lines
+        .map(
+          (line) =>
+            JSON.parse(line) as {
+              msg?: string;
+              route?: string;
+              suppressed?: number;
+              error?: Record<string, unknown>;
+            },
+        )
+        .filter((line) => line.msg === 'verifier_unavailable');
+    return { instance, rejected, fake, lines, unavailable };
   }
 
   it('a bare token (no Bearer scheme) is malformed and recorded under the config org', async () => {
@@ -156,6 +172,70 @@ describe('route authentication', () => {
     expect(res.statusCode).toBe(503);
     expect(res.json()).toMatchObject({ code: 'temporarily_unavailable' });
     expect(rejected).toEqual([]);
+  });
+
+  it('a revocation read fault is logged once at warn with its cause, and no token (R32 follow-up)', async () => {
+    const { instance, fake, lines, unavailable } = await app();
+    const token = await mintAccessToken(fake.keys, userClaims());
+    const res = await instance.inject({
+      url: '/v1/me',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(res.statusCode).toBe(503);
+    const logged = unavailable();
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatchObject({ level: 'warn', token_kind: 'user' });
+    // The cause (the database fault), not the generic wrapper.
+    expect(logged[0]?.error?.type).not.toBe('VerifierUnavailableError');
+    expect(lines.join('\n')).not.toContain(token);
+    expect(lines.join('\n')).not.toContain(token.split('.')[1] ?? token);
+  });
+
+  it('a key set fault is logged with a scrubbed summary of its cause and no token (R32 follow-up)', async () => {
+    const { instance, fake, lines, unavailable } = await app();
+    const token = await mintAccessToken(fake.keys, serviceClaims());
+    // A fault whose message carries the token itself: the summary must scrub it.
+    fake.keys.jwks = () => Promise.reject(new Error(`jwks rows unreadable near ${token}`));
+    const res = await instance.inject({
+      url: '/v1/internal/governance',
+      headers: { authorization: `Bearer ${token}` },
+    });
+    expect(res.statusCode).toBe(503);
+    const logged = unavailable();
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toMatchObject({
+      level: 'warn',
+      token_kind: 'service',
+      error: { type: 'Error', message: expect.stringContaining('jwks rows unreadable') as string },
+    });
+    expect(lines.join('\n')).not.toContain(token);
+    expect(lines.join('\n')).not.toContain(token.split('.')[1] ?? token);
+  });
+
+  it('verifier_unavailable is written at most once per route per window, with the skipped count (R35 nit)', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const { instance, fake, unavailable } = await app();
+      const token = await mintAccessToken(fake.keys, serviceClaims());
+      fake.keys.jwks = () => Promise.reject(new Error('database down'));
+      const hit = async (url: string) =>
+        (await instance.inject({ url, headers: { authorization: `Bearer ${token}` } })).statusCode;
+      for (let i = 0; i < 3; i++) expect(await hit('/v1/internal/governance')).toBe(503);
+      // Another route has its own window.
+      expect(await hit('/v1/internal/principals/0192f0a0-7b3c-7d4e-8f00-000000000001')).toBe(503);
+      expect(unavailable().map((l) => [l.route, l.suppressed])).toEqual([
+        ['/v1/internal/governance', undefined],
+        ['/v1/internal/principals/:user_id', undefined],
+      ]);
+      vi.setSystemTime(Date.now() + VERIFIER_UNAVAILABLE_LOG_EVERY_MS);
+      expect(await hit('/v1/internal/governance')).toBe(503);
+      expect(unavailable().at(-1)).toMatchObject({
+        route: '/v1/internal/governance',
+        suppressed: 2,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('an unreadable key set answers 503 and records no rejection', async () => {

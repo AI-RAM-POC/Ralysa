@@ -1,0 +1,86 @@
+name: Soak
+
+# TC-F-002-16 (AC-10, F-002-T13, design §8.1): the 10-minute rotation soak at production timings
+# (key_poll_s 30, activation_delay_s 120, IdP secret poll 60 s). Run by hand before G6, never on
+# push or pull_request: it takes about 15 minutes and proves nothing a PR changes faster than the
+# compressed TC-F-002-15 in CI.
+on:
+  workflow_dispatch:
+
+# One soak per ref at a time; a second dispatch queues, it never cancels a running soak.
+concurrency:
+  group: soak-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CI: '1'
+  TURBO_TELEMETRY_DISABLED: '1'
+  DO_NOT_TRACK: '1'
+  COREPACK_ENABLE_DOWNLOAD_PROMPT: '0'
+
+jobs:
+  # Same shape and the same least-privilege rules as the CI `integration` job (SEC-F002-27): a
+  # read-only token, no persisted credentials, no repository secrets (the dev-stack credentials are
+  # generated per run), container logs from Postgres only (the OpenBao dev server prints its root
+  # token), and artefacts kept at most 3 days.
+  soak:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      RALYSA_REQUIRE_DEV_STACK: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      # Before ANY pnpm command (ci/pre-install-gate-first).
+      - name: Pre-install config gate
+        run: node tooling/repo-scripts/src/pre-install-gate.ts
+      - name: Enable pnpm through Corepack
+        run: |
+          corepack enable
+          pnpm --version
+      - name: Locate pnpm store
+        id: pnpm-store
+        run: echo "path=$(pnpm store path --silent)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ${{ steps.pnpm-store.outputs.path }}
+          key: pnpm-store-${{ runner.os }}-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: pnpm-store-${{ runner.os }}-
+      - run: pnpm install --frozen-lockfile
+      # Throwaway random credentials for this run only; each value is masked in the log.
+      - name: Generate dev-stack credentials
+        run: node tooling/dev-stack/src/cli.ts env --out deploy/docker/dev/.env --github-mask
+      - name: Start Postgres and OpenBao
+        run: docker compose -f deploy/docker/dev/compose.yaml --env-file deploy/docker/dev/.env up -d --wait postgres openbao
+      - name: Bootstrap the dev stack
+        run: node tooling/dev-stack/src/cli.ts bootstrap --env-file deploy/docker/dev/.env
+      - name: Build the control plane and its dependencies
+        run: pnpm exec turbo run build --filter=@ralysa/control-plane...
+      - name: Rotation soak (TC-F-002-16)
+        env:
+          RALYSA_SOAK_REPORT: ${{ runner.temp }}/rotation-soak.json
+        run: pnpm --filter @ralysa/control-plane run test:soak
+      # Counts, timings, kids and versions only: no token or secret is in the report.
+      - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
+        with:
+          name: rotation-soak-report
+          path: ${{ runner.temp }}/rotation-soak.json
+          if-no-files-found: warn
+          retention-days: 3
+      - name: Container logs on failure
+        if: ${{ failure() }}
+        run: docker compose -f deploy/docker/dev/compose.yaml --env-file deploy/docker/dev/.env logs --no-color postgres > "$RUNNER_TEMP/compose.log"
+      - uses: actions/upload-artifact@v4
+        if: ${{ failure() }}
+        with:
+          name: soak-logs
+          path: ${{ runner.temp }}/compose.log
+          if-no-files-found: ignore
+          retention-days: 3

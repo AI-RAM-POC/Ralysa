@@ -1,7 +1,12 @@
 // Key activation timing (§3.2.4; AC-10): publish-then-activate, first key at once, pin, JWKS
 // retention of a superseded key.
 import { describe, expect, it } from 'vitest';
-import { type KeyRow, jwksRows, selectActiveVersion } from '../src/auth/tokens/signing-keys.js';
+import {
+  type KeyRow,
+  jwksRows,
+  selectActiveVersion,
+  versionsToSupersede,
+} from '../src/auth/tokens/signing-keys.js';
 
 const jwk = { kty: 'EC' as const, crv: 'P-256' as const, x: 'x', y: 'y' };
 const t0 = Date.parse('2026-09-25T10:00:00Z');
@@ -59,5 +64,42 @@ describe('jwksRows', () => {
     ];
     expect(jwksRows(rows, at(0), timing).map((r) => r.version)).toEqual([3, 2, 1]);
     expect(jwksRows(rows, at(1200), timing).map((r) => r.version)).toEqual([3, 2]);
+  });
+});
+
+describe('versionsToSupersede (T07 follow-up, review of #35)', () => {
+  it('three versions at the first poll: v3 activates, v1 and v2 (never active) are superseded and leave JWKS after retention', () => {
+    const published = [row(1), row(2), row(3)];
+    expect(selectActiveVersion(published, at(0), timing)).toBe(3);
+    expect(versionsToSupersede(published, 3)).toEqual([1, 2]);
+    const after = [
+      row(1, { superseded_at: at(0) }),
+      row(2, { superseded_at: at(0) }),
+      row(3, { activated_at: at(0) }),
+    ];
+    expect(jwksRows(after, at(1), timing).map((r) => r.version)).toEqual([3, 2, 1]);
+    expect(jwksRows(after, at(1200), timing).map((r) => r.version)).toEqual([3]);
+    // Without the fix, a never-active version kept superseded_at null and stayed for ever.
+    expect(jwksRows(published, at(1_000_000), timing).map((r) => r.version)).toEqual([3, 2, 1]);
+  });
+
+  it('two rotations within one poll: the skipped version is superseded with the old active one', () => {
+    const rows = [
+      row(1, { activated_at: at(-600) }),
+      row(2, { published_at: at(0) }),
+      row(3, { published_at: at(0) }),
+    ];
+    expect(selectActiveVersion(rows, at(120), timing)).toBe(3);
+    expect(versionsToSupersede(rows, 3)).toEqual([1, 2]);
+  });
+
+  it('never supersedes a newer version, an already superseded one or a retired one', () => {
+    const rows = [
+      row(1, { retired_at: at(-10) }),
+      row(2, { superseded_at: at(-100) }),
+      row(3),
+      row(5),
+    ];
+    expect(versionsToSupersede(rows, 4)).toEqual([3]);
   });
 });

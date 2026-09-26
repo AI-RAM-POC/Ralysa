@@ -3,14 +3,23 @@
 import { z } from 'zod';
 import { Audience, TokenRejectReason } from '../auth/claims.js';
 import { Problem } from '../common/errors.js';
-import { Sha256Hex, SpanId, TraceId } from '../common/ids.js';
+import { Sha256Hex, SpanId, TraceId, UuidV7 } from '../common/ids.js';
 import { CLIENT_ACTION_ALLOWLIST } from '../audit/client-allowlist.js';
 import { AuditEvent, AuditEventInput, IJson, Outcome } from '../audit/envelope.js';
 
 // ---- Service path: POST /v1/audit/events (AC-11) ----
 
+/**
+ * A service's event: the envelope input with a version 7 `event_id` only. Server-derived version 8
+ * ids (secret.rotated, sign-in failure reports, client-session events) can't be pre-empted
+ * through this route (R35-1). The writer validates stored events with `AuditEventInput`, which
+ * still accepts them.
+ */
+export const ServiceAuditEventInput = AuditEventInput.extend({ event_id: UuidV7 });
+export type ServiceAuditEventInput = z.infer<typeof ServiceAuditEventInput>;
+
 export const ServiceEventsRequest = z.strictObject({
-  events: z.array(AuditEventInput).min(1).max(100),
+  events: z.array(ServiceAuditEventInput).min(1).max(100),
 });
 export type ServiceEventsRequest = z.infer<typeof ServiceEventsRequest>;
 
@@ -45,7 +54,8 @@ export type TokenRejectedReportDetails = z.infer<typeof TokenRejectedReportDetai
 // ---- Client-attested path: POST /v1/audit/client-events (AC-16) ----
 
 export const ClientAuditEventInput = z.strictObject({
-  event_id: z.uuid(),
+  /** Version 7 only (R35-1): the server's derived ids are version 8. */
+  event_id: UuidV7,
   client_seq: z.int().min(1),
   action: z.enum(CLIENT_ACTION_ALLOWLIST),
   /** Only on `session.ended`: the last `client_seq` of the session, for tail reconciliation. */

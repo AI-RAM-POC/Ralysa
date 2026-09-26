@@ -12,7 +12,9 @@
 //   and writes secret.rotated phase=published;
 // - activate: the newest version whose published_at + activation_delay_s has passed on the
 //   DATABASE clock becomes active (the first key ever is active at once); the replica that sets
-//   activated_at writes phase=activated and marks the previous one superseded;
+//   activated_at writes phase=activated and marks EVERY lower version superseded, including one
+//   that was published but never activated (several versions at the first start, or two
+//   rotations within one poll), so none stays in JWKS for ever (T07 follow-up, review of #35);
 // - retire: a superseded version leaves JWKS once superseded_at + max access TTL + 5 min has
 //   passed (phase=retired). tokens.signing_key_pin_version forces a version (rollback, §9).
 // JWKS is always read from the table, so every replica publishes the same set [SEC-F002-33].
@@ -63,6 +65,17 @@ export function selectActiveVersion(
   );
   if (eligible.length === 0) return undefined;
   return Math.max(...eligible.map((r) => r.version));
+}
+
+/**
+ * The versions to mark superseded when `activated` becomes active: every lower live version not
+ * yet superseded, whether or not it was ever active. Pure (unit-tested).
+ */
+export function versionsToSupersede(rows: readonly KeyRow[], activated: number): number[] {
+  return rows
+    .filter((r) => r.version < activated && r.superseded_at === null && r.retired_at === null)
+    .map((r) => r.version)
+    .sort((a, b) => a - b);
 }
 
 /** The rows JWKS publishes: every live row (incl. published, not yet active), minus expired. */
@@ -305,11 +318,12 @@ export function createSigningKeys(options: SigningKeysOptions): SigningKeys {
               .where('activated_at', 'is', null)
               .returning('kid')
               .executeTakeFirst();
+            // Every lower version (versionsToSupersede), also one that was never active.
             await trx
               .updateTable('cp.signing_key_version')
               .set({ superseded_at: sql<Date>`clock_timestamp()` })
+              .where('kid', 'like', `${options.key.replace(/[\\%_]/g, '\\$&')}.v%`)
               .where('version', '<', next)
-              .where('activated_at', 'is not', null)
               .where('superseded_at', 'is', null)
               .execute();
             return updated !== undefined;

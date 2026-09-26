@@ -19,6 +19,7 @@
     "start:sealer:dev": "node --env-file=../../deploy/docker/dev/.env dist/main.js sealer --config ../../deploy/docker/dev/control-plane.sealer.dev.yaml",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
+    "test:soak": "vitest run --config vitest.soak.config.ts --reporter=verbose",
     "typecheck": "tsc -p tsconfig.json"
   },
   "devDependencies": {

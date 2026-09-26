@@ -1,6 +1,7 @@
 // @ralysa/protocol/control-plane: REST types (F-002 design §3.4; AC-2, AC-4, AC-12, AC-15, AC-16;
 // [AR-18]).
 import { describe, expect, it } from 'vitest';
+import { AuditEventInput } from '../src/audit/envelope.js';
 import {
   AuditQuery,
   AuthConfig,
@@ -165,6 +166,44 @@ describe('audit API', () => {
     expect(
       ServiceEventsRequest.safeParse({ events: Array.from({ length: 101 }, () => event) }).success,
     ).toBe(false);
+  });
+
+  // R35-1: the server derives version 8 ids for its own idempotent events; no external writer may
+  // submit one (or any non-v7 id), so none can be pre-empted.
+  const V8 = '6f1c2e3d-5a6b-8c7d-9e0f-0123456789ab';
+  const V4 = '6f1c2e3d-5a6b-4c7d-9e0f-0123456789ab';
+  it.each([
+    ['v8', V8],
+    ['v4', V4],
+    ['upper-case v7', uuid(1).toUpperCase()],
+  ])('service and client events refuse a %s event_id (R35-1)', (_, id) => {
+    const event = {
+      event_id: id,
+      action: 'model.call.completed',
+      actor: { type: 'service', user_id: null, idp_subject: null, service: 'model-gateway' },
+      outcome: 'success',
+      trace_id: '4bf92f3577b34da6a3ce929d0e0e4736',
+      details: {},
+    };
+    expect(ServiceEventsRequest.safeParse({ events: [event] }).success).toBe(false);
+    expect(
+      ClientEventsRequest.safeParse({
+        events: [{ ...clientEvent(1, 'session.started'), event_id: id }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('the stored envelope still accepts a server-derived v8 event_id (R35-1)', () => {
+    expect(
+      AuditEventInput.safeParse({
+        event_id: V8,
+        action: 'secret.rotated',
+        actor: { type: 'system', user_id: null, idp_subject: null, service: 'rts' },
+        outcome: 'success',
+        trace_id: '4bf92f3577b34da6a3ce929d0e0e4736',
+        details: {},
+      }).success,
+    ).toBe(true);
   });
 
   it.each(['1', '99', '100', '499', '500'])('audit query accepts limit %s', (limit) => {

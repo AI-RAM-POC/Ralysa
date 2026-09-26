@@ -1,8 +1,8 @@
 # F-002: SSO sign-in (OIDC) and control-plane skeleton: Status
 
-- **Current phase:** 5 – Development (T01–T11, T16 and the SEC-F002-34 remediation merged: #18, #19, #21, #23–#30; T12 in review as two stacked PRs, #32 and its follow-up; T13, T14 and T15 next)
+- **Current phase:** 5 – Development (T01–T12, T16 and the SEC-F002-34 remediation merged: #18, #19, #21, #23–#30, #32, #33; T13 in review; T14 in parallel; T15 next)
 - **GitHub issue:** https://github.com/AI-RAM-POC/Ralysa/issues/5
-- **Branch / PR:** `feat/F-002-audit-endpoints` (T12 part 1, #32) and `feat/F-002-audit-routes` (T12 part 2, stacked on it); earlier tasks merged (#18–#30)
+- **Branch / PR:** `feat/F-002-rotation` (T13); earlier tasks merged (#18–#33)
 - **Release:**
 
 ## Open items
@@ -16,6 +16,9 @@
 | CLI message for the ~30 s `revoked_before` window after a revocation (T10 open item) | F-005 | [#31](https://github.com/AI-RAM-POC/Ralysa/issues/31) |
 | Per-instance limits on the audit paths: the client path's 600 events a minute per user, the per-service rejection caps and the report de-duplication multiply with `serve` replicas | F-012 (a shared limiter on Redis) | implementation-notes T12-17, R29-n4 |
 | UAT note: on dual-stack hosts the browser and the CLI may reach RTS over different IP families, so `access.loopback_ip_mismatch: deny` (default) can refuse a genuine flow-B sign-in | UAT (F-002) | implementation-notes R30-n5; the fallback is the tenant setting `alert` |
+| SEC-F002-10: a separate Graph app registration (evaluated, not built) or the preferred certificate credential signed through Transit | Founder decision; needs E-1 (tenant admin consent) | implementation-notes T13-5; the IdP client-secret runbook records expiry (≤ 180 d) in the meantime |
+| `check-ci-invariants` applies the `integration` job's least-privilege and artefact rules only to a job named `integration`; the new `soak` job follows them by hand | `tooling/repo-scripts`, after T14 (which owns it now) | implementation-notes T13-11 |
+| **G6 condition (TC-F-002-16):** dispatch `soak.yml` on `main` after the T13 merge and link the passing run in test-report.md. GitHub dispatches only workflows present on the default branch, so it couldn't run from the T13 branch (T13-13, R35-3) | Before G6: the test engineer (or the release run) dispatches it on `main` | The T13 PR attaches a local run of the same test (0 failures) |
 | SEC-F002-38: without the checkpoint log, tail truncation is invisible (`anchor: none` exit code; require `--log-checkpoints` outside dev; ship the log off-host) | **Blocks any non-dev deployment** | same |
 
 ## Gate log
@@ -24,7 +27,7 @@
 | G2 Scope | brief.md | | | |
 | G4 Design | design.md | Ram Mohan Rao Adduri (standing authorization, recorded by Claude) | 2026-09-25 | Approved |
 | G5 Code review | PR | | | |
-| G6 Quality | test-report.md | | | |
+| G6 Quality | test-report.md | | | Condition: the `soak.yml` run on `main` (TC-F-002-16) is linked (R35-3) |
 | G7 Release candidate | docs/releases/ | | | |
 | G8 UAT sign-off | uat.md | | | |
 
@@ -43,3 +46,5 @@
 | 2026-09-26 | T10 part 1 (flow A: Entra token validator with pinned discovery, consume-first replay key, Microsoft Graph directory with timeouts and circuit breaker, identity mapping with the strong-flow admin rule, the sign-in core with fail-closed audit, the token-exchange grant, the device-code switch, `POST /v1/auth/sign-in-failures`) implemented on `feat/F-002-idp-sign-in`, with the R27-N7 mock fix. TC-F-002-02 (end to end through `@ralysa/auth`, closing T11-1), -03, -04, -08 (flow A), -09, -21, -24, -31 and the flow-A part of -07 pass. Flow B (part 2) follows on a stacked branch. See implementation-notes.md T10. |
 | 2026-09-26 | T10 part 2 (flow B: `openid-client` relying party, `/oauth2/authorize` with the browser-binding cookie, `/oauth2/idp/callback` with `DELETE … RETURNING`, the bound `authorization_code` grant with the redemption-IP check and the success event at redemption; migration `cp/0006`) implemented on `feat/F-002-idp-sign-in-browser`, stacked on part 1. TC-F-002-01, -30, and the flow-B parts of -07, -08 and -31 pass. |
 | 2026-09-26 | T10 (#29, #30) merged; the "no release before T08 and T10" item is closed, and so are TC-F-002-02 end to end (T10) and T11-1. T12 implemented as two stacked PRs. Part 1 (`feat/F-002-audit-endpoints`, #32): the control plane moves onto `@ralysa/auth`'s verifier (new `createServiceTokenVerifier`) with a database `RevocationSource`, which closes T11-11; plus the PR #29 follow-ups (deterministic Graph deadline tests, the `idp_sessions_revoked` exit). Part 2 (`feat/F-002-audit-routes`): `POST /v1/audit/events` (per-service allow-list, `audit.ingest_rejected`, savepoint INSERT, I-JSON), `POST /v1/audit/client-events` (server-issued sessions, `client_seq` gaps and `final_seq`, kill-switch scopes, 503 `ack=false`, rate limit, sweep), `GET /v1/audit/events` (admin session role, `audit.query` committed first, keyset paging), and the service rejection path (`createRejectionReporter` plus per-service aggregation), which closes T11-2. TC-F-002-10 (20 stored events), -17, -18, -22 and -37 pass. See implementation-notes.md T12. |
+| 2026-09-26 | T12 (#32, #33) merged. T13 (rotation) implemented on `feat/F-002-rotation`: the IdP client-secret watcher (`src/secrets/runtime.ts`: 60 s poll, `invalid_client` re-read with one retry on a newer version, `secret.rotated observed` once per version through a derived event id), shared by Graph and flow B; `idp.client_secret_poll_s`; the TC-F-002-15 load harness (two replicas, operator-identity rotations of the Transit key and the IdP secret); `test:soak` and `soak.yml` (`workflow_dispatch`); operator runbooks (signing key, IdP secret with the ≤ 180-day expiry register, break-glass `migrate --audit`); follow-ups R32-F1 (`verifier_unavailable` logged with a scrubbed cause), R33-F1 (paging note in README and OpenAPI) and R33-F2 (stricter audit-lock wait). TC-F-002-15 passes (297 operations, 0 failures); TC-F-002-16 passed locally (10 min, 1,196 operations, 0 failures, new kid after 150 s, new secret after 60 s); it can run from Actions only once `soak.yml` is on `main`. See implementation-notes.md T13. |
+| 2026-09-26 | Code review of #35 (T13) addressed: external audit ingest accepts only v7 `event_id`s, so server-derived v8 ids (`secret.rotated observed`, sign-in failure reports, client-session events) can't be pre-empted (R35-1); the operator read-back check fixed; KV version regression warned; OIDC secret reads bounded at 3 s; `verifier_unavailable` rate-limited; runbook fixes; the T07 signing-key supersede fix (never-activated versions now retire). TC-F-002-16 through `soak.yml` on `main` is a G6 condition. See implementation-notes.md "Code review of PR #35". |

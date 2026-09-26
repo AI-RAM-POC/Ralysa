@@ -10,13 +10,14 @@
 // carries (`_claim_sources`) is dereferenced.
 //
 // Graph is called with an app-only token (client credentials at the pinned tenant's token
-// endpoint, scope https://graph.microsoft.com/.default) using the RTS client secret read from
-// OpenBao KV. The token is cached until 60 s before it expires. `invalid_client` re-reads the
-// secret once (a rotation; the full watcher is F-002-T13). Responses are validated with zod:
-// Graph's answers are external input.
+// endpoint, scope https://graph.microsoft.com/.default) using the RTS client secret from the
+// secret watcher (src/secrets/runtime.ts, F-002-T13). The token is cached until 60 s before it
+// expires. `invalid_client` asks the watcher to re-read the secret at once and retries once, only
+// with a newer version. Responses are validated with zod: Graph's answers are external input.
 import type { SecretStore } from '@ralysa/secrets';
 import { z } from 'zod';
 import type { ServeConfig } from '../../config/schema.js';
+import { type IdpClientSecret, createIdpClientSecret } from '../../secrets/runtime.js';
 import type { Metrics } from '../../observability/metrics.js';
 import { noopMetrics } from '../../observability/metrics.js';
 import type { DirectoryCheck, IdpDirectory } from '../directory-port.js';
@@ -75,7 +76,12 @@ class GraphFailure extends Error {
 
 export interface GraphDirectoryOptions {
   config: Pick<ServeConfig, 'idp' | 'access'>;
-  secrets: SecretStore;
+  /**
+   * The process's secret watcher (serve shares one with the OIDC client). Without it, one is built
+   * over `secrets` that reads on first use and on `invalid_client` only (tests).
+   */
+  clientSecret?: IdpClientSecret;
+  secrets?: SecretStore;
   /** The pinned tenant's token endpoint (from discovery). */
   tokenEndpoint: () => Promise<string>;
   fetch?: typeof fetch;
@@ -104,18 +110,15 @@ export function createGraphDirectory(options: GraphDirectoryOptions): GraphDirec
   let failures = 0;
   let openUntil = 0;
   let appToken: { value: string; until: number } | undefined;
-  let secret: Promise<string> | undefined;
+  const clientSecret =
+    options.clientSecret ??
+    (() => {
+      if (options.secrets === undefined)
+        throw new Error('graph directory: no client secret source');
+      return createIdpClientSecret({ secrets: options.secrets, path: idp.client_secret_path });
+    })();
 
-  const readSecret = (signal: AbortSignal): Promise<string> => {
-    secret ??= options.secrets.get(idp.client_secret_path).then((s) => s.value);
-    const pending = secret.catch((error: unknown) => {
-      secret = undefined;
-      throw error;
-    });
-    return withDeadline(pending, signal);
-  };
-
-  const requestAppToken = async (signal: AbortSignal): Promise<Response> =>
+  const requestAppToken = async (secret: string, signal: AbortSignal): Promise<Response> =>
     doFetch(await withDeadline(options.tokenEndpoint(), signal), {
       method: 'POST',
       headers: {
@@ -125,7 +128,7 @@ export function createGraphDirectory(options: GraphDirectoryOptions): GraphDirec
       body: new URLSearchParams({
         grant_type: 'client_credentials',
         client_id: idp.rts_client_id,
-        client_secret: await readSecret(signal),
+        client_secret: secret,
         scope: GRAPH_SCOPE,
       }).toString(),
       redirect: 'error',
@@ -133,13 +136,16 @@ export function createGraphDirectory(options: GraphDirectoryOptions): GraphDirec
     });
 
   const fetchToken = async (signal: AbortSignal): Promise<string> => {
-    let response = await requestAppToken(signal);
+    const used = await withDeadline(clientSecret.current(), signal);
+    let response = await requestAppToken(used.value, signal);
     if (response.status === 401 || response.status === 400) {
       const body = (await response.json().catch(() => ({}))) as { error?: unknown };
       if (body.error !== 'invalid_client')
         throw new GraphFailure(`token ${String(response.status)}`);
-      secret = undefined; // rotated: read the current version once
-      response = await requestAppToken(signal);
+      // Rotated: the watcher re-reads at once; retry once, and only with a newer version.
+      const next = await withDeadline(clientSecret.refreshAfterInvalidClient(used.version), signal);
+      if (next === undefined) throw new GraphFailure('token invalid_client');
+      response = await requestAppToken(next.value, signal);
     }
     if (!response.ok) throw new GraphFailure(`token ${String(response.status)}`);
     const parsed = TokenResponse.safeParse(await response.json());
