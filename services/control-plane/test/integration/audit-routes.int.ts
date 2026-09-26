@@ -32,6 +32,7 @@ import { ensureOrganization } from '../../src/org/bootstrap.js';
 import { fakeKeys } from '../fixtures/fake-keys.js';
 import { TENANT, serveConfig } from '../fixtures/serve-config.js';
 import { idpSecretObservedEvent } from '../../src/secrets/runtime.js';
+import { type TrackedAuditWriter, trackAuditWriter } from './support/audit-writes.js';
 import { type TestDatabase, createTestDatabase } from './support/db.js';
 
 const stack = await devStackOrSkip();
@@ -69,11 +70,19 @@ describe.skipIf(stack === undefined)('audit endpoints (F-002-T12)', () => {
   let app: FastifyInstance;
   let signing: Awaited<ReturnType<typeof fakeKeys>>;
   let writer: AuditWriter;
-  const pending = new Set<Promise<unknown>>();
-  /** Waits for the fire-and-forget audit writes (rejections, denials) to land. */
+  let audit: TrackedAuditWriter | undefined;
+  /**
+   * Waits for the fire-and-forget audit writes (rejections, denials) to land: their promises AND
+   * their transactions, which can commit after a promise rejected on the 250 ms budget (#43).
+   */
   const settled = async () => {
-    while (pending.size > 0) await Promise.allSettled([...pending]);
+    await audit?.settled();
   };
+  /**
+   * The control plane's clock (its `now`: the client-events per-user limit, the feed cache).
+   * Real time unless a test pins it, so a one-minute window can't roll over mid-test (#43).
+   */
+  let pinnedNow: number | undefined;
   const t = (): TestDatabase => {
     if (db === undefined) throw new Error('beforeAll did not create the database');
     return db;
@@ -276,16 +285,9 @@ describe.skipIf(stack === undefined)('audit endpoints (F-002-T12)', () => {
     cpDb = createDb<Database>(await db.pool('cp_app', 6));
     await ensureOrganization(cpDb, config);
     signing = await fakeKeys();
-    const real = createAuditWriter({ db: createDb<Database>(await db.pool('audit_writer', 4)) });
-    const track = <T>(p: Promise<T>): Promise<T> => {
-      pending.add(p);
-      void p.finally(() => pending.delete(p)).catch(() => undefined);
-      return p;
-    };
-    writer = {
-      write: (org, events) => track(real.write(org, events)),
-      writeOrSpool: (org, events) => track(real.writeOrSpool(org, events)),
-    };
+    const writerPool = await db.pool('audit_writer', 4);
+    audit = trackAuditWriter(createAuditWriter({ db: createDb<Database>(writerPool) }), writerPool);
+    writer = audit.writer;
     app = await buildApp({
       config,
       keys: signing.keys,
@@ -298,6 +300,7 @@ describe.skipIf(stack === undefined)('audit endpoints (F-002-T12)', () => {
         rejections: createRejectionAggregator({
           emit: (r) => void writer.writeOrSpool(ORG, [tokenRejectedEvent(r)]),
         }),
+        now: () => pinnedNow ?? Date.now(),
       },
       rateLimiter: createRateLimiter({ perIpPerMinute: 10_000, globalPerMinute: 10_000 }),
       pingDatabase: () => Promise.resolve(true),
@@ -1102,15 +1105,25 @@ describe.skipIf(stack === undefined)('audit endpoints (F-002-T12)', () => {
     it('600 events a minute per user, then 429', async () => {
       const alice = await seedUser();
       const token = await userToken(alice);
-      const sessionId = await open(token); // 1 event
-      let next = 2;
-      const batch = (n: number) => Array.from({ length: n }, () => cev(next++));
-      for (let i = 0; i < 11; i++)
-        expect((await send(token, sessionId, batch(50))).statusCode).toBe(201);
-      expect((await send(token, sessionId, batch(49))).statusCode).toBe(201); // 600
-      const over = await send(token, sessionId, batch(1));
-      expect(over.statusCode).toBe(429);
-      expect(over.headers['retry-after']).toMatch(/^\d+$/);
+      // The limit is a fixed one-minute window on the control plane's clock. Pinned, the window
+      // can't roll over between the 600th and the 601st event on a slow runner (#43).
+      pinnedNow = Date.now();
+      try {
+        const sessionId = await open(token); // 1 event
+        let next = 2;
+        const batch = (n: number) => Array.from({ length: n }, () => cev(next++));
+        // The limiter counts a batch before it is written, so a batch whose 50-row insert misses
+        // the 250 ms budget on a loaded runner (503) counts like a stored one (T12-17; #43).
+        const accepted = [201, 503];
+        for (let i = 0; i < 11; i++)
+          expect(accepted).toContain((await send(token, sessionId, batch(50))).statusCode);
+        expect(accepted).toContain((await send(token, sessionId, batch(49))).statusCode); // 600
+        const over = await send(token, sessionId, batch(1));
+        expect(over.statusCode).toBe(429);
+        expect(over.headers['retry-after']).toMatch(/^\d+$/);
+      } finally {
+        pinnedNow = undefined;
+      }
     });
 
     it('the sweep: gaps idle for 15 min become final; a session idle for 24 h is unterminated and closed', async () => {
