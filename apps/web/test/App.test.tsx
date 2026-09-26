@@ -22,7 +22,7 @@ async function render(locale: Locale): Promise<string> {
 
 describe('@ralysa/web App', () => {
   it('renders the main landmark with the app name from the web catalog', async () => {
-    expect(await render('en')).toBe('<main id="main" data-app="web"><h1>Ralysa</h1></main>');
+    expect(await render('en')).toBe('<main id="main" data-app="web"><h1>Ralysa-TC-F-001-02-canary</h1></main>');
   });
 
   it('renders the Arabic catalog in ar', async () => {
