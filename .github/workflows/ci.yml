@@ -33,8 +33,15 @@ jobs:
       # Plain node, no packages, no subprocess (tooling/repo-scripts/src/config-gate.ts).
       - name: Pre-install config gate
         run: node tooling/repo-scripts/src/pre-install-gate.ts
-      # TC-F-001-41: the Claude Code guard hook's fixtures (F-001 design §6.3.4). Plain node, no
-      # install: the hook and its tests are dependency-free.
+      # The guard's commit and push fixtures run the real, hash-pinned gitleaks (G-6, G-7).
+      - uses: actions/cache@v4
+        with:
+          path: .tools/gitleaks
+          key: tools-gitleaks-${{ runner.os }}-${{ hashFiles('tooling/repo-scripts/bin/tool-hashes.txt') }}
+      - name: Install gitleaks
+        run: sh tooling/repo-scripts/bin/install-tool.sh gitleaks
+      # TC-F-001-40 and -41: the Claude Code guard hook's fixtures (F-001 design §6.3.4). Plain
+      # node, no install: the hook and its tests are dependency-free.
       - name: Claude Code guard fixtures
         run: node --test '.claude/hooks/test/*.test.mjs'
       # pnpm comes from Corepack, which verifies the sha512 in package.json#packageManager.

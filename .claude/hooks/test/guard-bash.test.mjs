@@ -7,7 +7,8 @@
 // gh-scenarios.json, so no case reaches GitHub. User and system git config are isolated.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { randomBytes } from 'node:crypto';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { after, describe, test } from 'node:test';
@@ -21,8 +22,8 @@ const FIXTURES = JSON.parse(readFileSync(join(HERE, 'guard-bash.fixtures.json'),
 const GH = JSON.parse(readFileSync(join(HERE, 'gh-scenarios.json'), 'utf8'));
 const REQUIRED = JSON.parse(readFileSync(join(ROOT, '.github', 'required-checks.json'), 'utf8'));
 
-/** Design §6.3.4 ids T15 must cover: 1-35 and 40-64 (36-39 are T17's). */
-export const DESIGN_IDS = [...Array.from({ length: 35 }, (_, i) => i + 1), ...Array.from({ length: 25 }, (_, i) => i + 40)];
+/** Design §6.3.4 ids: 1-64 (T15 brought 1-35 and 40-64, T17 36-39). */
+export const DESIGN_IDS = Array.from({ length: 64 }, (_, i) => i + 1);
 
 const temps = [];
 after(() => {
@@ -104,7 +105,64 @@ export function makeRepo(state = {}) {
   }
   if (state.detached) sh(work, env, 'git', ['checkout', '-q', '--detach']);
   if (state.originUrl) sh(work, env, 'git', ['remote', 'set-url', 'origin', state.originUrl]);
+  // TC-F-001-40: a synthetic credential, assembled at run time so no literal exists in the repo.
+  const leaky = `export const token = '${syntheticGithubToken()}';\n`;
+  const clean = 'export const answer = 42;\n';
+  switch (state.secret) {
+    case 'staged':
+      writeFileSync(join(work, 'config.ts'), leaky);
+      sh(work, env, 'git', ['add', 'config.ts']);
+      break;
+    case 'unstaged':
+      mkdirSync(join(work, 'src'), { recursive: true });
+      commitFile(work, env, 'src/config.ts', clean, 'tracked file');
+      writeFileSync(join(work, 'src/config.ts'), leaky);
+      break;
+    case 'committed':
+      commitFile(work, env, 'config.ts', leaky, 'add config');
+      break;
+    default:
+      break;
+  }
+  if (state.clean === 'staged') {
+    writeFileSync(join(work, 'app.ts'), clean);
+    sh(work, env, 'git', ['add', 'app.ts']);
+  }
+  if (state.clean === 'committed') commitFile(work, env, 'app.ts', clean, 'add app');
+  if (state.gitleaksignore) writeFileSync(join(work, '.gitleaksignore'), '');
   return { base, work, env };
+}
+
+/** A GitHub-PAT-shaped value that was never issued: "ghp_" and 36 random alphanumerics. */
+export function syntheticGithubToken() {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  for (;;) {
+    const value = ['gh', 'p_', ...Array.from(randomBytes(36), (b) => alphabet[b % alphabet.length])].join('');
+    // gitleaks drops a github-pat match whose entropy is <= 3 (the T05-F1 flake); redraw.
+    const counts = new Map();
+    for (const ch of value) counts.set(ch, (counts.get(ch) ?? 0) + 1);
+    const entropy = -[...counts.values()].reduce((sum, c) => sum + (c / value.length) * Math.log2(c / value.length), 0);
+    if (entropy > 3.1) return value;
+  }
+}
+
+/**
+ * A copy of the hook in a temp "repo root" whose .tools/gitleaks is missing or doesn't match
+ * tool-hashes.txt, so the fail-closed paths run without touching the real install.
+ */
+export function hookCopy(kind) {
+  const root = tempDir('guard-bash-root-');
+  for (const path of ['.claude/hooks/guard-bash.mjs', 'tooling/repo-scripts/bin/tool-hashes.txt', '.gitleaks.toml']) {
+    mkdirSync(dirname(join(root, path)), { recursive: true });
+    cpSync(join(ROOT, path), join(root, path));
+  }
+  if (kind === 'tampered-gitleaks') {
+    const version = /^gitleaks\s+(\S+)/m.exec(readFileSync(join(ROOT, 'tooling/repo-scripts/bin/tool-hashes.txt'), 'utf8'))[1];
+    const binary = join(root, '.tools', 'gitleaks', version, 'gitleaks');
+    mkdirSync(dirname(binary), { recursive: true });
+    writeFileSync(binary, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+  }
+  return join(root, '.claude/hooks/guard-bash.mjs');
 }
 
 /**
@@ -190,7 +248,8 @@ export function prepare(fixture) {
     env.GUARD_TEST_GH_FILE = file;
     command = command.replaceAll('<head>', head);
   }
-  return { cwd: repo.work, env, command, repo };
+  const hook = fixture.hookRoot ? hookCopy(fixture.hookRoot) : HOOK;
+  return { cwd: repo.work, env, command, repo, hook };
 }
 
 describe('guard-bash fixtures (TC-F-001-41)', () => {
@@ -203,14 +262,16 @@ describe('guard-bash fixtures (TC-F-001-41)', () => {
 
   for (const fixture of FIXTURES) {
     test(`#${fixture.id} ${fixture.expect} ${fixture.command.split('\n')[0]}`, () => {
-      const { cwd, env, command } = prepare(fixture);
-      const result = runHook(command, cwd, env);
+      const { cwd, env, command, hook } = prepare(fixture);
+      const result = runHook(command, cwd, env, hook);
       if (fixture.expect === 'allow') {
         assert.equal(result.status, 0, `expected allow, got exit ${result.status}: ${result.stderr}`);
         assert.equal(result.stderr, '', 'an allowed command prints nothing');
       } else {
         assert.equal(result.status, 2, `expected block, got exit ${result.status}: ${result.stderr}`);
         assert.equal(result.rule, fixture.rule, `expected rule ${fixture.rule}: ${result.stderr}`);
+        // A secret-scan block names the rule and file:line, never the value.
+        assert.doesNotMatch(result.stderr, new RegExp(`${'gh'}p_[A-Za-z0-9]{36}`));
       }
     });
   }

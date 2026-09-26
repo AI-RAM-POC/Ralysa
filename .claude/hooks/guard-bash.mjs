@@ -18,9 +18,10 @@
 // prompt-injected shortcuts; they are not a boundary against a deliberately hostile agent
 // (accepted risk SEC-F001-01).
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, statSync } from 'node:fs';
-import { homedir } from 'node:os';
-import { basename, dirname, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 /** The repository this hook belongs to: .claude/hooks/ → the repo root. */
@@ -1463,10 +1464,113 @@ function checkTurbo(args) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Checks that need the whole command (T17 adds the gitleaks scans here)
+// Secret scans (G-6, G-7; design §6.2.4; SEC-F001-07, -20). They run after every static rule has
+// passed, so a blocked command never costs a scan.
 // ---------------------------------------------------------------------------------------------
 
-function afterChecks(_st) {}
+const TOOL_HASHES = 'tooling/repo-scripts/bin/tool-hashes.txt';
+const REPO_CONFIG = '.gitleaks.toml';
+
+function afterChecks(st) {
+  for (const commit of st.commits) {
+    for (const dir of existingDirs(commit.cwds, 'G-7', 'git commit')) {
+      const top = repoTop(dir, 'G-7');
+      // What an earlier command in the same call stages or edits isn't in the index yet when
+      // this hook runs; the git pre-commit hook (.githooks) scans it at commit time instead.
+      if (commit.segmentIndex > 0 && configGet(dir, 'core.hooksPath') !== '.githooks') {
+        block('G-7', 'git commit runs after other commands in this call, so the guard cannot scan what it will commit. Run `git commit` as its own command, or run `pnpm hooks:install` once so the pre-commit hook scans at commit time');
+      }
+      scan('G-7', top, ['--pre-commit', '--staged'], 'the staged changes');
+      scan('G-7', top, ['--pre-commit'], 'the unstaged changes to tracked files');
+    }
+  }
+  for (const push of st.pushes) {
+    const top = repoTop(push.dir, 'G-6');
+    if (git(top, ['rev-parse', '--verify', '--quiet', 'refs/remotes/origin/main']).status !== 0) {
+      block('G-6', 'origin/main is missing, so the outgoing commits cannot be scanned; run `git fetch origin main` first');
+    }
+    for (const source of push.sources) {
+      const ref = source === '@' ? 'HEAD' : source;
+      const sha = git(top, ['rev-parse', '--verify', '--quiet', `${ref}^{commit}`]);
+      if (sha.status !== 0) block('G-6', `can't resolve ${source} to scan it before the push`);
+      scan('G-6', top, [`--log-opts=refs/remotes/origin/main..${sha.stdout.trim()}`], `the commits in origin/main..${source}`);
+    }
+  }
+}
+
+function repoTop(dir, rule) {
+  const r = git(dir, ['rev-parse', '--show-toplevel']);
+  if (r.status !== 0) block(rule, `${dir} is not in a git repository`);
+  return r.stdout.trim();
+}
+
+/** The platform name tool-hashes.txt uses. */
+function toolPlatform() {
+  const key = `${process.platform}/${process.arch}`;
+  const platforms = { 'linux/x64': 'linux_x64', 'darwin/arm64': 'darwin_arm64', 'darwin/x64': 'darwin_x64' };
+  return Object.hasOwn(platforms, key) ? platforms[key] : null;
+}
+
+/**
+ * The installed gitleaks binary, re-hashed against the committed tool-hashes.txt (SEC-F001-20).
+ * A missing or different binary blocks: the scan fails closed.
+ */
+function verifiedGitleaks(rule) {
+  const platform = toolPlatform();
+  if (platform === null) block(rule, `no pinned gitleaks for ${process.platform}/${process.arch}; commits and pushes can't be scanned here`);
+  const hashes = resolve(ROOT, TOOL_HASHES);
+  if (!existsSync(hashes)) block(rule, `${TOOL_HASHES} is missing`);
+  const entries = readFileSync(hashes, 'utf8')
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l !== '' && !l.startsWith('#'))
+    .map((l) => l.split(/\s+/))
+    .filter((f) => f[0] === 'gitleaks' && f[2] === platform);
+  if (entries.length !== 1 || !/^[0-9a-f]{64}$/.test(entries[0][5] ?? '')) block(rule, `${TOOL_HASHES} needs exactly one well-formed gitleaks entry for ${platform}`);
+  const [, version, , , , binarySha] = entries[0];
+  const binary = resolve(ROOT, '.tools', 'gitleaks', version, 'gitleaks');
+  if (!existsSync(binary)) block(rule, `gitleaks ${version} is not installed, so the secret scan can't run; run \`pnpm tools:install\``);
+  const actual = createHash('sha256').update(readFileSync(binary)).digest('hex');
+  if (actual !== binarySha) block(rule, `${binary} does not match tool-hashes.txt; delete .tools/gitleaks and run \`pnpm tools:install\``);
+  return binary;
+}
+
+/**
+ * Runs `gitleaks git <args>` in a repository with the repo config and the fixed flags (design
+ * §6.2.2), and blocks on a finding (redacted rule and file:line only) or any scanner error.
+ */
+function scan(rule, top, args, what) {
+  const binary = verifiedGitleaks(rule);
+  const config = resolve(ROOT, REPO_CONFIG);
+  if (!existsSync(config)) block(rule, `${REPO_CONFIG} is missing`);
+  // gitleaks reads <target>/.gitleaksignore even with --gitleaks-ignore-path elsewhere, and that
+  // file would be an allow-list outside the config (T05).
+  if (existsSync(resolve(top, '.gitleaksignore'))) block(rule, `${top}/.gitleaksignore exists; remove it (the configs are the only allow-list)`);
+  const work = mkdtempSync(join(tmpdir(), 'guard-bash-gitleaks-'));
+  try {
+    const empty = join(work, 'empty');
+    mkdirSync(empty);
+    const report = join(work, 'report.json');
+    const result = spawnSync(
+      binary,
+      ['git', ...args, '--config', config, '--redact', '--ignore-gitleaks-allow', '--exit-code', '1', '--report-format', 'json', '--report-path', report, '--no-banner', '--log-level', 'error', '--gitleaks-ignore-path', empty, '.'],
+      { cwd: top, encoding: 'utf8', timeout: 45_000, env: { ...process.env, GITLEAKS_CONFIG: '', GITLEAKS_CONFIG_TOML: '' } },
+    );
+    const findings = existsSync(report) ? parseJson(readFileSync(report, 'utf8')) : null;
+    if (result.status === 0 && Array.isArray(findings) && findings.length === 0) return;
+    if (result.status === 1 && Array.isArray(findings) && findings.length > 0) {
+      const list = findings
+        .slice(0, 5)
+        .map((f) => `${f.RuleID ?? '?'} at ${f.File ?? '?'}:${f.StartLine ?? '?'}${f.Commit ? ` (commit ${String(f.Commit).slice(0, 12)})` : ''}`)
+        .join('; ');
+      block(rule, `gitleaks found ${findings.length} secret(s) in ${what} (values redacted): ${list}. Remove them before committing or pushing; if one was ever pushed, rotate it first (docs/engineering/repo-conventions.md, "Rotation runbook")`);
+    }
+    const tail = `${result.stderr ?? ''}${result.stdout ?? ''}`.trim().split('\n').slice(-3).join(' | ');
+    block(rule, `gitleaks failed on ${what} (exit ${result.status ?? result.error?.message}): ${tail}; failing closed`);
+  } finally {
+    rmSync(work, { recursive: true, force: true });
+  }
+}
 
 // ---------------------------------------------------------------------------------------------
 // Entry point
