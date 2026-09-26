@@ -96,12 +96,53 @@ describe('check-no-password (TC-F-002-06)', () => {
       'apps/web/src/i18n/en.json',
       '{ "login.password": "Password" }',
     ],
+    // Review of #34 (R34-3): the forms the first version missed.
+    ['a passcode field', 'apps/web/src/Code.tsx', 'const [passcode, setPasscode] = useState("");'],
+    ['a camelCase passCode', 'apps/cli/src/login.ts', 'export const passCode = await ask();'],
+    ['a bare pwd', 'apps/cli/src/login.ts', 'const pwd = readline();'],
+    ['a camelCase userPin', 'apps/web/src/Pin.tsx', 'export function Pin({ userPin }: Props) {}'],
+    ['a camelCase otpCode', 'packages/auth/src/mfa.ts', 'body.set("otpCode", code);'],
+    ['a camelCase totpCode', 'packages/auth/src/mfa.ts', 'export const totpCode = 1;'],
+    ['a snake_case user_pin', 'apps/cli/src/pin.ts', 'const user_pin = 1;'],
+    ['a sharedSecret', 'packages/auth/src/hmac.ts', 'const sharedSecret = load();'],
+    ['a user_secret', 'apps/cli/src/login.ts', 'send({ user_secret });'],
+    ['a "Secret: " prompt', 'apps/cli/src/login.ts', "rl.question('Secret: ', done);"],
+    ['an "Enter your secret" prompt', 'apps/cli/src/login.ts', 'ask("Enter your secret?");'],
+    [
+      'code after a block comment on the same line',
+      'apps/web/src/Login.tsx',
+      '/* legacy */ <input type="password" />',
+    ],
+    [
+      'code after a JSX comment on the same line',
+      'apps/web/src/Login.tsx',
+      '{/* legacy */} <input type="password" />',
+    ],
+    [
+      'code after a comment continuation closes',
+      'apps/web/src/Login.tsx',
+      ' * end of note */ const password = x;',
+    ],
   ])('fails on %s', (_, path, line) => {
     const findings = run(withOpenApi({ [path]: `export {};\n${line}\n` }));
     expect(findings).toHaveLength(1);
     expect(findings[0]).toMatch(
       new RegExp(`^no-password/[a-z-]+ ${path.replace(/\./g, '\\.')}:2$`),
     );
+  });
+
+  it('R34-3: look-alike words and whole-line comments stay clean', () => {
+    const clean = [
+      'const spinner = <Spinner pinned />;',
+      'export const hotpath = pinch(opinion);',
+      'const secretary = "Secrets manager";',
+      'const passport = passive();',
+      '/* a block comment about the password grant */',
+      '{/* the passcode field was removed */}',
+      ' * the user never types a password */',
+      '<!-- no password field here -->',
+    ];
+    expect(clean.flatMap((line) => checkClientSource('a.tsx', line))).toEqual([]);
   });
 
   it('reports the rule that matched', () => {
@@ -190,6 +231,51 @@ describe('check-no-password over OpenAPI (TC-F-002-05)', () => {
         (d.paths as Record<string, unknown>)['/v1/users/{id}/password'] = { put: {} };
       },
       '$.paths./v1/users/{id}/password',
+    ],
+    // Review of #34 (R34-3).
+    [
+      'a password inside a property NAMED description',
+      (d: Record<string, unknown>) => {
+        d.components = {
+          schemas: { T: { properties: { description: { enum: ['password'] } } } },
+        };
+      },
+      '$.components.schemas.T.properties.description.enum[0]',
+    ],
+    [
+      'a camelCase userPin property',
+      (d: Record<string, unknown>) => {
+        d.components = { schemas: { T: { properties: { userPin: {} } } } };
+      },
+      '$.components.schemas.T.properties.userPin',
+    ],
+    [
+      'a default value',
+      (d: Record<string, unknown>) => {
+        d.components = { schemas: { T: { properties: { grant: { default: 'password' } } } } };
+      },
+      '$.components.schemas.T.properties.grant.default',
+    ],
+    [
+      'a pattern value',
+      (d: Record<string, unknown>) => {
+        d.components = { schemas: { T: { properties: { g: { pattern: '^(otp|code)$' } } } } };
+      },
+      '$.components.schemas.T.properties.g.pattern',
+    ],
+    [
+      'an example value, nested',
+      (d: Record<string, unknown>) => {
+        d.components = { schemas: { T: { example: { grant: 'password', user: 'u' } } } };
+      },
+      '$.components.schemas.T.example.grant',
+    ],
+    [
+      'an examples entry',
+      (d: Record<string, unknown>) => {
+        d.components = { examples: { login: { value: { g: 'otp' } } } };
+      },
+      '$.components.examples.login.value.g',
     ],
   ])('fails on %s', (_, mutate, where) => {
     expect(doc(mutate)).toEqual([where]);
