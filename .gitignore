@@ -27,3 +27,7 @@ __pycache__/
 test-results/
 playwright-report/
 deploy/docker/dev/.audit-spool/
+
+# Claude Code: personal overrides and agent worktrees stay local (SEC-F001-39)
+.claude/settings.local.json
+.claude/worktrees/

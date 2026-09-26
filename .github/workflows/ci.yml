@@ -33,6 +33,10 @@ jobs:
       # Plain node, no packages, no subprocess (tooling/repo-scripts/src/config-gate.ts).
       - name: Pre-install config gate
         run: node tooling/repo-scripts/src/pre-install-gate.ts
+      # TC-F-001-41: the Claude Code guard hook's fixtures (F-001 design §6.3.4). Plain node, no
+      # install: the hook and its tests are dependency-free.
+      - name: Claude Code guard fixtures
+        run: node --test '.claude/hooks/test/*.test.mjs'
       # pnpm comes from Corepack, which verifies the sha512 in package.json#packageManager.
       - name: Enable pnpm through Corepack
         run: |
