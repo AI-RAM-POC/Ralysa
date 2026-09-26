@@ -51,6 +51,7 @@ describe.skipIf(stack === undefined)('serve app (F-002-T07)', () => {
   const key = uniqueName('ralysa-test-t07-sign');
   const backupKey = uniqueName('ralysa-test-t07-bak');
   const replacedKey = uniqueName('ralysa-test-t07-rep');
+  const multiKey = uniqueName('ralysa-test-t07-multi');
   const t = (): TestDatabase => {
     if (db === undefined) throw new Error('beforeAll did not create the database');
     return db;
@@ -126,7 +127,7 @@ describe.skipIf(stack === undefined)('serve app (F-002-T07)', () => {
   afterAll(async () => {
     await app.close();
     const root = rootBao(stack!);
-    for (const name of [key, backupKey, replacedKey]) {
+    for (const name of [key, backupKey, replacedKey, multiKey]) {
       await root('POST', `transit/keys/${name}/config`, { deletion_allowed: true });
       await root('DELETE', `transit/keys/${name}`);
     }
@@ -302,6 +303,48 @@ describe.skipIf(stack === undefined)('serve app (F-002-T07)', () => {
           key_replaced: true,
         },
       },
+    ]);
+  });
+
+  it('versions present at the first poll but never active are superseded and retire (T07 follow-up, review of #35)', async () => {
+    const root = rootBao(stack!);
+    expectOk(await root('POST', `transit/keys/${multiKey}`, { type: 'ecdsa-p256' }), 'key');
+    expectOk(await root('POST', `transit/keys/${multiKey}/rotate`), 'rotate');
+    expectOk(await root('POST', `transit/keys/${multiKey}/rotate`), 'rotate');
+    const org3 = uuidv7();
+    await ensureOrganization(cpDb, { ...config, org: { ...config.org, id: org3 } });
+    const watcher = createSigningKeys({
+      db: cpDb,
+      custody,
+      orgId: org3,
+      key: multiKey,
+      timing: { activationDelayMs: 0, retentionMs: 1_000 },
+      writer: createAuditWriter({ db: createDb<Database>(await t().pool('audit_writer', 1)) }),
+      logger: silentLogger,
+    });
+    await watcher.poll();
+    expect(watcher.status()).toMatchObject({ ready: true, activeVersion: 3 });
+    // v1 and v2 were never active; they stay in JWKS only for the retention, then retire.
+    expect((await watcher.jwks()).keys.map((k) => k.kid)).toEqual([
+      `${multiKey}.v3`,
+      `${multiKey}.v2`,
+      `${multiKey}.v1`,
+    ]);
+    await sleep(1_100);
+    await watcher.poll();
+    expect((await watcher.jwks()).keys.map((k) => k.kid)).toEqual([`${multiKey}.v3`]);
+    const { rows } = await t().superuser.query<{ version: number; phase: string }>(
+      `SELECT (details->>'version')::int AS version, details->>'phase' AS phase
+         FROM audit.audit_event WHERE action = 'secret.rotated' AND org_id = $1 ORDER BY ingest_seq`,
+      [org3],
+    );
+    expect(rows).toEqual([
+      { version: 1, phase: 'published' },
+      { version: 2, phase: 'published' },
+      { version: 3, phase: 'published' },
+      { version: 3, phase: 'activated' },
+      { version: 1, phase: 'retired' },
+      { version: 2, phase: 'retired' },
     ]);
   });
 });
