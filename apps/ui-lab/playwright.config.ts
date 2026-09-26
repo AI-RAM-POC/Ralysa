@@ -9,9 +9,10 @@
 //
 // Projects (§8.2):
 //   chromium  every spec
-//   firefox   keyboard, shaping
-//   webkit    shaping. Keyboard excludes WebKit: its Tab-to-links default differs from
-//             Safari's user setting; Safari keyboard is the manual TC-F-001-25.
+//   firefox   keyboard, radiogroup-shift-tab, shaping
+//   webkit    radiogroup-shift-tab, shaping. The keyboard walk excludes WebKit: its Tab-to-links
+//             default differs from Safari's user setting; Safari keyboard is the manual
+//             TC-F-001-25. radiogroup-shift-tab (D-F001-E2E-1) doesn't depend on that setting.
 // Snapshots (T14): visual (chromium) and shaping (each engine). A missing baseline fails in CI
 // (`updateSnapshots: 'none'`); only `e2e:update` writes baselines, in the pinned image (§5.4).
 import { defineConfig, devices } from '@playwright/test';
@@ -55,12 +56,12 @@ export default defineConfig({
     {
       name: 'firefox',
       use: { ...devices['Desktop Firefox'], viewport: { width: 1280, height: 800 } },
-      testMatch: ['keyboard.spec.ts', 'shaping.spec.ts'],
+      testMatch: ['keyboard.spec.ts', 'radiogroup-shift-tab.spec.ts', 'shaping.spec.ts'],
     },
     {
       name: 'webkit',
       use: { ...devices['Desktop Safari'], viewport: { width: 1280, height: 800 } },
-      testMatch: ['shaping.spec.ts'],
+      testMatch: ['radiogroup-shift-tab.spec.ts', 'shaping.spec.ts'],
     },
   ],
   webServer: [

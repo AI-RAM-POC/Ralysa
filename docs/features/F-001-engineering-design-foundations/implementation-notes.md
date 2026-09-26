@@ -940,7 +940,7 @@ The `quality` job of PR #17 (run 36137033999) failed twice; neither showed up lo
 | T13-8 | Addition to the design's file list | `e2e/harness-selftest.spec.ts`: the walker detects a trap, a reading-order violation, a missing ring and a faint ring; the console guard fails a test on an uncaught error (`test.fail`). | "Harness self-tests" in T13; §8.4 names only the axe one (TC-F-001-21). Each check that could fail silently now has a fixture that makes it fail. |
 | T13-9 | Implementation choice | The Node check is `tooling/repo-scripts/src/check-node-engine.ts` (built-ins only, run before pnpm in `ui-e2e`) and is repeated in the E2E global setup. | AR-4 b asks to confirm the image's Node; failing before `corepack enable` gives the clearest message. |
 | T13-10 | Implementation choice | The local runner is `scripts/e2e-container.sh`; T14's `e2e-update.sh` will call it with snapshot writing on. `check-ci-invariants` reads every `apps/ui-lab/scripts/*.sh`. | One place for the image digest outside CI. The runner copies the files `git ls-files --cached --others --exclude-standard` lists, so the host's macOS `node_modules` and `dist/` never enter the Linux container. |
-| T13-11 | **Defect found (open), D-F001-E2E-1** | In Playwright's Firefox, **Shift+Tab can't leave the Radix RadioGroup** backwards: focus lands on the group element, which hands it straight back to the checked item. Chromium is fine. After the PR #20 review, the Firefox backward walk asserts exactly this shape instead of `test.fail`, so it fails once fixed and on any other regression. It blocks G6 until TC-F-001-25 settles it. | Not confirmed in a stock Firefox (none on the build machine; Playwright's Firefox is patched). If a stock Firefox reproduces it, it is a WCAG 2.1.2 keyboard trap in `RadioGroup` (packages/ui, Radix `RovingFocusGroup`) and needs a fix before release. Tracked for the manual TC-F-001-25 run. |
+| T13-11 | **Defect found, D-F001-E2E-1 (fixed 2026-09-26; see "Fix for D-F001-E2E-1")** | In Playwright's Firefox, **Shift+Tab can't leave the Radix RadioGroup** backwards: focus lands on the group element, which hands it straight back to the checked item. Chromium is fine. After the PR #20 review, the Firefox backward walk asserts exactly this shape instead of `test.fail`, so it fails once fixed and on any other regression. It blocks G6 until TC-F-001-25 settles it. | Not confirmed in a stock Firefox (none on the build machine; Playwright's Firefox is patched). If a stock Firefox reproduces it, it is a WCAG 2.1.2 keyboard trap in `RadioGroup` (packages/ui, Radix `RovingFocusGroup`) and needs a fix before release. Tracked for the manual TC-F-001-25 run. |
 | T13-12 | CI detail | `ui-e2e` sets `HOME=/root`. | GitHub sets `HOME=/github/home` in container jobs, and Firefox refuses to start as root under a home it doesn't own. |
 | T13-13 | CI detail (first CI run) | `ui-e2e` marks the checkout as a git `safe.directory`. | The container runs as root over a checkout owned by the runner user. The first run logged Turbo's `failed to run git diff for dirty hash` warning: git refused the repo, so Turbo fell back from git-based hashing. |
 
@@ -1002,6 +1002,58 @@ The `quality` job of PR #17 (run 36137033999) failed twice; neither showed up lo
 | # | Finding | Fix | Tests |
 |---|---|---|---|
 | T05-F1 | PR #20's `secret-scan` job failed once with `aws-access-token not reported at src/config.ts:1`, and a rerun passed. The synthetic key was `AKIA` plus 16 random characters. One draw, `AKIAXJXIAGWXFLALLQAA`, has Shannon entropy 2.97, and the AWS rule's floor is 3, so gitleaks correctly skipped it (a match is dropped when its entropy is <= the floor). About 1 draw in 6 000 falls that low: gitleaks missed 1 of 3 000 in a local run. The GitHub PAT, Azure, LiteLLM, Mistral, Groq and canary values had the same exposure, at lower rates. | `detectable(prefix, alphabet, length, floor)` in `secret-scan-selftest.ts` redraws until the whole value (what each planted rule measures) clears the floor by 0.1 and doesn't match the rule's allow-list (the AWS rule ignores keys ending in `EXAMPLE`). It throws after 1 000 draws rather than looping. `RULE_ENTROPY` holds the floors. Every planted value in `syntheticSet()`, the artefact shape plants, `canary()` and the TC-F-001-39 positives now uses it. | New `test/secret-scan-entropy.test.ts` (12): entropy values, including 2.97 for the missed key; a low draw and an allow-listed draw are redrawn (injected `draw`); an impossible floor throws; 2 000 generated sets all clear every floor; `RULE_ENTROPY` equals the floors in `.gitleaks.toml` and the vendored default config. **Mutation check:** with the entropy test removed from `detectable()`, 2 tests fail. |
+
+## Fix for D-F001-E2E-1 (branch `fix/F-001-radiogroup-shift-tab`, 2026-09-26)
+
+The founder decided on 2026-09-26 to treat D-F001-E2E-1 as a real bug and fix it in code, rather than wait for a manual run in a stock Firefox.
+
+### Reproduction
+
+A diagnostic spec (not committed) logged every `keydown`, `focus`, `blur`, a microtask and a task queued from the Tab `keydown`, and every `tabindex` change on the group, for Shift+Tab from the checked radio. It ran in the pinned Playwright image (linux/arm64), in all three engines:
+
+| Engine | Order of events after the Shift+Tab `keydown` | Result |
+|---|---|---|
+| Chromium, WebKit | microtask runs → group `tabindex` 0 → -1 → radio `blur` (related target: the element before the group) → `tabindex` back to 0 → that element gets `focus` | Focus leaves the group. |
+| Firefox | radio `blur` (related target: **the group element**, still `tabindex=0`) → group `focus` → group `blur` → radio `focus` → only then the microtask runs; no `tabindex` change ever reaches the DOM | Focus returns to the radio: a keyboard trap. |
+
+### Root cause
+
+Radix's `RovingFocusGroup` (inside `RadioGroup`) makes the group element itself a tab stop (`tabIndex` 0). When it receives keyboard focus, its `onFocus` passes focus on to the checked item. To let Shift+Tab leave backwards, the item's `keydown` handler calls `onItemShiftTab()`, which sets the React state `isTabbingBackOut`; the re-render sets the group's `tabIndex` to -1, so the browser's focus move skips it. The group's `onBlur` then resets the state.
+
+That only works if the re-render reaches the DOM **between** the `keydown` listener and the browser's focus move. React 19 commits a discrete-event update in a microtask. Chromium and WebKit run that microtask before they perform the Tab default action; Playwright's Firefox runs it only after the focus move. So in Firefox the group is still `tabIndex` 0 when focus moves, and Firefox picks it as the previous stop. Its `onFocus` closure still sees `isTabbingBackOut === false` and hands focus back to the checked item. The `true` from the keydown and the `false` from the `blur` are then batched into one render with no change, so nothing ever reaches the DOM.
+
+Why Firefox defers the microtask here is not confirmed. The likely reason is that Playwright's Firefox (Juggler) dispatches key events from privileged script, so the JS stack is never empty after the page's listener and the microtask checkpoint waits for the whole key event. A stock Firefox, where the key event comes from the OS with no script on the stack, may not show it. The fix doesn't depend on which it is: it makes the `tabIndex` change synchronous in every engine.
+
+**Radix version:** `radix-ui` 1.6.7 / `@radix-ui/react-roving-focus` 1.1.19 are the latest stable releases (npm, 2026-09-26). The newest pre-release, `@radix-ui/react-roving-focus` 1.1.20-rc (2026-07-31), has the same `isTabbingBackOut` state logic, so a version bump would not fix it.
+
+### Fix
+
+In `packages/ui/src/components/forms/Forms.tsx`, `RadioGroup`:
+
+- On a Shift+Tab `keydown` that bubbles to the group (and wasn't prevented by a caller), set our own `tabbingBackOut` state inside `flushSync`, so React commits it before the handler returns, and so before any browser performs the focus move.
+- While it is true, pass `tabIndex={-1}` to `RadioPrimitive.Root`. Radix renders the group through `Slot`, whose props merge child-last, so the child's `tabIndex` overrides Radix's. The prop is left out entirely otherwise, so Radix's own `tabIndex` (0, or -1 with no focusable item) applies.
+- On `blur` (React's `onBlur` bubbles like `focusout`), reset it, as Radix resets its own state. Tab can then enter the group again.
+- A caller's `onKeyDown` and `onBlur` are still called first.
+
+`react-dom` is now a `peerDependency` of `@ralysa/ui` (`^19.3.0`, the same range as `react`) because `flushSync` comes from it. It was already a devDependency and a peer of `radix-ui`; the lockfile doesn't change. The `@eslint-react/dom-no-flush-sync` rule is disabled for that one line with a reason: this is the case `flushSync` exists for (the DOM must change before the browser acts on the event), and it costs one small commit per Shift+Tab.
+
+No visual change: `tabindex` isn't styled, and the visual, a11y (axe) and mirroring specs pass without snapshot updates.
+
+### Recorded decisions
+
+| # | Type | What | Why |
+|---|---|---|---|
+| FX-1 | Self-decided (standing authorization) | Fix in the `RadioGroup` wrapper with `flushSync` and a controlled `tabIndex`, rather than moving focus by hand on Shift+Tab or writing `tabindex` to the DOM directly. | Moving focus by hand would mean computing the page's tab order. A direct DOM write would fight React's ownership of the attribute and would need Radix's own tabIndex rule copied to restore it. The chosen fix keeps React in charge and reuses Radix's `Slot` override. |
+| FX-2 | Self-decided (standing authorization); addition to design §8.2 | New spec `e2e/radiogroup-shift-tab.spec.ts` runs in **chromium, firefox and webkit**. For every RadioGroup on the showcase (en and ar), it focuses the checked item, presses Shift+Tab, requires focus to be outside the group (not an item, not the group, not `<body>`), then presses Tab and requires the checked item to be focused again. `playwright.config.ts` adds it to the firefox and webkit projects (chromium runs every spec). | The design keeps the full keyboard walk out of WebKit because Playwright's WebKit Tab-to-links default differs from Safari's user setting. This check doesn't depend on that, and the founder asked for all three engines. The full keyboard walk stays chromium and firefox. |
+| FX-3 | Test change | `keyboard.spec.ts`: the Firefox-only branch that asserted the D-F001-E2E-1 shape is removed. The backward walk now requires the full reverse order and the page edge (`reachedEdge`) in every engine. | The defect is fixed. As T13-4 describes, headless Firefox stops on the first element (`stayed`) instead of leaving the page. |
+
+### Tests
+
+- **Unit** (`packages/ui/test/components-forms-preferences.test.tsx`, +2): (1) a `keydown` listener on the document, which runs after React's handler and before any microtask, sees the group's `tabIndex` as -1 on Shift+Tab, and it is 0 again after `blur`; (2) a caller's `onKeyDown` and `onBlur` are still called. **Mutation check:** without `flushSync` (plain `setState`), test (1) fails with `expected +0 to be -1`.
+- **E2E, before the fix** (pinned image, linux/arm64): with the original `Forms.tsx` and the new specs, 4 Firefox tests fail (the backward walk and `radiogroup-shift-tab`, in en and ar). Chromium and WebKit pass.
+- **E2E, after the fix:** see test-report.md, D-F001-E2E-1, for the full `ui-e2e` run in all three engines.
+
+TC-F-001-25 (manual keyboard-only run in en and ar, including Safari) is unchanged: it still needs a person. It no longer has to settle D-F001-E2E-1, because the automated specs now cover it in all three engines.
 
 ## Version confirmations (npm registry, 2026-09-25 ~08:20 UTC)
 
