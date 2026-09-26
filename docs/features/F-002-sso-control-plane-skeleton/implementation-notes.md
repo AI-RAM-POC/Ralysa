@@ -1841,7 +1841,7 @@ Local runs, Node 24.21.0, pnpm 11.27.1, dev stack up:
 
 ## Fix for #47: `Principal` session roles, membership at refresh, group roles at start (SEC-F002-42)
 
-Branch `fix/F-002-principal-session-roles`, based on `main` at `f795d6b` with `main` at `4e70cab` (#46) merged in. Issue [#47](https://github.com/AI-RAM-POC/Ralysa/issues/47), security.md P6-4 SEC-F002-42 (Medium; High once an F-003/F-004 PEP authorizes admin actions on it). Founder decision C2: fixed before G7. Design revision 10 records the clarified contract.
+Branch `fix/F-002-principal-session-roles`, based on `main` at `f795d6b` with `main` at `4e70cab` (#46) merged in, PR [#58](https://github.com/AI-RAM-POC/Ralysa/pull/58). Issue [#47](https://github.com/AI-RAM-POC/Ralysa/issues/47), security.md P6-4 SEC-F002-42 (Medium; High once an F-003/F-004 PEP authorizes admin actions on it). Founder decision C2: fixed before G7. Design revision 10 records the clarified contract.
 
 ### The problem, in one line each
 
