@@ -445,6 +445,32 @@ The Phase 4 assets, trust boundaries and entry points (§1) still hold. Implemen
 | SEC-F002-50 | **The service ingest path can pre-fill server-owned `details` keys.** Reserved keys are checked only when `attestation = client`, so a service can write `details.server.spooled`, `details.server.original_ts` or `details.reported_by` and make a live event look like a replay from another time. | Confirmed | Low | `cp/src/audit/writer.ts:94-96`; `audit/routes/service-events.ts:135-141` | Refuse `RESERVED_DETAIL_KEYS` at the top level of `details`, and `server` at any depth, on the service path with 422. Only the control plane's own writer adds them. |
 | SEC-F002-51 | **The MFA-evidence rule accepts any `acrs` value.** `require_mfa_claim` is satisfied by `amr` containing `mfa` **or any non-empty `acrs`**. An authentication context that requires no MFA (for example a terms-of-use context) passes. | Confirmed (rule); Suspected (impact depends on the tenant's Conditional Access design) | Low | `cp/src/auth/flow-b.ts:250-256`; `grants/token-exchange.ts:116-118` | Add `idp.mfa_auth_contexts`: accept only those `acrs` values as MFA evidence. Settle it together with Q5 at TC-F-002-28. |
 
+#### SEC-F002-42 remediation review (PR #58, 2026-09-26)
+
+**Verdict: remediated.** Reviewed `origin/main...fix/F-002-principal-session-roles` (design rev 10, F47-1..13).
+
+| Part | Result | Evidence |
+|---|---|---|
+| (1) Device-code admin gets `platform_admin` | Fixed. `?sid=` returns `session_roles` = the session's roles ∩ current role-bearing memberships; a refresh only narrows the session's roles. The audit query uses the same rule. | `cp/src/directory/membership.ts:191-212`; `directory/routes.ts:88, 97, 108`; `grants/refresh-token.ts:270-273`; `audit/routes/query.ts` `isPlatformAdmin`; TC-F-002-31, `sessions.int.ts` #47 |
+| (2) Membership snapshot up to 7 d | Fixed for `session_roles`: every token mint writes Graph's answer back first, so staleness ≤ `access_ttl_s` + 30 s resolver cache. Directory `roles` can stay stale while a user doesn't refresh; they are documented as non-authoritative (see -54). | `grants/refresh-token.ts:262`; `membership.ts:90-165`; token exchange and sign-in via provision |
+| (3) `admin_group_id` change not reconciled | Fixed at `serve` start, audited `directory.group_role.changed` (`privileged`). Sign-in path still rewrites roles unaudited (-52). | `org/bootstrap.ts:83-118`; `serve.ts:110` |
+| (4) Integrator guide | Fixed. Passes `sid`, authorizes on `session_roles`, refused session → 401. | `packages/auth/README.md:96-107` |
+
+Checked, no finding: sid oracle (404 vs 403 reveals only user existence, as before; a sid is 74 random bits and only service-token callers can ask); disabled user's live session → `session_roles: []` with `status: disabled` (F47-3); Graph write-back before the other refresh checks (F47-4: only an unrotated, active token reaches it). Residual delay: G-1 (60 s) covers explicit revocation and is unchanged. Entra role removal is bounded by `access_ttl_s` + 30 s (15.5 min at D-12; up to ~60.5 min if `access_ttl_s` = 3600; add 5 min if the Phase 1 Graph cache in design.md (Phase 1 notes, around line 1883) lands). Runbook: for urgent admin removal, revoke Ralysa sessions (G-1) rather than wait on Entra. Info: concurrent first-start reconcile can write duplicate `directory.group_role.changed`; a crash between commit and `writeOrSpool` loses the event (same pattern as the device-code switch at start).
+
+| ID | Finding | Status | Severity | Location | Recommendation |
+|---|---|---|---|---|---|
+| SEC-F002-52 | Sign-in's `syncGroups` still calls `ensureConfiguredGroups` and discards its changes, so a replica with an older config (rolling `admin_group_id` change) reverts group roles with no `directory.group_role.changed`. | Confirmed (code); skew effect suspected | Low | `cp/src/auth/sign-in-store.ts:199`; `directory/membership.ts:35-83` | Roles are owned by `serve` start only. Sign-in creates missing configured rows (`doNothing`) and alerts on skew. Test it. Fix in #58 recommended. |
+| SEC-F002-53 | Graph write-back is last-writer-wins across an out-of-transaction Graph call; a slow refresh can re-add a just-removed admin membership. | Suspected | Low | `grants/refresh-token.ts:238, 262`; `membership.ts:90-165` | Per-user `graph_checked_at` plus `pg_advisory_xact_lock`; skip older answers. |
+| SEC-F002-54 | `resolve(userId)` (no sid) remains and returns `roles` with `platform_admin`. No production caller yet. | Confirmed | Low (High if a PEP uses it) | `packages/auth/src/verify/principal-resolver.ts:48, 117` | Deprecate or rename it for PEP use; F-003 and F-004 G4 condition: PEPs authorize on `session_roles` only. |
+| SEC-F002-55 | Config accepts `access_group_id == admin_group_id`; that group then carries `platform_admin` only. | Confirmed (code), pre-existing | Low | `cp/src/config/schema.ts:135-137`; `membership.ts:48-51` | zod `.refine` requiring distinct ids, plus a test. |
+
+Compliance controls touched: ISO 27001 A.5.15, A.5.18, A.8.2, A.8.15; SOC 2 CC6.1, CC6.2, CC6.3, CC7.2; SAMA CSF 3.3.5 (IAM) and NCA ECC 2-2 (IAM), 2-12 (event logs) (Gulf control IDs to verify, as in §7).
+
+T-1 and T-4 in P6-5: the "PEPs can't see the session role" and "`Principal` snapshot up to 7 d" gaps are closed. The residual for T-4 is ≤ TTL + 30 s, plus -53.
+
+**Resolved in PR #58 (review round 2):** SEC-F002-52, -53, -54 (deprecated plus the reference PEP), -55.
+
 ### P6-5. Threat table (Phase 6 update)
 
 | # | Threat | Likelihood | Impact | Control now in code | Gap | Recommendation |
