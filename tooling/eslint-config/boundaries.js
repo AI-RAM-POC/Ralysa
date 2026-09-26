@@ -242,11 +242,19 @@ export const WORKSPACE_DEPENDENCY_RULES = [
 export const DEV_ONLY_PACKAGES = ['@ralysa/dev-stack', 'oidc-provider'];
 
 /**
- * Where a DEV_ONLY_PACKAGES import is allowed (repo-relative globs): tooling, and the tests of any
- * workspace (integration tests import the dev-stack harness and the mock IdP from test/**).
+ * Where a DEV_ONLY_PACKAGES import is allowed (repo-relative globs): tooling, and each
+ * workspace's top-level test/ folder (integration tests import the dev-stack harness and the mock
+ * IdP from there). Anchored per workspace: a `src/test/` folder is compiled into dist and ships
+ * (review of #34, R34-2).
  * @type {string[]}
  */
-export const DEV_ONLY_IMPORT_ALLOWED_IN = ['tooling/**', '**/test/**'];
+export const DEV_ONLY_IMPORT_ALLOWED_IN = [
+  'tooling/**',
+  'apps/*/test/**',
+  'packages/*/test/**',
+  'services/*/test/**',
+  'packs/**/test/**',
+];
 
 export const DEV_ONLY_MESSAGE =
   'The mock IdP and the dev stack are development-only (SEC-F002-13, AR-12): import @ralysa/dev-stack or oidc-provider only from tooling/** or a test/** folder, and depend on them through devDependencies only.';
