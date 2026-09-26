@@ -56,25 +56,10 @@ for (const lang of LOCALES) {
       // stayed on the last stop, so the walk back starts there.
       const backward = await walk(page, 'Shift+Tab', { fromCurrent: forward.end === 'stayed' });
       const ids = backward.stops.map((stop) => stop.id);
-
-      if (browserName !== 'firefox') {
-        expect(ids).toEqual(reversed);
-        expect(backward.end).toBe('left-page');
-        return;
-      }
-      // D-F001-E2E-1 (open): in Playwright's Firefox, Shift+Tab from a Radix RadioGroup item
-      // lands on the group element, which hands focus straight back to the item, so focus can't
-      // leave the group backwards. Not yet confirmed in a stock Firefox (manual TC-F-001-25).
-      // Assert exactly that known shape, so any other Shift+Tab regression still fails, and so
-      // the test fails once the defect is fixed (then this branch goes and Firefox joins the
-      // check above).
-      const last = backward.stops.at(-1);
-      expect(backward.end, 'D-F001-E2E-1: focus stays in the RadioGroup').toBe('stayed');
-      expect(last?.label, 'D-F001-E2E-1: stuck on a radio item').toContain('[role=radio]');
-      expect(ids, 'every stop before the RadioGroup is in reverse order').toEqual(
-        reversed.slice(0, ids.length),
-      );
-      expect(ids.length).toBeLessThan(reversed.length);
+      // Every engine, Firefox included since D-F001-E2E-1 was fixed (RadioGroup drops its group
+      // element out of the tab order synchronously on Shift+Tab; radiogroup-shift-tab.spec.ts).
+      expect(ids, backward.stops.map((stop) => stop.label).join('\n')).toEqual(reversed);
+      expect(reachedEdge(backward, browserName)).toBe(true);
     });
 
     test('Select: Enter opens, Escape closes and returns focus; Space opens too', async ({

@@ -114,6 +114,76 @@ describe('RadioGroup: direction-aware arrow keys', () => {
   });
 });
 
+describe('RadioGroup: Shift+Tab leaves the group (D-F001-E2E-1, WCAG 2.1.2)', () => {
+  it('takes the group element out of the tab order before the browser moves focus', async () => {
+    view = await render(
+      <RadioGroup label="Plan" orientation="horizontal" defaultValue="pro" options={PLANS} />,
+    );
+    const radiogroup = view.container.querySelector<HTMLElement>('[role="radiogroup"]');
+    const checked = view.container.querySelector<HTMLElement>(
+      '[role="radio"][aria-checked="true"]',
+    );
+    expect(radiogroup?.tabIndex).toBe(0);
+    await focus(checked);
+
+    // The browser moves focus as the keydown's default action, after every listener has run but,
+    // in Firefox, before microtasks run. A listener on the document (after React's, on the root
+    // container) sees the tabIndex at that moment. No microtask or task runs in between.
+    let atDefaultAction: number | undefined;
+    const record = (): void => {
+      atDefaultAction = radiogroup?.tabIndex;
+    };
+    document.addEventListener('keydown', record);
+    try {
+      act(() => {
+        checked?.dispatchEvent(
+          new KeyboardEvent('keydown', {
+            key: 'Tab',
+            shiftKey: true,
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      });
+    } finally {
+      document.removeEventListener('keydown', record);
+    }
+    expect(atDefaultAction).toBe(-1);
+
+    // Once focus has left, the group is a tab stop again, so Tab can enter it.
+    await act(async () => {
+      checked?.blur();
+      await Promise.resolve();
+    });
+    expect(radiogroup?.tabIndex).toBe(0);
+  });
+
+  it('keeps a caller onKeyDown and onBlur', async () => {
+    const onKeyDown = vi.fn();
+    const onBlur = vi.fn();
+    view = await render(
+      <RadioGroup
+        label="Plan"
+        defaultValue="basic"
+        options={PLANS}
+        onKeyDown={onKeyDown}
+        onBlur={onBlur}
+      />,
+    );
+    const checked = view.container.querySelector<HTMLElement>(
+      '[role="radio"][aria-checked="true"]',
+    );
+    await focus(checked);
+    await press(checked as HTMLElement, 'Tab', { shiftKey: true });
+    await act(async () => {
+      checked?.blur();
+      await Promise.resolve();
+    });
+    expect(onKeyDown).toHaveBeenCalledTimes(1);
+    expect(onBlur).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe('Tabs: direction-aware arrow keys', () => {
   const tabs = (
     <Tabs

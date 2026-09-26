@@ -10,7 +10,8 @@ import {
   Select as SelectPrimitive,
   Tabs as TabsPrimitive,
 } from 'radix-ui';
-import { type ComponentPropsWithRef, type JSX, type ReactNode, useId } from 'react';
+import { type ComponentPropsWithRef, type JSX, type ReactNode, useId, useState } from 'react';
+import { flushSync } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { Icon } from '../../icons/Icon.js';
 import { cn } from '../../lib/cn.js';
@@ -155,10 +156,20 @@ export function RadioGroup({
   options,
   orientation = 'vertical',
   className,
+  onKeyDown,
+  onBlur,
   ...rest
 }: RadioGroupProps): JSX.Element {
   const baseId = useId();
   const labelId = `${baseId}-label`;
+  // D-F001-E2E-1 (WCAG 2.1.2). Radix's group element is itself a tab stop (tabIndex 0) that
+  // hands focus to the checked item. On Shift+Tab from an item, Radix sets state to drop that
+  // tabIndex to -1, but React commits the state in a microtask. Firefox moves focus before it
+  // runs that microtask, so focus lands on the group, goes straight back to the item, and can't
+  // leave backwards. So commit it synchronously (flushSync) in the keydown, before the browser
+  // moves focus. A child tabIndex overrides Radix's (Slot props merge child-last); it is only
+  // set while tabbing back out, and reset on blur, as Radix resets its own.
+  const [tabbingBackOut, setTabbingBackOut] = useState(false);
   return (
     <div className={cn('flex flex-col gap-2', className)}>
       <span id={labelId} className="text-sm font-medium text-fg">
@@ -166,6 +177,20 @@ export function RadioGroup({
       </span>
       <RadioPrimitive.Root
         {...rest}
+        {...(tabbingBackOut ? { tabIndex: -1 } : {})}
+        onKeyDown={(event) => {
+          onKeyDown?.(event);
+          if (event.key === 'Tab' && event.shiftKey && !event.defaultPrevented) {
+            // eslint-disable-next-line @eslint-react/dom-no-flush-sync -- the tabIndex must be in the DOM before the browser moves focus (D-F001-E2E-1); one small commit per Shift+Tab
+            flushSync(() => {
+              setTabbingBackOut(true);
+            });
+          }
+        }}
+        onBlur={(event) => {
+          onBlur?.(event);
+          setTabbingBackOut(false);
+        }}
         orientation={orientation}
         aria-labelledby={labelId}
         className={orientation === 'horizontal' ? 'flex flex-wrap gap-4' : 'flex flex-col gap-2'}
