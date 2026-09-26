@@ -341,7 +341,7 @@ Observed and expected, so not defects:
 ## Recommendation
 
 **Go with conditions.** The two founder decisions G6 waited for are recorded in security.md P6-8
-(Ram Mohan Rao Adduri, in his own words, 2026-09-26):
+(Ram Mohan Rao Adduri, in his own words in chat, identity asserted, 2026-09-26):
 - **C1 (accepted):** SEC-F002-35 (b)–(d), -36 and -37 are open risks for dev and CI with synthetic
   identities only, to be built before F-011 or any non-dev deployment, whichever comes first;
 - **C2:** SEC-F002-42 is **fixed before G7**
