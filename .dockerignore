@@ -1,0 +1,52 @@
+# Build context for every image built from the repository root (F-002-T14; SEC-F002-29).
+# The build stage copies the context, so anything listed here can never be baked into an image
+# layer, whatever a Dockerfile's COPY says. `secret-scan-cli.ts image` scans the result anyway.
+
+# Credentials and anything that could hold one: generated dev-stack files (deploy/docker/dev/.env
+# holds the Postgres password and the OpenBao root token), every .env, keys and certificates.
+**/.env
+**/.env.*
+**/.envrc
+deploy/docker/dev/
+**/.ssh
+**/.aws
+# SSH key files by their standard names (not `id_*`, which would also drop a source file such as
+# `id_token.ts` from the build).
+**/id_rsa*
+**/id_dsa*
+**/id_ecdsa*
+**/id_ed25519*
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.jks
+**/*.kdbx
+**/.npmrc
+**/.netrc
+
+# Version control, CI, local tools and agent worktrees.
+.git
+.github
+.githooks
+.claude
+.tools
+.idea
+.vscode
+
+# Installs and build output: the image installs and builds from the lockfile itself.
+**/node_modules
+**/dist
+**/.turbo
+**/.tsc
+**/coverage
+**/test-results
+**/playwright-report
+**/.audit-spool
+**/*.log
+**/*.tsbuildinfo
+
+# Content that no image build reads.
+docs
+requirements
+packs

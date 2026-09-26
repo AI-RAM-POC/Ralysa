@@ -1,7 +1,7 @@
 // TC-F-001-26 (AC-13) and the dependency-cruiser layer of TC-F-001-29 (ADR-0012, SR-03, ADR-0024,
 // RF-7, AR-9; RC-3): the real .dependency-cruiser.cjs over throw-away source trees. Unlike
 // ESLint, this layer sees require() and import() with a literal, and it scans packs/**.
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { checkImports } from '../src/check-imports.ts';
@@ -155,6 +155,67 @@ describe('check-imports (dependency-cruiser)', () => {
       'imports/packages-not-to-apps-or-services packages/ui/src/b.ts',
       'imports/services-not-to-other-services services/control-plane/src/y.ts',
     ]);
+  });
+
+  it('TC-F-002-35: shipped code importing @ralysa/dev-stack or oidc-provider fails; tests and tooling may (SEC-F002-13 a)', async () => {
+    expect(
+      await violations({
+        'services/control-plane/src/idp.ts': `${ok}import { startMockIdp } from '@ralysa/dev-stack/mock-idp';\nexport { startMockIdp };\n`,
+        'services/control-plane/src/provider.cjs':
+          "const Provider = require('oidc-provider');\nmodule.exports = Provider;\n",
+        'packages/auth/src/dev.ts':
+          "export const mock = await import('../../../tooling/dev-stack/src/mock-idp/index.ts');\n",
+        'apps/web/src/types.ts':
+          "import type { Configuration } from 'oidc-provider';\nexport type C = Configuration;\n",
+        'services/control-plane/test/integration/sign-in.int.ts': `${ok}import { startMockIdp } from '@ralysa/dev-stack/mock-idp';\nexport { startMockIdp };\n`,
+        'tooling/dev-stack/src/mock-idp/index.ts':
+          "import Provider from 'oidc-provider';\nexport { Provider };\n",
+      }),
+    ).toEqual([
+      'imports/no-dev-only-in-shipped apps/web/src/types.ts',
+      'imports/no-dev-only-in-shipped packages/auth/src/dev.ts',
+      'imports/no-dev-only-in-shipped services/control-plane/src/idp.ts',
+      'imports/no-dev-only-in-shipped services/control-plane/src/provider.cjs',
+    ]);
+  });
+
+  it('R34-2: a src/test/ folder ships, so it may not import the dev stack; a workspace test/ may', async () => {
+    expect(
+      await violations({
+        'services/control-plane/src/test/helpers.ts': `${ok}import { startMockIdp } from '@ralysa/dev-stack/mock-idp';\nexport { startMockIdp };\n`,
+        'packages/auth/src/lib/test/fake.ts':
+          "import Provider from 'oidc-provider';\nexport { Provider };\n",
+        'packages/auth/test/flows.test.ts':
+          "import Provider from 'oidc-provider';\nexport { Provider };\n",
+      }),
+    ).toEqual([
+      'imports/no-dev-only-in-shipped packages/auth/src/lib/test/fake.ts',
+      'imports/no-dev-only-in-shipped services/control-plane/src/test/helpers.ts',
+    ]);
+  });
+
+  it('R34-1: an import that resolves through `exports` into a BUILT tooling/dev-stack/dist still fails', async () => {
+    const root = tree({
+      'services/control-plane/package.json': JSON.stringify({ name: '@ralysa/control-plane' }),
+      'services/control-plane/src/idp.ts': `${ok}import { startMockIdp } from '@ralysa/dev-stack/mock-idp';\nexport { startMockIdp };\n`,
+      'tooling/dev-stack/package.json': JSON.stringify({
+        name: '@ralysa/dev-stack',
+        type: 'module',
+        exports: { './mock-idp': { default: './dist/mock-idp/index.js' } },
+      }),
+      'tooling/dev-stack/dist/mock-idp/index.js': 'export const startMockIdp = () => 1;\n',
+    });
+    // pnpm links workspace dependencies into the dependant's node_modules.
+    mkdirSync(join(root, 'services/control-plane/node_modules/@ralysa'), { recursive: true });
+    symlinkSync(
+      '../../../../tooling/dev-stack',
+      join(root, 'services/control-plane/node_modules/@ralysa/dev-stack'),
+    );
+    const findings = await checkImports({ root, configFile: CONFIG });
+    expect(findings.map((f) => `${f.rule} ${f.path}`)).toEqual([
+      'imports/no-dev-only-in-shipped services/control-plane/src/idp.ts',
+    ]);
+    expect(findings[0]?.message).toContain('tooling/dev-stack/dist/mock-idp/index.js');
   });
 
   it('fails when the options drop every package target (graph sanity)', async () => {

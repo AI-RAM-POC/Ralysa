@@ -388,8 +388,11 @@ describe.skipIf(stack === undefined)('audit endpoints (F-002-T12)', () => {
     it('no token → 401; a user token or an unregistered service → 403 and auth.token_rejected', async () => {
       const alice = await seedUser();
       const body = { events: [svcEvent(alice.id)] };
-      expect((await inject('POST', '/v1/audit/events', undefined, body)).statusCode).toBe(401);
+      // Count before the first request: its `malformed` rejection is written fire-and-forget and
+      // may already be stored when the next line runs (a CI flake, R34-n8).
+      await settled();
       const before = (await rows(`action = 'auth.token_rejected'`)).length;
+      expect((await inject('POST', '/v1/audit/events', undefined, body)).statusCode).toBe(401);
       expect(
         (await inject('POST', '/v1/audit/events', await userToken(alice), body)).statusCode,
       ).toBe(403);

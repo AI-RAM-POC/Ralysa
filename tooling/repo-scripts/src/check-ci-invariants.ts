@@ -14,11 +14,17 @@
 //   anything that invokes a package manager: a `run` line calling pnpm, pnpx, npx, npm, yarn,
 //   corepack or turbo, `actions/setup-node` with a `cache` (it runs `pnpm store path` or the
 //   like), or `pnpm/action-setup`.
-// - `ci/integration-no-secrets`: a job named `integration` references no `secrets.*`, has
-//   `permissions: contents: read` and nothing else, and checks out with
-//   `persist-credentials: false`.
+// - `ci/integration-no-secrets`: a locked-down job (LOCKED_DOWN_JOBS: `integration`, and `soak`
+//   since the review of #34) references no `secrets.*`, has `permissions: contents: read` and
+//   nothing else, and checks out with `persist-credentials: false`.
 // - `ci/integration-artefact`: that job's container logs name `postgres` only (the OpenBao dev
 //   server prints its root token and unseal key), and its uploads expire within 3 days.
+// F-002-T14 (design §8.5; AC-9, SEC-F002-13 c, -29):
+// - `ci/integration-image-scan`: the `integration` job builds and scans the control-plane image
+//   (`secret-scan-cli.ts image --dockerfile deploy/docker/control-plane.Dockerfile --exact-values
+//   deploy/docker/dev/.env`), so the image check can't be dropped silently. The step may carry no
+//   `if` other than `${{ !cancelled() }}` and no `continue-on-error`, and the job no
+//   `continue-on-error` (review of #34), so it can't be switched off or made advisory.
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { type Finding, isRecord, readJson, readYaml } from './lib/repo.ts';
@@ -29,6 +35,24 @@ const E2E_SCRIPTS_DIR = 'apps/ui-lab/scripts';
 /** A gitleaks subcommand invocation: `gitleaks dir|git|detect|protect|directory|file|stdin`. */
 const GITLEAKS_CALL = /\bgitleaks(?:["']|\s)+(?:dir|git|detect|protect|directory|file|stdin)\b/;
 const RANGE_SCAN = /secret-scan(?:-cli\.ts)?["']?\s+(?:pr|history)\b/;
+/** The F-002-T14 image scan: the control-plane Dockerfile, with the run's generated credentials. */
+const IMAGE_SCAN =
+  /\bnode\s+tooling\/repo-scripts\/src\/secret-scan-cli\.ts\s+image\b(?=.*\s--dockerfile\s+deploy\/docker\/control-plane\.Dockerfile\b)(?=.*\s--exact-values\s+deploy\/docker\/dev\/\.env\b)/;
+
+/**
+ * Jobs (by id, in any workflow) that run PR code against the dev stack and so get the
+ * least-privilege rules; `imageScan` jobs must also run the image scan. `soak` is F-002-T13's
+ * workflow_dispatch soak (.github/workflows/soak.yml).
+ */
+export const LOCKED_DOWN_JOBS: Record<string, { imageScan: boolean }> = {
+  integration: { imageScan: true },
+  soak: { imageScan: false },
+};
+
+/** The only `if` an image-scan step may carry: run after a failed test step, not when cancelled. */
+const IMAGE_SCAN_IF = /^\$\{\{\s*!cancelled\(\)\s*\}\}$|^!cancelled\(\)$/;
+
+const isTrue = (value: unknown): boolean => value === true || value === 'true';
 
 export interface CiFiles {
   packageJson: unknown;
@@ -112,21 +136,23 @@ function checkPreInstallGateFirst(
   }
 }
 
-function checkIntegrationJob(
+function checkLockedDownJob(
   path: string,
+  name: string,
   job: Record<string, unknown>,
   steps: Record<string, unknown>[],
   findings: Finding[],
 ): void {
-  const where = `${path} (jobs.integration)`;
+  const where = `${path} (jobs.${name})`;
+  const requireImageScan = LOCKED_DOWN_JOBS[name]?.imageScan === true;
   if (/\bsecrets\s*\./.test(JSON.stringify(job))) {
     findings.push({
       rule: 'ci/integration-no-secrets',
       path: where,
-      message:
-        'the integration job runs PR code and must reference no secrets.*; it generates throwaway credentials per run (SEC-F002-27)',
+      message: `the ${name} job runs PR code and must reference no secrets.*; it generates throwaway credentials per run (SEC-F002-27)`,
     });
   }
+  let imageScan = false;
   const permissions = job.permissions;
   const leastPrivilege =
     isRecord(permissions) &&
@@ -136,7 +162,7 @@ function checkIntegrationJob(
     findings.push({
       rule: 'ci/integration-no-secrets',
       path: where,
-      message: `the integration job needs "permissions: contents: read" and nothing else; got ${JSON.stringify(permissions)} (SEC-F002-27)`,
+      message: `the ${name} job needs "permissions: contents: read" and nothing else; got ${JSON.stringify(permissions)} (SEC-F002-27)`,
     });
   }
   for (const step of steps) {
@@ -148,8 +174,7 @@ function checkIntegrationJob(
         findings.push({
           rule: 'ci/integration-no-secrets',
           path: where,
-          message:
-            'the integration job checks out with credentials persisted; set "persist-credentials: false" (SEC-F002-27)',
+          message: `the ${name} job checks out with credentials persisted; set "persist-credentials: false" (SEC-F002-27)`,
         });
       }
     }
@@ -159,11 +184,21 @@ function checkIntegrationJob(
         findings.push({
           rule: 'ci/integration-artefact',
           path: where,
-          message: 'integration artefacts need "retention-days" of at most 3 (SEC-F002-27)',
+          message: `${name} artefacts need "retention-days" of at most 3 (SEC-F002-27)`,
         });
       }
     }
     for (const line of commands(runText(step))) {
+      // A shell comment (a whole line, or after a command) doesn't run. A step that could be
+      // skipped (`if: false`, any other condition) or made advisory (`continue-on-error`) doesn't
+      // count (review of #34).
+      if (requireImageScan && IMAGE_SCAN.test(line.replace(/(?:^|\s)#.*$/, ''))) {
+        const condition = step.if;
+        const unconditional =
+          condition === undefined ||
+          (typeof condition === 'string' && IMAGE_SCAN_IF.test(condition.trim()));
+        if (unconditional && !isTrue(step['continue-on-error'])) imageScan = true;
+      }
       if (!/\bdocker\s+compose\b.*\blogs\b/.test(line)) continue;
       const services = line.slice(line.search(/\blogs\b/) + 'logs'.length);
       if (/openbao/i.test(line) || !/\bpostgres\b/.test(services)) {
@@ -174,6 +209,13 @@ function checkIntegrationJob(
         });
       }
     }
+  }
+  if (requireImageScan && (!imageScan || isTrue(job['continue-on-error']))) {
+    findings.push({
+      rule: 'ci/integration-image-scan',
+      path: where,
+      message: `the ${name} job must build and scan the control-plane image with this run's credentials, in a step with no "if" other than \${{ !cancelled() }} and no continue-on-error (nor on the job): "node tooling/repo-scripts/src/secret-scan-cli.ts image --dockerfile deploy/docker/control-plane.Dockerfile --exact-values deploy/docker/dev/.env" (AC-9, SEC-F002-13 c, -29)`,
+    });
   }
 }
 
@@ -229,7 +271,9 @@ export function checkCiInvariants(files: CiFiles): Finding[] {
       const text = steps.map(runText).join('\n');
       checkGitleaksCalls(`${path} (jobs.${name})`, text, findings);
       checkPreInstallGateFirst(path, name, steps, findings);
-      if (name === 'integration') checkIntegrationJob(path, rawJob, steps, findings);
+      if (Object.hasOwn(LOCKED_DOWN_JOBS, name)) {
+        checkLockedDownJob(path, name, rawJob, steps, findings);
+      }
       noteImages(path, JSON.stringify(rawJob));
 
       if (RANGE_SCAN.test(text)) {

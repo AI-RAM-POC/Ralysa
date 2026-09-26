@@ -5,7 +5,9 @@ import {
   buildGraph,
   checkBannedDeps,
   checkBannedDepsGraph,
+  checkProductionClosure,
   packageNameOfKey,
+  readShippedWorkspaces,
 } from '../src/check-banned-deps.ts';
 import { REAL_ROOT } from './repo-copy.ts';
 
@@ -288,5 +290,100 @@ describe('check-banned-deps', () => {
     expect(summary(doc)).toEqual(['banned-deps/lockfile pnpm-lock.yaml']);
     const link = lockfile({ 'apps/web': { dependencies: { x: 'link:../../elsewhere' } } });
     expect(summary(link)).toEqual(['banned-deps/lockfile pnpm-lock.yaml']);
+  });
+});
+
+// TC-F-002-35, lockfile half (SEC-F002-13 b, AR-12; F-002-T14): production-closure mode. From
+// every `shipped: true` workspace, only production edges count; the mock IdP's engine and the dev
+// stack must not be reachable at any depth. devDependencies stay allowed.
+describe('check-banned-deps production closure (TC-F-002-35)', () => {
+  const names = new Map([
+    ...NAMES,
+    ['services/control-plane', '@ralysa/control-plane'],
+    ['packages/auth', '@ralysa/auth'],
+    ['tooling/dev-stack', '@ralysa/dev-stack'],
+  ]);
+  const closure = (doc: unknown, shipped = ['services/control-plane']) =>
+    checkProductionClosure(buildGraph(doc, names), shipped).map((f) => `${f.rule} ${f.path}`);
+  const snapshots = {
+    'oidc-provider@9.11.5': { dependencies: { jose: '6.2.12' } },
+    'jose@6.2.12': {},
+  };
+
+  it('passes when the dev stack and oidc-provider are devDependencies only (the real layout)', () => {
+    const doc = lockfile(
+      {
+        'services/control-plane': {
+          dependencies: { '@ralysa/auth': 'link:../../packages/auth' },
+          devDependencies: { '@ralysa/dev-stack': 'link:../../tooling/dev-stack' },
+        },
+        'packages/auth': { dependencies: { jose: '6.2.12' } },
+        'tooling/dev-stack': { devDependencies: { 'oidc-provider': '9.11.5' } },
+      },
+      snapshots,
+    );
+    expect(closure(doc)).toEqual([]);
+    expect(checkBannedDepsGraph(buildGraph(doc, names))).toEqual([]);
+  });
+
+  it('fails on @ralysa/dev-stack (and so oidc-provider) as a production dependency', () => {
+    const doc = lockfile(
+      {
+        'services/control-plane': {
+          dependencies: { '@ralysa/dev-stack': 'link:../../tooling/dev-stack' },
+        },
+        'tooling/dev-stack': { dependencies: { 'oidc-provider': '9.11.5' } },
+      },
+      snapshots,
+    );
+    const findings = checkProductionClosure(buildGraph(doc, names), ['services/control-plane']);
+    expect(findings.map((f) => f.message.split(' ')[0])).toEqual([
+      '@ralysa/dev-stack',
+      'oidc-provider',
+    ]);
+    expect(new Set(findings.map((f) => f.rule))).toEqual(
+      new Set(['banned-deps/dev-only-in-shipped']),
+    );
+  });
+
+  it('fails on oidc-provider three levels down through a library workspace and a package', () => {
+    const doc = lockfile(
+      {
+        'services/control-plane': { dependencies: { '@ralysa/auth': 'link:../../packages/auth' } },
+        'packages/auth': { dependencies: { 'innocent-lib': '1.0.0' } },
+      },
+      {
+        'innocent-lib@1.0.0': { optionalDependencies: { 'oidc-provider': '9.11.5' } },
+        ...snapshots,
+      },
+    );
+    const findings = checkProductionClosure(buildGraph(doc, names), ['services/control-plane']);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.message).toContain(
+      '@ralysa/control-plane (services/control-plane) → @ralysa/auth (packages/auth) → innocent-lib@1.0.0 → oidc-provider@9.11.5',
+    );
+  });
+
+  it('an npm: alias cannot hide it', () => {
+    const doc = lockfile(
+      { 'services/control-plane': { dependencies: { 'my-idp': 'oidc-provider@9.11.5' } } },
+      snapshots,
+    );
+    expect(closure(doc)).toEqual(['banned-deps/dev-only-in-shipped services/control-plane']);
+  });
+
+  it('a workspace that is not shipped may depend on it; a missing shipped importer fails closed', () => {
+    const doc = lockfile(
+      { 'packages/auth': { dependencies: { 'oidc-provider': '9.11.5' } } },
+      snapshots,
+    );
+    expect(closure(doc, [])).toEqual([]);
+    expect(closure(doc, ['packages/ui'])).toEqual(['banned-deps/dev-only-in-shipped packages/ui']);
+  });
+
+  it('the real repository: every shipped workspace is clean', () => {
+    const shipped = readShippedWorkspaces(REAL_ROOT);
+    expect(shipped).toContain('services/control-plane');
+    expect(checkBannedDeps({ root: REAL_ROOT, shipped })).toEqual([]);
   });
 });

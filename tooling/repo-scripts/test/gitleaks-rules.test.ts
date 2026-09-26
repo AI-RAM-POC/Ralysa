@@ -3,7 +3,15 @@
 // is a real credential, and none exists as a literal in the repo.
 import { describe, expect, it } from 'vitest';
 import { runGitleaks } from '../src/secret-scan.ts';
-import { RULE_ENTROPY, canary, detectable, frag, randomFrom } from '../src/secret-scan-selftest.ts';
+import {
+  RULE_ENTROPY,
+  canary,
+  detectable,
+  frag,
+  ralysaAuthCode,
+  ralysaRefreshToken,
+  randomFrom,
+} from '../src/secret-scan-selftest.ts';
 import { ARTEFACT_CONFIG_PATH, REPO_CONFIG_PATH, gitleaks, writeFile } from './gitleaks-bin.ts';
 import { makeTempDir } from './temp.ts';
 
@@ -14,6 +22,8 @@ const CUSTOM = [
   'litellm-key',
   'mistral-api-key',
   'groq-api-key',
+  'ralysa-refresh-token',
+  'ralysa-auth-code',
   'ralysa-selftest-canary',
 ];
 
@@ -59,6 +69,11 @@ const POSITIVES: [string, string][] = [
     'groq-api-key',
     `const key = "${detectable(frag('gs', 'k_'), ALNUM, 52, RULE_ENTROPY['groq-api-key'])}";`,
   ],
+  // F-002-T14: Ralysa's own tokens, in the places a leak would put them (F-002 design §6.6).
+  ['ralysa-refresh-token', `{"refresh_token":"${ralysaRefreshToken()}","token_type":"Bearer"}`],
+  ['ralysa-refresh-token', `refresh_token=${ralysaRefreshToken()}&client_id=ralysa-cli`],
+  ['ralysa-auth-code', `http://127.0.0.1:49152/callback?code=${ralysaAuthCode()}&state=x`],
+  ['ralysa-auth-code', `  code: '${ralysaAuthCode()}',`],
   ['ralysa-selftest-canary', canary()],
 ];
 
@@ -97,6 +112,13 @@ describe('custom gitleaks rules (TC-F-001-39)', () => {
       // A lowercase or short canary.
       `${frag('ralysa_selftest', '_canary_')}${randomFrom('abcdefghijklmnopqrstuvwxyz0123456789', 24)}`,
       `${frag('RALYSA_SELFTEST', '_CANARY_')}${randomFrom('ABCDEFGHIJKLMNOPQRSTUVWXYZ', 10)}`,
+      // A Ralysa token prefix with a short value, or a low-entropy placeholder of the right length.
+      `refresh_token = "${frag('rly', '_rt_')}${randomFrom(ALNUM, 42)}"`,
+      `code = "${frag('rly', '_ac_')}${randomFrom(ALNUM, 20)}"`,
+      `refresh_token = "${frag('rly', '_rt_')}${'A'.repeat(43)}"`,
+      // The bare prefixes, as the code and docs mention them.
+      `export const REFRESH_TOKEN_PREFIX = '${frag('rly', '_rt_')}';`,
+      `the ${frag('rly', '_ac_')} code is single use`,
     ];
     const found = scan(negatives);
     for (const [index, line] of negatives.entries()) {
