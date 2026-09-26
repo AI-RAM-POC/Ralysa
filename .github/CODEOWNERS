@@ -16,6 +16,23 @@
 /turbo.json                  @radduri @umaadduri
 /.nvmrc                      @radduri @umaadduri
 
+# Security review SEC-F001-37: deployment, the model and Agent SDK boundaries, install-time
+# config, ignore files and packs.
+/deploy/                                  @radduri @umaadduri
+/services/model-gateway/                  @radduri @umaadduri
+/services/agent-host/src/engine/claude/   @radduri @umaadduri
+/.npmrc                                   @radduri @umaadduri
+/.pnpmfile.*                              @radduri @umaadduri
+/.gitignore                               @radduri @umaadduri
+/.dockerignore                            @radduri @umaadduri
+/packs/                                   @radduri @umaadduri
+
+# Workspace manifests: dependencies, scripts and the ralysa contract (shipped, kind, ui).
+/apps/*/package.json                      @radduri @umaadduri
+/packages/*/package.json                  @radduri @umaadduri
+/services/*/package.json                  @radduri @umaadduri
+/tooling/*/package.json                   @radduri @umaadduri
+
 # F-002 wire contracts, by folder (F-002 implementation-notes T01-1; AR-18).
 /packages/protocol/src/common/         @radduri @umaadduri
 /packages/protocol/src/audit/          @radduri @umaadduri
