@@ -9,7 +9,7 @@
 >
 > The section "Development close-out input (F-002-T15)" was written by the developer at T15 and is
 > kept as it was. Everything after it is the test engineer's (`/test F-002`). Nothing here is a G6
-> decision.
+> decision, except the Approval (G6) table, recorded under standing authorization.
 
 ## Development close-out input (F-002-T15)
 
@@ -257,8 +257,8 @@ Latency against real Entra can't be measured locally until E-1 is available.
 > Verdict (§P6-7): **pass with conditions**. There are no open Critical or High findings. Three new findings are Medium:
 > SEC-F002-42 (`Principal` roles ignore the strong-flow admin rule and are a sign-in snapshot),
 > -43 (a shared global rate-limit bucket enables an unauthenticated lockout), and -44 (no recovery for a flagged RTS
-> signing key). There are seven new Low findings (-45 to -51). G6 still needs the founder's written acceptance of
-> -35 (b)–(d), -36 and -37 (condition C1) and a decision on -42 (C2).
+> signing key). There are seven new Low findings (-45 to -51). C1 (-35 (b)–(d), -36, -37) was accepted
+> and C2 (-42 fixed before G7) confirmed by the founder on 2026-09-26 (P6-8).
 
 - **Tested and passing:**
   - authz bypass attempts (TC-10, -11, -25, -26, -27);
@@ -371,7 +371,7 @@ Conditions:
    - nothing is deployed outside dev before G6 and TC-28.
 
    TC-28 must run, and Q4, Q5 and EXC-F002-01 must close, **before any non-dev deployment and
-   before G8 UAT with real users**.
+   before G8 UAT with real users**. Until then, flow-A IP mismatch stays alert-only (SEC-F002-05; deny waits on Q4).
 3. **Before any non-dev deployment** (security.md P6-7 item 3):
    - C1's items: SEC-F002-35 (b)–(d), -36 and -37 built (or before F-011, whichever comes first);
    - SEC-F002-38: require `--log-checkpoints` outside dev and ship the log off-host;
@@ -399,4 +399,4 @@ before G7 (#47).
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| Ram Mohan Rao Adduri | Founder / product owner (QA approver) | Approved with conditions | 2026-09-26 | Standing authorization, recorded by Claude. It rests on his chat statement "I am Ram and accept C1& C2" (security.md P6-8). Conditions 1–4 above. |
+| Ram Mohan Rao Adduri | Founder / product owner (QA approver) | Approved with conditions | 2026-09-26 | Standing authorization, recorded by Claude. It rests on his chat statement "I am Ram and accept C1& C2". The identity was asserted in chat and not checked against his own account, and the P6-7 channel wasn't used (security.md P6-8). Conditions 1–4 above. |
