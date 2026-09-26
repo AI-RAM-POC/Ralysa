@@ -205,12 +205,12 @@ describe('IdP client-secret watcher', () => {
     secrets.fail(PATH, new SecretsError('unavailable', 'read failed: connection refused'));
     await vi.advanceTimersByTimeAsync(180_000);
     expect(await runtime.current()).toEqual({ value: value(1), version: 1 });
-    expect(metrics.counter('idp_client_secret_read_failures_total')).toBe(3);
+    expect(metrics.counter('idp_client_secret_read_failures_total', { via: 'poll' })).toBe(3);
     expect(lines.filter((l) => l.msg === 'idp_client_secret_read_failed')).toEqual([
       {
         level: 'warn',
         msg: 'idp_client_secret_read_failed',
-        fields: { error: 'SecretsError', code: 'unavailable', version_in_use: 1 },
+        fields: { error: 'SecretsError', code: 'unavailable', version_in_use: 1, via: 'poll' },
       },
     ]);
     secrets.fail(PATH, undefined);
@@ -219,6 +219,53 @@ describe('IdP client-secret watcher', () => {
     expect(runtime.version()).toBe(2);
     expect(lines.some((l) => l.msg === 'idp_client_secret_read_recovered')).toBe(true);
     stop();
+  });
+
+  it('a KV version that goes backwards keeps the value and warns once per streak (R35-4)', async () => {
+    const { runtime, secrets, lines, metrics } = harness();
+    const stop = runtime.start();
+    await flush();
+    secrets.put(PATH, value(2));
+    secrets.put(PATH, value(3));
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(runtime.version()).toBe(3);
+    // Metadata deleted and the path rewritten: the store now says version 1.
+    const get = vi.spyOn(secrets, 'get').mockResolvedValue({ value: value(9), version: 1 });
+    await vi.advanceTimersByTimeAsync(180_000);
+    expect(await runtime.current()).toEqual({ value: value(3), version: 3 });
+    const regressed = () => lines.filter((l) => l.msg === 'idp_client_secret_version_regressed');
+    expect(regressed()).toEqual([
+      {
+        level: 'warn',
+        msg: 'idp_client_secret_version_regressed',
+        fields: { held_version: 3, store_version: 1 },
+      },
+    ]);
+    expect(metrics.counter('idp_client_secret_version_regressed_total')).toBe(1);
+    // The streak ends when the store is back at (or past) the held version; a new streak warns again.
+    get.mockResolvedValue({ value: value(3), version: 3 });
+    await vi.advanceTimersByTimeAsync(60_000);
+    get.mockResolvedValue({ value: value(9), version: 2 });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(regressed()).toHaveLength(2);
+    expect(JSON.stringify(lines)).not.toContain(value(9));
+    stop();
+  });
+
+  it('a failed re-read after invalid_client is counted, logged and rejected (R35 nit)', async () => {
+    const { runtime, secrets, lines, metrics } = harness();
+    await runtime.current();
+    secrets.fail(PATH, new SecretsError('unavailable', 'down'));
+    await expect(runtime.refreshAfterInvalidClient(1)).rejects.toBeInstanceOf(SecretsError);
+    expect(
+      metrics.counter('idp_client_secret_read_failures_total', { via: 'invalid_client' }),
+    ).toBe(1);
+    expect(lines.find((l) => l.msg === 'idp_client_secret_read_failed')?.fields).toEqual({
+      error: 'SecretsError',
+      code: 'unavailable',
+      version_in_use: 1,
+      via: 'invalid_client',
+    });
   });
 
   it('a first read that fails rejects, and the next call reads again', async () => {

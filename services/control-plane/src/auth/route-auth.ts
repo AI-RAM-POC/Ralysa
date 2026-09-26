@@ -17,6 +17,31 @@ import type { RtsDeps } from './deps.js';
 
 type AuthDeps = Pick<RtsDeps, 'verifier' | 'rejections' | 'config'>;
 
+/** At most one `verifier_unavailable` line per route in this window (review of #35). */
+export const VERIFIER_UNAVAILABLE_LOG_EVERY_MS = 10_000;
+
+/** Per deps (one app), per route template: when the last line was written, and lines skipped since. */
+const unavailableLog = new WeakMap<object, Map<string, { at: number; suppressed: number }>>();
+
+function shouldLogUnavailable(
+  deps: AuthDeps,
+  route: string,
+): { log: false } | { log: true; suppressed: number } {
+  let routes = unavailableLog.get(deps);
+  if (routes === undefined) {
+    routes = new Map();
+    unavailableLog.set(deps, routes);
+  }
+  const now = Date.now();
+  const last = routes.get(route);
+  if (last !== undefined && now - last.at < VERIFIER_UNAVAILABLE_LOG_EVERY_MS) {
+    last.suppressed += 1;
+    return { log: false };
+  }
+  routes.set(route, { at: now, suppressed: 0 });
+  return { log: true, suppressed: last?.suppressed ?? 0 };
+}
+
 export interface AuthenticateOptions {
   /**
    * Rejection reasons answered 403 instead of 401: an authentic token of the wrong kind or of an
@@ -71,10 +96,21 @@ export async function authenticate(
       // Logged under `error`, never `err` (review of #26); the summary is type, scrubbed message
       // and code of the cause (a database or fetch fault), so an outage is diagnosable without a
       // token in the log (R32 follow-up).
-      request.log.warn(
-        { error: errorSummary(error.cause ?? error), token_kind: kind },
-        'verifier_unavailable',
-      );
+      // Rate-limited per route: an outage answers every request 503, and one line per window
+      // (with the count skipped since the last one) is enough to diagnose it.
+      const route = request.routeOptions.url ?? 'unmatched';
+      const decision = shouldLogUnavailable(deps, route);
+      if (decision.log) {
+        request.log.warn(
+          {
+            error: errorSummary(error.cause ?? error),
+            token_kind: kind,
+            route,
+            ...(decision.suppressed > 0 ? { suppressed: decision.suppressed } : {}),
+          },
+          'verifier_unavailable',
+        );
+      }
       throw new HttpProblem('temporarily_unavailable');
     }
     throw error;

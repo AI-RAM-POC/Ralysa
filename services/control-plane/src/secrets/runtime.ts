@@ -96,6 +96,8 @@ export function createIdpClientSecret(options: IdpClientSecretOptions): IdpClien
   /** Versions adopted here whose event hasn't landed yet (retried on the next poll). */
   const unrecorded = new Set<number>();
   let failingSince: number | undefined;
+  /** True while the store answers an older version than the one held (one warning per streak). */
+  let regressed = false;
 
   const record = async (version: number): Promise<void> => {
     if (options.audit === undefined) return;
@@ -127,7 +129,22 @@ export function createIdpClientSecret(options: IdpClientSecretOptions): IdpClien
 
   /** Takes `next` if it is newer than what is held. */
   const adopt = (next: SecretValue, via: 'first_read' | 'poll' | 'invalid_client'): SecretValue => {
-    if (held !== undefined && next.version <= held.version) return held;
+    if (held !== undefined && next.version < held.version) {
+      // KV versions only grow, unless the entry's metadata was deleted and the path rewritten
+      // (versions restart at 1) or a replica reads a restored store. Keep the value in hand, and
+      // say so once per streak: the runbook restarts every replica (R35-4).
+      if (!regressed) {
+        regressed = true;
+        metrics.increment('idp_client_secret_version_regressed_total');
+        logger.warn('idp_client_secret_version_regressed', {
+          held_version: held.version,
+          store_version: next.version,
+        });
+      }
+      return held;
+    }
+    regressed = false;
+    if (held !== undefined && next.version === held.version) return held;
     const previous = held?.version;
     held = next;
     logger.info('idp_client_secret_observed', {
@@ -159,6 +176,20 @@ export function createIdpClientSecret(options: IdpClientSecretOptions): IdpClien
     return reading;
   };
 
+  /** Counts a failed store read and logs it once per failure streak; the value in hand stays. */
+  const readFailed = (error: unknown, via: 'poll' | 'invalid_client'): void => {
+    metrics.increment('idp_client_secret_read_failures_total', { via });
+    if (failingSince === undefined) {
+      failingSince = Date.now();
+      logger.warn('idp_client_secret_read_failed', {
+        error: error instanceof Error ? error.name : 'unknown',
+        code: (error as { code?: unknown }).code,
+        version_in_use: held?.version,
+        via,
+      });
+    }
+  };
+
   let polling = false;
   const poll = async (): Promise<void> => {
     if (polling) return;
@@ -166,16 +197,7 @@ export function createIdpClientSecret(options: IdpClientSecretOptions): IdpClien
     try {
       await read('poll');
     } catch (error) {
-      metrics.increment('idp_client_secret_read_failures_total');
-      // One line per failure streak, not per poll; the value in hand stays in use.
-      if (failingSince === undefined) {
-        failingSince = Date.now();
-        logger.warn('idp_client_secret_read_failed', {
-          error: error instanceof Error ? error.name : 'unknown',
-          code: (error as { code?: unknown }).code,
-          version_in_use: held?.version,
-        });
-      }
+      readFailed(error, 'poll');
     } finally {
       await flushRecords();
       polling = false;
@@ -186,7 +208,14 @@ export function createIdpClientSecret(options: IdpClientSecretOptions): IdpClien
     current: () => (held === undefined ? read('first_read') : Promise.resolve(held)),
 
     async refreshAfterInvalidClient(used) {
-      const next = await read('invalid_client');
+      let next: SecretValue;
+      try {
+        next = await read('invalid_client');
+      } catch (error) {
+        // The caller fails the request as unavailable (R35 nit).
+        readFailed(error, 'invalid_client');
+        throw error;
+      }
       const retry = next.version !== used;
       metrics.increment('idp_invalid_client_total', { retried: String(retry) });
       logger.warn('idp_invalid_client', { version_used: used, version_now: next.version, retry });

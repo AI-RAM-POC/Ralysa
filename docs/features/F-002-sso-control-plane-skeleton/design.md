@@ -19,6 +19,7 @@
 | 2026-09-26 | 5 | Implementation feedback (F-002-T12 part 1, T11-11), recorded under the standing authorization: §3.6 `@ralysa/auth` gains `createServiceTokenVerifier` (the same header, signature and claim checks for `token_use: service` tokens, `aud: control-plane`, registered clients only), and the control plane uses both package verifiers over its own JWKS rows with a database `RevocationSource`; a database fault there is 503, never `auth.token_rejected` (implementation notes T12-2 to T12-6, R32-1 to R32-4). |
 | 2026-09-26 | 6 | Implementation feedback (F-002-T12 part 2), recorded under the standing authorization: §3.4.4 `auth.token_rejected` reports from services are aggregated per service at the control plane and answered `aggregated` (a new `ServiceEventsResponse` status; `TokenRejectedReportDetails` in the protocol); `source` comes from the service name, and a registered service whose name is not an audit `Source` can write no audit. §3.4.5 a null client `outcome` is stored as `success`; the 503 body is problem+json with `acks` (`ClientEventsUnavailable`); gaps become final after 15 min idle and the unterminated sweep uses 24 h without an event. §3.6 `@ralysa/auth` gains `createRejectionReporter` (implementation notes T12-7 to T12-21). |
 | 2026-09-26 | 7 | Implementation feedback (F-002-T13), recorded under the standing authorization: §3.8 `idp` gains `client_secret_poll_s` (default 60, 1–300), the watch interval §5.7 names, so TC-F-002-15 can compress it. §5.7: the `invalid_client` retry is made only when the re-read returns a **newer** KV version (a retry with the same value can't succeed), and `secret.rotated idp_client_secret phase=observed` carries an event id derived from the org, the path hash and the version, so every replica (and a restart) writes the same event and the store keeps one per version; the first version a process reads is recorded the same way. See implementation-notes.md T13. |
+| 2026-09-26 | 8 | Code review of #35 (F-002-T13), recorded under the standing authorization: §3.4.4 and §3.4.5 accept only **version 7** `event_id`s from services and clients (`ServiceAuditEventInput`, `ClientAuditEventInput`; protocol `UuidV7`), because the server derives version 8 ids for its own idempotent events (`secret.rotated observed`, sign-in failure reports, client-session events) and an external writer could otherwise store one first and suppress the server's event (R35-1). The stored envelope (`AuditEventInput`) still accepts any UUID. §3.2.4: when a signing-key version activates, every lower version is superseded, including one never active, so it retires and leaves JWKS (T07 follow-up). §5.7 diagram: the retry is made only for a newer KV version. |
 
 ---
 
@@ -1314,7 +1315,7 @@ sequenceDiagram
     Note over Op,A: IdP client secret (KV v2)
     Op->>IdP: Add a second client secret
     Op->>BAO: kv put idp-client-secret (new version)
-    RTS->>BAO: Watch (60 s). On invalid_client, re-read at once and retry once
+    RTS->>BAO: Watch (60 s). On invalid_client, re-read at once and retry once (only if the KV version is newer)
     RTS->>A: secret.rotated idp_client_secret phase=observed (once per version)
     Op->>IdP: Remove the old secret after every replica reports the new version
 ```

@@ -251,7 +251,10 @@ job exits non-zero, saying the migrations were applied but not recorded.
   or an unregistered service is 403 (recorded as `auth.token_rejected wrong_token_use`).
   - 1–100 events and 256 KB per body; each event must pass the envelope schema, I-JSON `details`
     and the `failure`-on-`auth.*`-only rule (else 422), and a user `actor.user_id` must exist in
-    the org (422).
+    the org (422). Every `event_id` must be a lower-case **version 7** UUID, here and on the client
+    path (else 422): the server derives version 8 ids for its own idempotent events
+    (`secret.rotated observed`, sign-in failure reports, client-session events), and no external
+    writer may claim one first (R35-1).
   - **Allow-list** (SEC-F002-03): every action must be in the service's `services[].audit_actions`
     and outside the reserved namespaces (`auth.`, `audit.`, `secret.`, `directory.`, `db.`,
     `policy.`, `kill_switch.`; only `auth.token_rejected` and `secret.rotated` may be listed).
@@ -485,14 +488,19 @@ process holds it in the secret watcher (`src/secrets/runtime.ts`):
 - it re-reads the KV entry every `idp.client_secret_poll_s` (60 s) and adopts a newer version only;
   an OpenBao outage keeps the value in hand (`idp_client_secret_read_failed` once per failure
   streak);
-- each replica logs `idp_client_secret_observed version=<n>` when it adopts a version (and sets the
-  gauge `idp_client_secret_version`); `secret.rotated kind=idp_client_secret phase=observed` is
+- each replica logs `idp_client_secret_observed version=<n>` when it adopts a version (the gauge
+  `idp_client_secret_version` is emitted too, but `serve` has no metrics exporter yet, R29-n5, so
+  the log line is what to watch); `secret.rotated kind=idp_client_secret phase=observed` is
   recorded **once per version** across replicas (the event id is derived from the org, the path and
   the version);
 - when Entra answers `invalid_client`, the replica re-reads KV at once and retries the request
   once, only with a newer version (`idp_invalid_client retry=true`). `retry=false` means KV holds
   no newer value: the stored secret is wrong or expired, and sign-in (flow B) and Graph (every
-  sign-in and refresh) fail closed until it is fixed.
+  sign-in and refresh) fail closed until it is fixed;
+- if KV answers an **older** version than the one a replica holds (the entry's metadata was
+  deleted and the path rewritten, so versions restarted at 1, or a store was restored), the
+  replica keeps its value and logs `idp_client_secret_version_regressed` with `held_version` and
+  `store_version` once per streak. It adopts nothing until the store passes the held version.
 
 **Lifetime.** Every client secret is created with an expiry of **at most 180 days**, and its expiry
 is recorded in the register below. Rotate at least 30 days before it expires. The preferred end
@@ -502,13 +510,16 @@ state is a certificate credential signed through Transit, which removes the stat
 **Steps** (the operator identity: KV create/update only, it can't read a value back).
 
 1. In Entra, add a **second** client secret to the RTS app registration with an end date at most
-   180 days out, keeping the current one, for example
-   `az ad app credential reset --id <rts_client_id> --append --display-name rts-<yyyymmdd> --end-date <yyyy-mm-dd>`.
-   Record its key id and end date in the register (never the value). Allow a few minutes for Entra
-   to propagate a new credential before step 2.
-2. Write it to KV from stdin, never as a command-line argument:
-   `bao kv put kv/ralysa/control-plane/idp-client-secret value=-`. `bao kv metadata get …` shows
-   the new version number.
+   180 days out, keeping the current one. Capture the password into a shell variable so it is
+   never printed:
+   `NEW_SECRET=$(az ad app credential reset --id <rts_client_id> --append --display-name rts-<yyyymmdd> --end-date <yyyy-mm-dd> --query password -o tsv)`.
+   Read its key id for the register (never the value):
+   `az ad app credential list --id <rts_client_id> --query "[?displayName=='rts-<yyyymmdd>'].{keyId:keyId, end:endDateTime}" -o table`.
+   Allow a few minutes for Entra to propagate the new credential before step 2 (a replica that
+   adopts it too early gets `invalid_client` with no newer version to retry).
+2. Write it to KV from stdin, never as a command-line argument, then drop the variable:
+   `printf '%s' "$NEW_SECRET" | bao kv put kv/ralysa/control-plane/idp-client-secret value=- && unset NEW_SECRET`.
+   `bao kv metadata get …` shows the new version number.
 3. Wait until every replica reports it: `idp_client_secret_observed version=<n>` from each `serve`
    instance (at most one poll, 60 s), and the one `secret.rotated … phase=observed version=<n>`
    in `GET /v1/audit/events?action=secret.rotated`.
@@ -516,6 +527,11 @@ state is a certificate credential signed through Transit, which removes the stat
    `az ad app credential delete --id <rts_client_id> --key-id <old key id>`. A replica that hadn't
    polled yet recovers on its next `invalid_client` without failing the request.
 5. Update the register: the old key id removed, the new one in use.
+
+**Don't** delete the KV entry's metadata (`bao kv metadata delete`) or recreate the path: KV
+versions restart at 1, and every running replica ignores the "older" versions and keeps the old
+secret (`idp_client_secret_version_regressed`). If a version ever goes backwards, write the correct
+value and **restart every `serve` replica** so each reads the entry afresh.
 
 **Register** (one per environment, kept with the deployment's operations records):
 
@@ -557,7 +573,8 @@ Never for an ad hoc change.
    If the job reports "applied but not recorded", the migrations are in: record the gap in the
    change record and check that `audit.schema_changed` covers the DDL.
 
-4. Run `audit-verify --log-checkpoints <shipped checkpoint log>` afterwards; it must pass.
+4. Run `audit-verify --config <audit-verify config> --log-checkpoints <shipped checkpoint log>`
+   afterwards; it must pass.
 5. Remove the job. Rotating the `db/audit_migrator` password afterwards is recommended.
 
 Any `audit.schema_changed` outside such a window, or by another `session_user`, is a security
@@ -579,7 +596,7 @@ have been exported.
 **Recovery (manual until SEC-F002-35 b–d land).**
 1. Treat it as a security incident. Find who flipped the flag in the OpenBao audit device log
    (SEC-F002-11), and preserve the sealer's `audit_checkpoint` log lines (the off-host copy).
-2. Run `audit-verify --log-checkpoints <shipped log>` against a restored copy of the key's
+2. Run `audit-verify --config <audit-verify config> --log-checkpoints <shipped log>` against a restored copy of the key's
    public versions, taken from the log or an earlier `describe`, so history up to the flip can
    still be checked against the logged checkpoints.
 3. Recovery by key epoch (a new key name, pinned thumbprints, a checkpoint payload that names

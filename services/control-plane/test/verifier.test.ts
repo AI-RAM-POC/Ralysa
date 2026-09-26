@@ -8,6 +8,7 @@ import { buildApp } from '../src/app.js';
 import type { Rejection } from '../src/audit/rejections.js';
 import { createClientRegistry } from '../src/auth/clients.js';
 import { mintAccessToken } from '../src/auth/tokens/mint.js';
+import { VERIFIER_UNAVAILABLE_LOG_EVERY_MS } from '../src/auth/route-auth.js';
 import { createControlPlaneVerifier, createOwnKeySet } from '../src/auth/verifier.js';
 import { createPinoLogger } from '../src/observability/pino.js';
 import { fakeKeys } from './fixtures/fake-keys.js';
@@ -120,7 +121,15 @@ describe('route authentication', () => {
     });
     const unavailable = () =>
       lines
-        .map((line) => JSON.parse(line) as { msg?: string; error?: Record<string, unknown> })
+        .map(
+          (line) =>
+            JSON.parse(line) as {
+              msg?: string;
+              route?: string;
+              suppressed?: number;
+              error?: Record<string, unknown>;
+            },
+        )
         .filter((line) => line.msg === 'verifier_unavailable');
     return { instance, rejected, fake, lines, unavailable };
   }
@@ -201,6 +210,32 @@ describe('route authentication', () => {
     });
     expect(lines.join('\n')).not.toContain(token);
     expect(lines.join('\n')).not.toContain(token.split('.')[1] ?? token);
+  });
+
+  it('verifier_unavailable is written at most once per route per window, with the skipped count (R35 nit)', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      const { instance, fake, unavailable } = await app();
+      const token = await mintAccessToken(fake.keys, serviceClaims());
+      fake.keys.jwks = () => Promise.reject(new Error('database down'));
+      const hit = async (url: string) =>
+        (await instance.inject({ url, headers: { authorization: `Bearer ${token}` } })).statusCode;
+      for (let i = 0; i < 3; i++) expect(await hit('/v1/internal/governance')).toBe(503);
+      // Another route has its own window.
+      expect(await hit('/v1/internal/principals/0192f0a0-7b3c-7d4e-8f00-000000000001')).toBe(503);
+      expect(unavailable().map((l) => [l.route, l.suppressed])).toEqual([
+        ['/v1/internal/governance', undefined],
+        ['/v1/internal/principals/:user_id', undefined],
+      ]);
+      vi.setSystemTime(Date.now() + VERIFIER_UNAVAILABLE_LOG_EVERY_MS);
+      expect(await hit('/v1/internal/governance')).toBe(503);
+      expect(unavailable().at(-1)).toMatchObject({
+        route: '/v1/internal/governance',
+        suppressed: 2,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('an unreadable key set answers 503 and records no rejection', async () => {

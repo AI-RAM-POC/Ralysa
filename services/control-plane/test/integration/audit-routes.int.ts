@@ -31,6 +31,7 @@ import { createRateLimiter } from '../../src/http/rate-limits.js';
 import { ensureOrganization } from '../../src/org/bootstrap.js';
 import { fakeKeys } from '../fixtures/fake-keys.js';
 import { TENANT, serveConfig } from '../fixtures/serve-config.js';
+import { idpSecretObservedEvent } from '../../src/secrets/runtime.js';
 import { type TestDatabase, createTestDatabase } from './support/db.js';
 
 const stack = await devStackOrSkip();
@@ -494,6 +495,17 @@ describe.skipIf(stack === undefined)('audit endpoints (F-002-T12)', () => {
       expect(await rows('event_id = $2', [event.event_id])).toEqual([]);
     });
 
+    it('R35-1: a server-derived (v8) event_id is 422 and never stored, so secret.rotated cannot be pre-empted', async () => {
+      const token = await serviceToken('model-gateway');
+      // The id the control plane will derive for `secret.rotated observed` of the next version.
+      const preempt = idpSecretObservedEvent(ORG, config.idp.client_secret_path, 2).event_id;
+      const reply = await inject('POST', '/v1/audit/events', token, {
+        events: [{ ...svcEvent(null), event_id: preempt }],
+      });
+      expect(reply.statusCode).toBe(422);
+      expect(await rows('event_id = $2', [preempt])).toEqual([]);
+    });
+
     it('413 over 256 KB', async () => {
       const token = await serviceToken('model-gateway');
       const big = { events: [svcEvent(null, { details: { pad: 'x'.repeat(300 * 1024) } })] };
@@ -804,6 +816,16 @@ describe.skipIf(stack === undefined)('audit endpoints (F-002-T12)', () => {
         client_seq: '2',
         details: { client: { user_id: mallory, attestation: 'server', note: 'ab' } },
       });
+    });
+
+    it('R35-1: a client event with a server-derived (v8) event_id is 422 and never stored', async () => {
+      const alice = await seedUser();
+      const token = await userToken(alice);
+      const sessionId = await open(token);
+      const preempt = idpSecretObservedEvent(ORG, config.idp.client_secret_path, 3).event_id;
+      const reply = await send(token, sessionId, [{ ...cev(2), event_id: preempt }]);
+      expect(reply.statusCode).toBe(422);
+      expect(await rows('event_id = $2', [preempt])).toEqual([]);
     });
 
     it('422 for a non-allow-listed action or a reserved details key; 413 for an event over 4 KB', async () => {

@@ -13,7 +13,8 @@
 // - `invalid_client` at the token endpoint asks the watcher to re-read the secret at once and
 //   retries once, only with a newer version: a failed client authentication doesn't consume the
 //   IdP's code, so the retry is safe (T10-32, F-002-T13).
-// - Every call is bounded (3 s); a network fault or timeout is `unavailable`, any protocol or
+// - Every call is bounded (3 s), the secret watcher's KV reads included (review of #35: the
+//   OpenBao client's own timeout is 5 s); a network fault or timeout is `unavailable`, any protocol or
 //   validation failure is `rejected` (the reason never carries a token or code).
 import type { SecretStore, SecretValue } from '@ralysa/secrets';
 import * as client from 'openid-client';
@@ -21,6 +22,19 @@ import type { ServeConfig } from '../../config/schema.js';
 import { type IdpClientSecret, createIdpClientSecret } from '../../secrets/runtime.js';
 
 export const OIDC_TIMEOUT_S = 3;
+
+/** Settles with `promise`, or rejects with a TimeoutError after OIDC_TIMEOUT_S. */
+function bounded<T>(promise: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => {
+      reject(new DOMException('the secret read timed out', 'TimeoutError'));
+    }, OIDC_TIMEOUT_S * 1000);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    clearTimeout(timer);
+  });
+}
 export const OIDC_CONFIG_TTL_MS = 60 * 60 * 1000;
 /** The ID token is all RTS needs from the IdP in flow B. */
 export const FLOW_B_SCOPE = 'openid profile email';
@@ -122,15 +136,18 @@ export function createOidcClient(options: {
 
   return {
     async authorizationUrl(input) {
-      const url = client.buildAuthorizationUrl(await configuration(await clientSecret.current()), {
-        redirect_uri: idpCallbackUrl(config),
-        response_type: 'code',
-        scope: FLOW_B_SCOPE,
-        state: input.state,
-        nonce: input.nonce,
-        code_challenge: input.codeChallenge,
-        code_challenge_method: 'S256',
-      });
+      const url = client.buildAuthorizationUrl(
+        await configuration(await bounded(clientSecret.current())),
+        {
+          redirect_uri: idpCallbackUrl(config),
+          response_type: 'code',
+          scope: FLOW_B_SCOPE,
+          state: input.state,
+          nonce: input.nonce,
+          code_challenge: input.codeChallenge,
+          code_challenge_method: 'S256',
+        },
+      );
       return url.href;
     },
 
@@ -149,7 +166,7 @@ export function createOidcClient(options: {
         let used: SecretValue;
         let configured: client.Configuration;
         try {
-          used = await clientSecret.current();
+          used = await bounded(clientSecret.current());
         } catch {
           return { kind: 'unavailable', reason: 'client_secret' };
         }
@@ -167,7 +184,7 @@ export function createOidcClient(options: {
           // Rotated: re-read at once and retry once, only with a newer version (F-002-T13).
           let next: SecretValue | undefined;
           try {
-            next = await clientSecret.refreshAfterInvalidClient(used.version);
+            next = await bounded(clientSecret.refreshAfterInvalidClient(used.version));
           } catch {
             return { kind: 'unavailable', reason: 'client_secret' };
           }

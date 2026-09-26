@@ -181,16 +181,18 @@ export async function runRotationScenario(options: ScenarioOptions): Promise<Sce
         await operator('POST', `kv/data/${secretPath.slice('kv/'.length)}`, { data: { value } }),
         'operator kv put',
       );
-    // The operator can't read the value back (runbook: versions only, from metadata).
-    const readBack = await operator('GET', `kv/data/${secretPath.slice('kv/'.length)}`);
-    if (readBack.status !== 403 && readBack.status !== 404) {
-      throw new Error(`the operator identity could read KV data (${String(readBack.status)})`);
-    }
-
     // --- the IdP, the database and the organization ----------------------------------------------
     const idp: MockIdp = await startMockIdp({ rtsRedirectUris: [`${BASE}/oauth2/idp/callback`] });
     cleanups.push(() => idp.close());
     await kvPut(idp.clientSecret);
+    // The operator can't read the value back (runbook: versions only, from metadata). Checked
+    // once the entry exists, and only 403 passes: a 404 would prove nothing (review of #35).
+    const readBack = await operator('GET', `kv/data/${secretPath.slice('kv/'.length)}`);
+    if (readBack.status !== 403) {
+      throw new Error(
+        `the operator identity must get 403 reading KV data, got ${String(readBack.status)}`,
+      );
+    }
     const input = serveConfigInput({
       env: 'test',
       org: {
@@ -545,13 +547,13 @@ export async function runRotationScenario(options: ScenarioOptions): Promise<Sce
       return undefined;
     };
 
-    const plan: ((target: Replica) => Promise<unknown>)[] = [
-      exchange,
-      flowB,
-      refresh,
-      verifyGateway,
-      refresh,
-      verifyControlPlane,
+    const plan: [OperationKind, (target: Replica) => Promise<unknown>][] = [
+      ['exchange', exchange],
+      ['flow_b', flowB],
+      ['refresh', refresh],
+      ['verify_gateway', verifyGateway],
+      ['refresh', refresh],
+      ['verify_cp', verifyControlPlane],
     ];
     let tick = 0;
     const inflight = new Set<Promise<unknown>>();
@@ -559,10 +561,10 @@ export async function runRotationScenario(options: ScenarioOptions): Promise<Sce
       // Each full pass over the plan goes to one replica, the next pass to the other, so both
       // replicas serve every kind of operation.
       const target = replicas[Math.floor(tick / plan.length) % 2] ?? a;
-      const op = plan[tick % plan.length] ?? exchange;
+      const [kind, op] = plan[tick % plan.length] ?? ['exchange', exchange];
       tick += 1;
       const run = op(target).catch((error: unknown) => {
-        fail('exchange', target, `threw ${error instanceof Error ? error.name : 'unknown'}`);
+        fail(kind, target, `threw ${error instanceof Error ? error.name : 'unknown'}`);
       });
       inflight.add(run);
       void run.finally(() => inflight.delete(run));
