@@ -475,6 +475,10 @@ T-1 and T-4 in P6-5: the "PEPs can't see the session role" and "`Principal` snap
 
 **Resolved in PR #58 (review round 3):** SEC-F002-53 fully (sign-in reads the database clock before its Graph call, stamps that time, and applies the same stale skip to the two configured groups' memberships, with a latch test) and SEC-F002-56 (the skew warning is documented as log-only; the runbook states the stolen-token residual, that sign-out ends only the caller's own session, and that a missing event in step 3 is not a failure).
 
+**Round-3 verification (2026-09-26, 94291fb/0a9c71a):** SEC-F002-53 **fixed** (sign-in orders by its pre-Graph DB clock under the per-user lock; the latch test `sign-in.int.ts` R58-r2-1 shows a stale sign-in leaves memberships and audit untouched and its session gets `session_roles: ['user']`); SEC-F002-56 **fixed**. New SEC-F002-57 (Low, docs): the runbook's last resort must say that stopping only the governance feed doesn't stop the control plane's own routes (they read revocation from the DB, `auth/verifier.ts:38, 113`), so `/v1/audit/events` stays usable with a stolen admin token; stop the control plane itself. `ralysa /logout` doesn't exist yet (F-005). **SEC-F002-42 and -52..-56 are closed for G7**; -57 doesn't block G7. -54 carries a G4 condition to F-003 and F-004: PEPs authorize on `session_roles` only.
+
+**SEC-F002-57 fixed** in PR #58 (runbook step 2: stop the control plane itself, not only its feed; the CLI sign-out command is marked F-005).
+
 ### P6-5. Threat table (Phase 6 update)
 
 | # | Threat | Likelihood | Impact | Control now in code | Gap | Recommendation |

@@ -862,15 +862,17 @@ ends it sooner.
 2. Revoke the user's Ralysa sessions. **Phase 0 has no operator command or API for this:**
    operator session revocation stays in F-006 (REQ-017, the admin session revocation UI; decided
    2026-09-26). Until it ships, the Ralysa-side paths are:
-   - sign-out (`POST /oauth2/revoke`, `ralysa /logout`), which ends **only the caller's own
+   - sign-out (`POST /oauth2/revoke`; the CLI's sign-out command comes with F-005), which ends **only the caller's own
      session**: the user can end theirs, but nobody can end someone else's this way;
    - otherwise the Entra step above: the user's next refresh is refused (`user_disabled` or
      `idp_session_revoked`), which revokes every session of the user and sets `revoked_before`,
      so the feed stops their access tokens at every PEP within 60 s of that refresh. A token
      that is never refreshed is the residual above.
-   - **Last resort, org-wide:** stopping the control plane (or its governance feed) makes every
-     PEP refuse every token within 60 s (G-1, `governance_stale`), and the control plane's own
-     routes stop at once. That is an **outage for the whole org**, not a targeted removal: only
+   - **Last resort, org-wide:** stopping the control plane itself makes every PEP refuse every
+     token within 60 s (G-1, `governance_stale`), and the control plane's own routes stop at once.
+     Stopping only the governance feed is **not enough**: the control plane checks revocation
+     against its own database, not the feed, so its routes keep serving, including
+     `GET /v1/audit/events`, the one `platform_admin` action in Phase 0. That is an **outage for the whole org**, not a targeted removal: only
      with the incident commander's approval.
 
    Don't edit `cp.auth_session` or `cp.app_user` by hand: such a write isn't audited.
