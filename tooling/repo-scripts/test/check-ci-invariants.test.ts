@@ -261,8 +261,70 @@ describe('check-ci-invariants', () => {
             'run: echo skipped # node tooling/repo-scripts/src/secret-scan-cli.ts image',
           ),
       ],
+      // Review of #34 (R34-n1): a step that can't fail the job doesn't count.
+      [
+        'the step switched off with if: false',
+        (t: string) =>
+          t.replace(
+            '- name: Image secret scan (AC-9)\n        if: ${{ !cancelled() }}',
+            '- name: Image secret scan (AC-9)\n        if: false',
+          ),
+      ],
+      [
+        'the step under another condition',
+        (t: string) =>
+          t.replace(
+            '- name: Image secret scan (AC-9)\n        if: ${{ !cancelled() }}',
+            "- name: Image secret scan (AC-9)\n        if: ${{ github.event_name == 'push' }}",
+          ),
+      ],
+      [
+        'the step with continue-on-error: true',
+        (t: string) =>
+          t.replace(
+            '- name: Image secret scan (AC-9)\n        if: ${{ !cancelled() }}',
+            '- name: Image secret scan (AC-9)\n        if: ${{ !cancelled() }}\n        continue-on-error: true',
+          ),
+      ],
+      [
+        'the job with continue-on-error: true',
+        (t: string) =>
+          t.replace(
+            '    timeout-minutes: 20\n',
+            '    timeout-minutes: 20\n    continue-on-error: true\n',
+          ),
+      ],
     ])('fails ci/integration-image-scan (F-002-T14) on %s', (_label, edit) => {
       expect(rules({ ci: withJob(edit) })).toEqual(['ci/integration-image-scan']);
+    });
+
+    it('the image step without any if still counts', () => {
+      const ci = withJob((t) =>
+        t.replace(
+          '- name: Image secret scan (AC-9)\n        if: ${{ !cancelled() }}\n',
+          '- name: Image secret scan (AC-9)\n',
+        ),
+      );
+      expect(rules({ ci })).toEqual([]);
+    });
+
+    it('the locked-down rules apply to a `soak` job too (F-002-T13), without the image scan', () => {
+      if (integration === undefined) throw new Error('no integration job in ci.yml');
+      // The integration job's body, renamed, minus the image scan: it passes as `soak`.
+      const soak = integration
+        .replace('\n  integration:\n', '\n  soak:\n')
+        .replace(
+          /\n {6}- name: Image secret scan \(AC-9\)\n[\s\S]*?--exact-values deploy\/docker\/dev\/\.env\n/,
+          '\n',
+        );
+      const workflow = `name: Soak\non:\n  workflow_dispatch:\njobs:${soak}`;
+      expect(rules({ ci: workflow })).toEqual([]);
+      expect(rules({ ci: workflow.replace('contents: read', 'contents: write') })).toEqual([
+        'ci/integration-no-secrets',
+      ]);
+      expect(
+        rules({ ci: workflow.replace('logs --no-color postgres', 'logs --no-color') }),
+      ).toEqual(['ci/integration-artefact']);
     });
 
     it('requires the pre-install gate before the job installs', () => {

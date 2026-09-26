@@ -9,9 +9,12 @@ import { existsSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { SecretScanError } from '../src/secret-scan.ts';
+import { DEV_ONLY_PACKAGES } from '@ralysa/eslint-config/boundaries';
 import {
+  DEV_ONLY_IN_IMAGE,
   type Docker,
   type ImageConfig,
+  SECRET_NAME,
   checkDevOnlyAbsent,
   checkImageConfig,
   devOnlyNamedIn,
@@ -168,6 +171,42 @@ describe('dev-only exclusion (TC-F-002-35, SEC-F002-13 c)', () => {
     const fs = rootfs({ 'srv/package.json': APP_PACKAGE });
     expect(checkDevOnlyAbsent(fs, '/app').map((f) => f.rule)).toEqual(['image/positive-control']);
     expect(checkDevOnlyAbsent(fs, '').map((f) => f.rule)).toEqual(['image/positive-control']);
+  });
+});
+
+describe('shared lists (R34-n2, R34-n3)', () => {
+  it('DEV_ONLY_IN_IMAGE is boundaries.js DEV_ONLY_PACKAGES (a dependency-free copy)', () => {
+    expect([...DEV_ONLY_IN_IMAGE]).toEqual(DEV_ONLY_PACKAGES);
+  });
+
+  it.each([
+    'IDP_CLIENT_SECRET',
+    'DB_PASSWORD',
+    'PASSWORD_FILE',
+    'NPM_TOKEN',
+    'SIGNING_KEY',
+    'KEY',
+    'KEY_FILE',
+    'AUDIT-HMAC-KEY',
+    'API_KEY',
+    'APIKEY',
+    'PRIVATE_PEM',
+    'BAO_ROLE_ID',
+    'AZURE_CREDENTIALS',
+  ])('SECRET_NAME matches %s', (name) => {
+    expect(SECRET_NAME.test(name)).toBe(true);
+  });
+
+  it.each([
+    'PATH',
+    'NODE_VERSION',
+    'YARN_VERSION',
+    'NODE_ENV',
+    'MONKEY',
+    'KEYBOARD_LAYOUT',
+    'HOME',
+  ])('SECRET_NAME does not match %s', (name) => {
+    expect(SECRET_NAME.test(name)).toBe(false);
   });
 });
 

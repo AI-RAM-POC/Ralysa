@@ -6,7 +6,16 @@
 # holds the Postgres password and the OpenBao root token), every .env, keys and certificates.
 **/.env
 **/.env.*
+**/.envrc
 deploy/docker/dev/
+**/.ssh
+**/.aws
+# SSH key files by their standard names (not `id_*`, which would also drop a source file such as
+# `id_token.ts` from the build).
+**/id_rsa*
+**/id_dsa*
+**/id_ecdsa*
+**/id_ed25519*
 **/*.pem
 **/*.key
 **/*.p12

@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 # Control-plane image (F-002-T14; design §8.5, SEC-F002-13 c, SEC-F002-29, AR-12).
 #
 #   docker build -f deploy/docker/control-plane.Dockerfile -t ralysa/control-plane .
@@ -15,6 +14,8 @@
 # - The runtime runs as the unprivileged `node` user (uid 1000), with the application files owned
 #   by root and read-only to it. Config (identifiers and vault paths only, §3.8) is mounted at run
 #   time: `serve --config /etc/ralysa/control-plane.yaml`.
+# - No `# syntax=` directive: it would fetch a floating frontend image at build time. The builder's
+#   built-in Dockerfile frontend covers everything here (review of #34, R34-4).
 # - Base images are pinned by digest: node 24.21.0 on Alpine, the same index as the dev stack's
 #   mock-idp service (checked 2026-09-25, implementation-notes T09).
 
@@ -37,11 +38,14 @@ RUN pnpm --filter "@ralysa/control-plane..." run build
 RUN pnpm --filter @ralysa/control-plane deploy --prod /out
 # Third-party packages publish their own tests; none is needed at run time, and their fixtures
 # (zod's include sample JWTs) would be shipped content. Remove them, then prove the service's
-# module graph still loads (serve.js imports everything `serve` runs).
+# module graphs still load: serve.js and app.js, then main.js, which statically imports every
+# entry point (serve, bootstrap-org, migrate, sealer, audit-verify) and prints its usage for an
+# unknown command. A load failure prints a stack trace instead of the usage line.
 RUN find /out/node_modules/.pnpm -mindepth 4 \
       \( -type d \( -name test -o -name tests -o -name __tests__ \) \
          -o -type f \( -name '*.test.*' -o -name '*.spec.*' \) \) -prune -exec rm -rf {} + \
-    && cd /out && node --input-type=module -e "await import('./dist/serve.js'); await import('./dist/app.js');"
+    && cd /out && node --input-type=module -e "await import('./dist/serve.js'); await import('./dist/app.js');" \
+    && { node dist/main.js --help 2>&1 || true; } | grep -q '^usage: control-plane '
 
 FROM node:24.21.0-alpine@sha256:ebfe2f90462722a7a4de65e91990e97fe0d401c70e0e762c5b53302f905ec1c1 AS runtime
 # The runtime needs node only: drop the package managers the base image ships.

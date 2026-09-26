@@ -43,15 +43,23 @@ import {
   runGitleaks,
 } from './secret-scan.ts';
 
-/** The development-only packages that must not be in a shipped image (boundaries.js DEV_ONLY_PACKAGES). */
+/**
+ * The development-only packages that must not be in a shipped image. A copy of boundaries.js
+ * DEV_ONLY_PACKAGES, because this module stays dependency-free (the no-install `secret-scan` job
+ * loads secret-scan-cli.ts); secret-scan-image.test.ts asserts the two lists are equal (R34-n2).
+ */
 export const DEV_ONLY_IN_IMAGE = ['@ralysa/dev-stack', 'oidc-provider'] as const;
 
 /** An exact value shorter than this could match by chance; the file is refused. */
 export const MIN_EXACT_VALUE_LENGTH = 16;
 
-/** ENV and ARG names that look like they carry a secret (SEC-F002-29). */
+/**
+ * ENV and ARG names that look like they carry a secret (SEC-F002-29): SECRET, PASSWORD, TOKEN,
+ * PRIVATE, CREDENTIAL, ROLE_ID, and KEY as a word of the name (`API_KEY`, `SIGNING_KEY`, `KEY`;
+ * review of #34, R34-n3). `MONKEY` or `KEYBOARD_LAYOUT` are not KEY words.
+ */
 export const SECRET_NAME =
-  /SECRET|PASS(?:WORD|WD|PHRASE)?\b|TOKEN|PRIVATE|CREDENTIAL|API[_-]?KEY|ACCESS[_-]?KEY|SECRET[_-]?ID|ROLE[_-]?ID/i;
+  /SECRET|PASS(?:WORD|WD|PHRASE)|(?:^|[_-])PASS$|TOKEN|PRIVATE|CREDENTIAL|(?:^|[_-])KEY(?:$|[_-])|(?:API|ACCESS)KEY|ROLE[_-]?ID/i;
 
 export interface ExactValue {
   key: string;
