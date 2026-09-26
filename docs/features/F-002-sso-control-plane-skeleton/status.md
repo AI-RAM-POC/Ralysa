@@ -2,7 +2,7 @@
 
 - **Current phase:** 5 – Development (T01–T12, T16 and the SEC-F002-34 remediation merged: #18, #19, #21, #23–#30, #32, #33; T13 in review; T14 in parallel; T15 next)
 - **GitHub issue:** https://github.com/AI-RAM-POC/Ralysa/issues/5
-- **Branch / PR:** `feat/F-002-rotation` (T13); earlier tasks merged (#18–#33)
+- **Branch / PR:** `fix/F-002-signing-key-pin` (#36 follow-up); T13 merged (#35); earlier tasks merged (#18–#33)
 - **Release:**
 
 ## Open items
@@ -18,7 +18,7 @@
 | UAT note: on dual-stack hosts the browser and the CLI may reach RTS over different IP families, so `access.loopback_ip_mismatch: deny` (default) can refuse a genuine flow-B sign-in | UAT (F-002) | implementation-notes R30-n5; the fallback is the tenant setting `alert` |
 | SEC-F002-10: a separate Graph app registration (evaluated, not built) or the preferred certificate credential signed through Transit | Founder decision; needs E-1 (tenant admin consent) | implementation-notes T13-5; the IdP client-secret runbook records expiry (≤ 180 d) in the meantime |
 | `check-ci-invariants` applies the `integration` job's least-privilege and artefact rules only to a job named `integration`; the new `soak` job follows them by hand | `tooling/repo-scripts`, after T14 (which owns it now) | implementation-notes T13-11 |
-| **G6 condition (TC-F-002-16):** dispatch `soak.yml` on `main` after the T13 merge and link the passing run in test-report.md. GitHub dispatches only workflows present on the default branch, so it couldn't run from the T13 branch (T13-13, R35-3) | Before G6: the test engineer (or the release run) dispatches it on `main` | The T13 PR attaches a local run of the same test (0 failures) |
+| ~~**G6 condition (TC-F-002-16):** dispatch `soak.yml` on `main` after the T13 merge and link the run~~ **Met**: [run 36204987424](https://github.com/AI-RAM-POC/Ralysa/actions/runs/36204987424) on `main` (`ee80613`) passed, 0 failures in 10 minutes | Done 2026-09-26 | implementation-notes T13 "Tests (T13)"; to be linked in test-report.md at G6 |
 | SEC-F002-38: without the checkpoint log, tail truncation is invisible (`anchor: none` exit code; require `--log-checkpoints` outside dev; ship the log off-host) | **Blocks any non-dev deployment** | same |
 
 ## Gate log
@@ -27,7 +27,7 @@
 | G2 Scope | brief.md | | | |
 | G4 Design | design.md | Ram Mohan Rao Adduri (standing authorization, recorded by Claude) | 2026-09-25 | Approved |
 | G5 Code review | PR | | | |
-| G6 Quality | test-report.md | | | Condition: the `soak.yml` run on `main` (TC-F-002-16) is linked (R35-3) |
+| G6 Quality | test-report.md | | | Condition met: TC-F-002-16 [soak run 36204987424](https://github.com/AI-RAM-POC/Ralysa/actions/runs/36204987424) passed on `main` (R35-3) |
 | G7 Release candidate | docs/releases/ | | | |
 | G8 UAT sign-off | uat.md | | | |
 
@@ -48,3 +48,4 @@
 | 2026-09-26 | T10 (#29, #30) merged; the "no release before T08 and T10" item is closed, and so are TC-F-002-02 end to end (T10) and T11-1. T12 implemented as two stacked PRs. Part 1 (`feat/F-002-audit-endpoints`, #32): the control plane moves onto `@ralysa/auth`'s verifier (new `createServiceTokenVerifier`) with a database `RevocationSource`, which closes T11-11; plus the PR #29 follow-ups (deterministic Graph deadline tests, the `idp_sessions_revoked` exit). Part 2 (`feat/F-002-audit-routes`): `POST /v1/audit/events` (per-service allow-list, `audit.ingest_rejected`, savepoint INSERT, I-JSON), `POST /v1/audit/client-events` (server-issued sessions, `client_seq` gaps and `final_seq`, kill-switch scopes, 503 `ack=false`, rate limit, sweep), `GET /v1/audit/events` (admin session role, `audit.query` committed first, keyset paging), and the service rejection path (`createRejectionReporter` plus per-service aggregation), which closes T11-2. TC-F-002-10 (20 stored events), -17, -18, -22 and -37 pass. See implementation-notes.md T12. |
 | 2026-09-26 | T12 (#32, #33) merged. T13 (rotation) implemented on `feat/F-002-rotation`: the IdP client-secret watcher (`src/secrets/runtime.ts`: 60 s poll, `invalid_client` re-read with one retry on a newer version, `secret.rotated observed` once per version through a derived event id), shared by Graph and flow B; `idp.client_secret_poll_s`; the TC-F-002-15 load harness (two replicas, operator-identity rotations of the Transit key and the IdP secret); `test:soak` and `soak.yml` (`workflow_dispatch`); operator runbooks (signing key, IdP secret with the ≤ 180-day expiry register, break-glass `migrate --audit`); follow-ups R32-F1 (`verifier_unavailable` logged with a scrubbed cause), R33-F1 (paging note in README and OpenAPI) and R33-F2 (stricter audit-lock wait). TC-F-002-15 passes (297 operations, 0 failures); TC-F-002-16 passed locally (10 min, 1,196 operations, 0 failures, new kid after 150 s, new secret after 60 s); it can run from Actions only once `soak.yml` is on `main`. See implementation-notes.md T13. |
 | 2026-09-26 | Code review of #35 (T13) addressed: external audit ingest accepts only v7 `event_id`s, so server-derived v8 ids (`secret.rotated observed`, sign-in failure reports, client-session events) can't be pre-empted (R35-1); the operator read-back check fixed; KV version regression warned; OIDC secret reads bounded at 3 s; `verifier_unavailable` rate-limited; runbook fixes; the T07 signing-key supersede fix (never-activated versions now retire). TC-F-002-16 through `soak.yml` on `main` is a G6 condition. See implementation-notes.md "Code review of PR #35". |
+| 2026-09-26 | T13 (#35) merged (`ee80613`). TC-F-002-16 dispatched on `main`: [soak run 36204987424](https://github.com/AI-RAM-POC/Ralysa/actions/runs/36204987424) passed (1,199 operations, 0 failures, new kid after 150.6 s, new IdP secret on both replicas after 60 s), so the G6 soak condition is met. Follow-up on `fix/F-002-signing-key-pin`: a pinned signing-key version is never retired while pinned ([#36](https://github.com/AI-RAM-POC/Ralysa/issues/36), R35-F1); `poll()` uses the tested supersede and retire helpers (R35-F2); README `; unset` (R35-F3). |
