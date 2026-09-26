@@ -11,6 +11,7 @@
     "dev": "turbo run dev",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "hooks:install": "git config core.hooksPath .githooks",
     "lint": "turbo run lint",
     "migrations:lock": "node tooling/repo-scripts/src/cli.ts migrations-lock",
     "repo:check": "node tooling/repo-scripts/src/cli.ts repo-check && prettier --check .",
