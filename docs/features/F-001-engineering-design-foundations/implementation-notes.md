@@ -1057,6 +1057,7 @@ No dependency added by T01 to T03 runs a build script: `allowBuilds` is still `{
 | T15-9 | The hook command is `node "$CLAUDE_PROJECT_DIR/.claude/hooks/guard-bash.mjs" \|\| exit 2`, timeout 60 s. `main()` turns any exception into exit 2. | Claude Code treats exit codes other than 2 as non-blocking, so a missing `node`, a syntax error or a crash would otherwise let the command through. A hook **timeout** still isn't a block (platform behaviour). |
 | T15-10 | The layer-1 deny `git config *hooksPath*` stops fixture 44's command before the guard sees it. Agents enable the hook with `pnpm hooks:install` (T17), which the allow list names. | Layers are independent; fixture 44 tests layer 2. |
 | T15-11 | `git commit -m "$(cat <<'EOF' … )"` (Claude Code's usual commit form) is blocked by the substitution rule; the block message points to `git commit -F - <<'EOF'` or `-F <file>`, and `gh pr create --body-file`. | Design §6.3.3 "Parsing". Fixtures 101, 103 and 138. |
+| T15-12 | **Fixed during T17:** the hook always runs `main()`. The first version ran it only when `import.meta.url` equalled `argv[1]`, which is false when the hook is started through a symlinked path (macOS `/var` → `/private/var`, a symlinked `$CLAUDE_PROJECT_DIR`), so it exited 0 without judging anything: a silent fail-open. | Found by a T17 test that runs a copy of the hook from a temp folder. Regression test: "the hook still judges when started through a symlinked path". |
 
 ### Local-override behaviour (design §6.3.5)
 
@@ -1073,7 +1074,7 @@ Not done by the agent. This session loads its settings from the main checkout, s
 
 ### Tests added (T15)
 
-- `.claude/hooks/test/guard-bash.test.mjs`, 175 tests: the 171 fixture cases, a check that the design's ids 1 to 35 and 40 to 64 are all present, and 3 hook-contract tests (other tools pass, unreadable input blocks, a parse error blocks only in a command that mentions git/gh/pnpm). Local run: 175 pass, about 95 s.
+- `.claude/hooks/test/guard-bash.test.mjs`, 176 tests: the 171 fixture cases, a check that the design's ids 1 to 35 and 40 to 64 are all present, and 4 hook-contract tests (other tools pass, unreadable input blocks, a symlinked hook path still judges, a parse error blocks only in a command that mentions git/gh/pnpm). Local run: 176 pass, about 95 s.
 
 ## Left incomplete / follow-ups
 

@@ -7,7 +7,7 @@
 // gh-scenarios.json, so no case reaches GitHub. User and system git config are isolated.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { after, describe, test } from 'node:test';
@@ -166,8 +166,8 @@ export function setupPr(repo, name) {
 }
 
 /** Runs the hook on one command. Returns { status, stderr, rule }. */
-export function runHook(command, cwd, env) {
-  const r = spawnSync(process.execPath, [HOOK], {
+export function runHook(command, cwd, env, hook = HOOK) {
+  const r = spawnSync(process.execPath, [hook], {
     cwd,
     env,
     encoding: 'utf8',
@@ -229,6 +229,15 @@ describe('guard-bash hook contract', () => {
     const r = spawnSync(process.execPath, [HOOK], { encoding: 'utf8', input: 'not json' });
     assert.equal(r.status, 2);
     assert.match(r.stderr, /\[internal\]/);
+  });
+
+  test('the hook still judges when started through a symlinked path', () => {
+    const { cwd, env } = prepare({});
+    const link = join(tempDir('guard-bash-link-'), 'hooks');
+    symlinkSync(dirname(HOOK), link);
+    const result = runHook('git push origin main', cwd, env, join(link, 'guard-bash.mjs'));
+    assert.equal(result.status, 2, result.stderr);
+    assert.equal(result.rule, 'G-2');
   });
 
   test('a command that does not mention git/gh/pnpm is never blocked by a parse error', () => {

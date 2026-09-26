@@ -21,7 +21,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, dirname, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 /** The repository this hook belongs to: .claude/hooks/ → the repo root. */
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -1495,12 +1495,13 @@ async function main() {
   process.exit(0);
 }
 
-if (process.argv[1] !== undefined && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  try {
-    await main();
-  } catch (error) {
-    // Claude Code treats exit codes other than 2 as "proceed", so a crash must still block.
-    process.stderr.write(`guard-bash [internal]: ${error instanceof Error ? error.message : String(error)}; blocking\n`);
-    process.exit(2);
-  }
+// Always the entry point: comparing import.meta.url with argv[1] would fail (and exit 0 without
+// judging anything) whenever the hook is started through a symlinked path, such as macOS's
+// /var -> /private/var or a symlinked $CLAUDE_PROJECT_DIR.
+try {
+  await main();
+} catch (error) {
+  // Claude Code treats exit codes other than 2 as "proceed", so a crash must still block.
+  process.stderr.write(`guard-bash [internal]: ${error instanceof Error ? error.message : String(error)}; blocking\n`);
+  process.exit(2);
 }
