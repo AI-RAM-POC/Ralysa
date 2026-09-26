@@ -12,6 +12,12 @@ import { uuidv7 } from '@ralysa/protocol/common';
 import { type Kysely, type Transaction, sql } from 'kysely';
 import { withOrg } from '../db/kysely.js';
 import type { Database } from '../db/types.js';
+import {
+  type GroupRoleChange,
+  ensureConfiguredGroupRows,
+  graphCheckTime,
+  lockGraphMembership,
+} from '../directory/membership.js';
 import type { SignInFlow } from './identity-mapping.js';
 import {
   type CodeBinding,
@@ -47,6 +53,12 @@ export interface ProvisionInput {
    * token says nothing about them (review of #29, R29-4).
    */
   claimsKnown: boolean;
+  /**
+   * When this sign-in's Graph call started (database clock). If a newer Graph answer is stored
+   * (`app_user.graph_checked_at`), the two configured groups' memberships are left as they are;
+   * the session is still created from this sign-in's own answer (R58-r2-1, SEC-F002-53).
+   */
+  graphCheckedAt: Date;
   configured: { access: string; admin: string };
   session: {
     flow: SignInFlow;
@@ -71,6 +83,11 @@ export interface ProvisionResult {
   /** IdP group object ids added to / removed from the user's memberships. */
   added: string[];
   removed: string[];
+  /**
+   * How the stored group roles differ from this replica's config (empty when they agree). Sign-in
+   * never changes a role; the caller logs `group_role_config_skew` (R58-3, SEC-F002-52).
+   */
+  roleSkew: GroupRoleChange[];
   sessionId: string;
   refreshToken?: string;
 }
@@ -107,6 +124,8 @@ export interface SignInStore {
   /** Of `ids`, those whose display name is unknown or older than a day (at most 20). */
   groupsNeedingNames(ids: readonly string[]): Promise<string[]>;
   provision(input: ProvisionInput): Promise<ProvisionResult>;
+  /** The database clock, read just before the Graph call. */
+  graphCheckTime(): Promise<Date>;
 
   // Flow B (§3.3, §5.2).
   /** Stores a request for `ttlSeconds` (10 min). */
@@ -191,32 +210,21 @@ async function syncGroups(
   orgId: string,
   userId: string,
   input: ProvisionInput,
-): Promise<{ added: string[]; removed: string[] }> {
+): Promise<{ added: string[]; removed: string[]; roleSkew: GroupRoleChange[] }> {
   const { access, admin } = input.configured;
-  // Roles come from config only; a group that is no longer configured loses its role.
-  await trx
-    .updateTable('cp.idp_group')
-    .set({ role: null })
-    .where('role', 'is not', null)
-    .where('idp_group_id', 'not in', [access, admin])
-    .execute();
-  for (const [idpGroupId, role] of [
-    [access, 'access'],
-    [admin, 'platform_admin'],
-  ] as const) {
-    await trx
-      .insertInto('cp.idp_group')
-      .values({
-        id: uuidv7(),
-        org_id: orgId,
-        idp_group_id: idpGroupId,
-        display_name: null,
-        role,
-        name_refreshed_at: null,
-      })
-      .onConflict((oc) => oc.columns(['org_id', 'idp_group_id']).doUpdateSet({ role }))
-      .execute();
-  }
+  // A Graph answer newer than this sign-in's is stored (a refresh whose Graph call started after
+  // ours finished first): the configured groups' memberships stay as that answer left them.
+  const stored = await trx
+    .selectFrom('cp.app_user')
+    .select('graph_checked_at')
+    .where('id', '=', userId)
+    .executeTakeFirst();
+  const storedAt = stored?.graph_checked_at ?? null;
+  const graphStale = storedAt !== null && storedAt > input.graphCheckedAt;
+  const configuredIds = new Set([access, admin]);
+  // Roles come from config, and only the audited `serve` start changes them: sign-in creates a
+  // missing configured row and reports any skew, never rewriting a role (R58-3, SEC-F002-52).
+  const roleSkew = await ensureConfiguredGroupRows(trx, orgId, input.configured);
   const others = [...new Set(input.membership.map((m) => m.idpGroupId))].filter(
     (id) => id !== access && id !== admin,
   );
@@ -244,7 +252,11 @@ async function syncGroups(
       .execute();
   }
 
-  const desired = new Map(input.membership.map((m) => [m.idpGroupId, m.source]));
+  const desired = new Map(
+    input.membership
+      .filter((m) => !(graphStale && configuredIds.has(m.idpGroupId)))
+      .map((m) => [m.idpGroupId, m.source]),
+  );
   const current = await trx
     .selectFrom('cp.group_membership as m')
     .innerJoin('cp.idp_group as g', 'g.id', 'm.group_id')
@@ -252,7 +264,10 @@ async function syncGroups(
     .where('m.user_id', '=', userId)
     .execute();
   const removed = current.filter(
-    (c) => !desired.has(c.idpGroupId) && (input.claimsKnown || c.source === 'graph_check'),
+    (c) =>
+      !desired.has(c.idpGroupId) &&
+      !(graphStale && configuredIds.has(c.idpGroupId)) &&
+      (input.claimsKnown || c.source === 'graph_check'),
   );
   if (removed.length > 0) {
     await trx
@@ -290,9 +305,20 @@ async function syncGroups(
       )
       .execute();
   }
+  // Stamp when this sign-in's Graph call started, unless a newer answer is already stored: a
+  // refresh whose Graph call started earlier is then skipped by recordGraphMembership, and one
+  // that started later still wins (R58-r2-1).
+  if (!graphStale) {
+    await trx
+      .updateTable('cp.app_user')
+      .set({ graph_checked_at: input.graphCheckedAt })
+      .where('id', '=', userId)
+      .execute();
+  }
   return {
     added: [...desired.keys()].filter((id) => !held.has(id)).sort(),
     removed: removed.map((r) => r.idpGroupId).sort(),
+    roleSkew,
   };
 }
 
@@ -438,8 +464,12 @@ export function createSignInStore(db: Kysely<Database>, orgId: string): SignInSt
       return issued?.token;
     },
 
+    graphCheckTime: () => graphCheckTime(db, orgId),
+
     provision: (input) =>
       withOrg(db, orgId, async (trx) => {
+        // Before the user's row is touched, as the refresh write-back does (no lock-order cycle).
+        await lockGraphMembership(trx, orgId, input.oid);
         const user = await upsertUser(trx, orgId, input);
         const groups = await syncGroups(trx, orgId, user.id, input);
         const sessionId = await createSession(trx, {
@@ -468,6 +498,7 @@ export function createSignInStore(db: Kysely<Database>, orgId: string): SignInSt
           changedAttributes: user.changed,
           added: groups.added,
           removed: groups.removed,
+          roleSkew: groups.roleSkew,
           sessionId,
           ...(refresh === undefined ? {} : { refreshToken: refresh.token }),
         };

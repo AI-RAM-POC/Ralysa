@@ -20,6 +20,7 @@ import { z } from 'zod';
 import type { RtsDeps } from '../../auth/deps.js';
 import { authenticate } from '../../auth/route-auth.js';
 import { withOrg } from '../../db/kysely.js';
+import { sessionRoles } from '../../directory/membership.js';
 import { ROUTES } from '../../http/contracts.js';
 import { HttpProblem } from '../../http/errors.js';
 import type { StoredEventInput } from '../columns.js';
@@ -83,28 +84,18 @@ function queryEvent(
   };
 }
 
-/** The session role and a current admin-group membership, at request time (§6.1). */
+/**
+ * The session role and a current admin-group membership, at request time (§6.1): the same rule
+ * as `session_roles` on the principals route (directory/membership.ts, #47).
+ */
 async function isPlatformAdmin(deps: RtsDeps, principal: VerifiedPrincipal): Promise<boolean> {
-  const row = await withOrg(
+  const roles = await withOrg(
     deps.db,
     principal.orgId,
-    async (trx) =>
-      trx
-        .selectFrom('cp.auth_session as s')
-        .select([
-          's.roles',
-          sql<boolean>`exists (
-            select 1 from cp.group_membership m
-              join cp.idp_group g on g.id = m.group_id
-             where m.user_id = s.user_id and g.role = 'platform_admin')`.as('adminMember'),
-        ])
-        .where('s.id', '=', principal.sessionId)
-        .where('s.user_id', '=', principal.userId)
-        .where('s.status', '=', 'active')
-        .executeTakeFirst(),
+    (trx) => sessionRoles(trx, principal.userId, principal.sessionId),
     { readOnly: true },
   );
-  return row !== undefined && row.roles.includes('platform_admin') && row.adminMember;
+  return roles?.includes('platform_admin') === true;
 }
 
 /** The parsed query, or undefined when it is invalid (400 for an admin). */

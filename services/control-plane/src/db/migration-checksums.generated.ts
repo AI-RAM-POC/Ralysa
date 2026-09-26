@@ -29,4 +29,7 @@ export const MIGRATION_CHECKSUMS: Readonly<Record<string, { sha256: string }>> =
   'cp/0006_authorization_code_sign_in.ts': {
     sha256: '79ba8a21faa716c5f14297c2b40c77feb2b32fc578c7d73cac03535f02f52b8b',
   },
+  'cp/0007_app_user_graph_checked_at.ts': {
+    sha256: '4db7198836f27ce60ce65a6d28aa4abf59e92dbce8c0fd4a23f65613cf2e26d0',
+  },
 };

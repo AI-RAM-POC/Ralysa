@@ -274,6 +274,7 @@ function setUp(s: Scenario) {
       revokedSessions.push(sid);
       return Promise.resolve(true);
     },
+    graphCheckTime: () => Promise.resolve(new Date()),
     groupsNeedingNames: () => Promise.resolve([]),
     provision: () =>
       s.provisionFails === true
@@ -284,6 +285,7 @@ function setUp(s: Scenario) {
             changedAttributes: [],
             added: [ACCESS],
             removed: [],
+            roleSkew: [],
             sessionId: '0192f0a0-7b3c-7d4e-8f00-0000000000b1',
             refreshToken: `rly_rt_${'a'.repeat(43)}`,
           }),
@@ -793,6 +795,7 @@ describe('flow B: the callback records a refusal once, or nothing until redempti
             changedAttributes: [],
             added: [],
             removed: [],
+            roleSkew: [],
             sessionId: SID,
           }),
         createCode: (row) => {

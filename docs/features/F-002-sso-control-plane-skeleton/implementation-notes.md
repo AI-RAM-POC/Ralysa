@@ -1838,3 +1838,134 @@ Local runs, Node 24.21.0, pnpm 11.27.1, dev stack up:
   - `gateway.int.ts` 24-way: 24/24 (unchanged file: 0/24).
   - `audit-routes.int.ts` 10-way: 10/10 (unchanged file: 0/10).
   - `audit.int.ts` 4-way: 4/4. At 12-way the dev Postgres ran out of connection slots, which says nothing about the tests.
+
+## Fix for #47: `Principal` session roles, membership at refresh, group roles at start (SEC-F002-42)
+
+Branch `fix/F-002-principal-session-roles`, based on `main` at `f795d6b` with `main` at `4e70cab` (#46) merged in, PR [#58](https://github.com/AI-RAM-POC/Ralysa/pull/58). Issue [#47](https://github.com/AI-RAM-POC/Ralysa/issues/47), security.md P6-4 SEC-F002-42 (Medium; High once an F-003/F-004 PEP authorizes admin actions on it). Founder decision C2: fixed before G7. Design revision 10 records the clarified contract.
+
+### The problem, in one line each
+
+1. `Principal.roles` came from group memberships only, so an admin who signed in by device code (session roles `[user]`) still showed `platform_admin` to every PEP.
+2. `cp.group_membership` was written only at sign-in, so a removal from the admin group in Entra reached `Principal` only at the next full sign-in (up to 7 days).
+3. A changed `access.admin_group_id` wasn't applied to `cp.idp_group.role` until someone signed in.
+4. The `@ralysa/auth` guide told PEPs to decide on `principal.roles`.
+
+### What changed
+
+- **Contract** (`packages/protocol/src/control-plane/principals.ts`, design §3.4.2): `Principal` gains optional `session_id` and `session_roles`. `roles` is documented as directory roles that are never enough on their own for `platform_admin`. `principal.v1.json` and `openapi/control-plane.v1.json` are regenerated; the control-plane API is 1.1.0.
+- **Route** (`src/directory/routes.ts`): `GET /v1/internal/principals/{user_id}?sid=` answers `session_roles` = the session's roles ∩ the roles the user's current memberships give. An unknown `sid`, another user's, or a session that is revoked, pending or past its absolute expiry is `403`; a malformed `sid` is `400`. Without `sid` the answer is unchanged.
+- **One rule** (`src/directory/membership.ts`, new): `sessionRoles()` (session lookup plus intersection), `directoryRoles()`, `intersectRoles()`, `ensureConfiguredGroups()` and `recordGraphMembership()`. The audit query (`audit/routes/query.ts`) now calls `sessionRoles()` instead of its own SQL, so the audit route and PEPs apply the same rule.
+- **Refresh** (`src/auth/grants/refresh-token.ts`): once Graph has answered for an enabled user, the grant writes that answer for the two configured groups back to `cp.group_membership` (`source = graph_check`; a group left is deleted, whatever its earlier source) and writes `directory.group_membership.changed` when something changed (`privileged` when the admin group is in `added` or `removed`). This happens before the session checks, so it also runs when the refresh is then denied `idp_session_revoked` or `not_in_access_group`.
+- **Start** (`src/org/bootstrap.ts` `reconcileGroupRoles`, called by `serve` after `ensureOrganization`): `cp.idp_group.role` is set from `access.access_group_id` and `access.admin_group_id` (other groups get none), and each change writes `directory.group_role.changed` (actor `system`/`rts`, `details.idp_group_id`, `from`, `to`, `cause: config`, `privileged`). Sign-in's `syncGroups` uses the same `ensureConfiguredGroups()`.
+- **Audit catalogue**: `directory.group_role.changed` is added to `F002_ACTIONS` (protocol) and design §3.5. It's in the reserved `directory.` namespace, so no service can be allow-listed for it (§3.4.4); no allow-list change was needed.
+- **`@ralysa/auth`** (`src/verify/principal-resolver.ts`): `resolve(userId, sessionId)` sends `?sid=`, returns a `SessionPrincipal` (typed with `session_id` and `session_roles`), caches per (user, session), and throws `PrincipalSessionRefusedError` on 403 or a malformed session id. An answer without `session_roles`, or for another session, is `PrincipalUnavailableError`. `resolve(userId)` still works.
+- **Docs**: `packages/auth/README.md` (the per-request example now passes the `sid` and authorizes on `session_roles`; the resolver section has a roles table), `services/control-plane/README.md` (route table; roles, refresh write-back and start reconcile under sign-in), design revision 10.
+
+### Tests
+
+| Case | Where | What it proves |
+|---|---|---|
+| Device-code admin | `sign-in.int.ts` TC-F-002-31 (extended), end to end through the mock IdP and Graph | erin, in both groups, signs in on a weak flow: `principals?sid=` gives `roles` with `platform_admin` but `session_roles: ['user']`. Her strong session gives `['user', 'platform_admin']`. A refresh of the weak session doesn't add it. |
+| Device-code admin (seeded) | `sessions.int.ts` "#47: a device-code session of an admin …" | The same with two seeded sessions of one user and the fake directory. |
+| Admin removal after one refresh | `sessions.int.ts` "#47: removal from the admin group reaches Principal after one refresh …" | After the first refresh (both groups): `added` both, `privileged: true`. The directory then drops the admin group, and **one** refresh later `roles`, `groups` and `session_roles` no longer have it, the only row left is `graph_check`, `directory.group_membership.changed` has `removed: [admin]`, `privileged: true`, and an unchanged answer writes no event. |
+| `admin_group_id` change at start | `sessions.int.ts` "#47: an admin_group_id change takes effect at start …" | `reconcileGroupRoles` with a moved admin group (what `serve` runs at start): the old group loses its role, and with no sign-in or refresh `roles` and `session_roles` drop `platform_admin`. Two `directory.group_role.changed` events (`privileged: true`). A second run changes and writes nothing. |
+| sid refusals | `sessions.int.ts` "#47: an unknown, foreign, revoked, pending or expired sid is refused …" | A random `sid`, another user's, a pending and an expired session: 403 without roles; a malformed `sid`: 400; after sign-out the same `sid`: 403. |
+| Existing principals test | `sessions.int.ts` | Updated: a refresh now writes Graph's answer back, so a user who refreshed shows the access group and `user`. No `session_roles` without `?sid=`. |
+| Resolver | `packages/auth/test/principal-resolver.test.ts` | `?sid=` sent; cache per (user, session); 403 → `PrincipalSessionRefusedError`; non-UUID sid never sent; an answer without `session_roles`, for another session, or with them to a plain lookup fails closed. |
+| Role rules | `services/control-plane/test/membership.test.ts` (new) | `directoryRoles` and `intersectRoles`: a weak session never gains `platform_admin`; a strong one keeps it only while the admin membership lasts. |
+| Contract | `packages/protocol/test/control-plane.test.ts` | `session_id`/`session_roles` optional; only the two roles parse. |
+
+`serve` itself isn't started by any test (none does). The start path is `reconcileGroupRoles`, which the integration test calls with the changed config, plus the one call in `serveCommand`.
+
+### Recorded decisions
+
+Items marked **self-decided** were decided under the standing authorization (CLAUDE.md), taking the recommended option from the issue: standing authorization, recorded by Claude.
+
+| # | Type | What | Why |
+|---|---|---|---|
+| F47-1 | Contract (**self-decided**) | A refused `sid` is `403 forbidden`. Refused are: unknown, another user's, `revoked`, `pending`, and past `absolute_expires_at`. | The issue says "refused, not given the roles". 404 is taken by "no such user", and a distinct status lets the resolver raise a distinct error (`PrincipalSessionRefusedError`, answered 401 by the PEP). A pending session has no token yet, and an expired one can't have a valid one. |
+| F47-2 | Contract (**self-decided**) | The answer echoes `session_id`, and the resolver checks it, as it already checks `user_id`. | An answer for another session must never be cached or used for this one. |
+| F47-3 | Contract (**self-decided**) | A disabled user's session that is still active (a race with revocation) answers `session_roles: []`, not 403. | `status: disabled` already says it all, and a disabled user has no directory roles either. Revocation ends the session right after. |
+| F47-4 | Implementation (**self-decided**) | Refresh write-back runs in its own transaction right after Graph answers for an enabled user, before the `signInSessionsValidFrom` and group checks, and whatever the rotation outcome. | Graph's answer is a fact about the user, true whether or not this refresh then succeeds. Writing it on the denials too means a user removed from both groups loses the memberships at once. |
+| F47-5 | Implementation (**self-decided**) | The refresh's `directory.group_membership.changed` goes through `writeOrSpool` (awaited): an audit outage spools it and doesn't fail the refresh. The event carries the catalogue fields (`added`, `removed`, `privileged`) and the envelope `session_id`. | It records a directory fact, not an access decision. The refresh's own denials already use the same path. Same `details` shape as the sign-in event, so queries and alerts (TM-49) don't change. |
+| F47-6 | Catalogue (**self-decided**) | New action `directory.group_role.changed`, one per group, written after the change commits, through `writeOrSpool`, actor `system`/`rts`. `privileged` when `platform_admin` is `from` or `to`. On the first start of an org, the two configured groups are created, so two events are written. | Nothing in the catalogue fit a config-driven role change. It follows the device-code switch at start (spool-backed, written after the change). One event per group keeps `privileged` precise. |
+| F47-7 | Scope (**self-decided**) | The reconcile runs at `serve` start only, not in `bootstrap-org`. | The issue asks for `serve` start, and `serve` always runs it before serving. `bootstrap-org` serves nothing, and the next `serve` start reconciles. |
+| F47-8 | Behaviour change (**self-decided**) | The audit query now uses `sessionRoles()`, so it also refuses a session past its absolute expiry and gives a disabled user nothing. | One rule for privileged decisions. Both cases were already unreachable with a valid token (the verifier and revocation reject them first), so this only removes a divergence. |
+| F47-9 | Implementation (**self-decided**) | `recordGraphMembership` creates a missing configured group row with its configured role. It never changes an existing row's role, which start owns. | After a start the rows exist. Creating them role-less would make a new member look like a non-member until the next sign-in. |
+| F47-10 | Versioning (**self-decided**) | Control-plane API version 1.0.0 → 1.1.0. | §3.10: a minor version adds optional fields. A resolver that doesn't send `?sid=` gets exactly the old answer. |
+| F47-11 | Scope | `/v1/me` still reports the calling session's stored roles, not intersected. Session roles are still decided at sign-in, and a refresh never adds one. | `/v1/me` is the user's own view and isn't used for authorization. The intersection is a PEP concern (`session_roles`). |
+| F47-12 | Residual | A removal in Entra reaches `Principal` at the user's next refresh, not instantly: at most the access-token TTL (15 min) for a client that keeps working, plus the resolver's 30 s cache. Without a refresh the access token expires in the same time. | Graph is called only at sign-in and refresh (§6.3). Instant propagation would need change notifications (F-006/F-018). Design §3.4.2 now says this, replacing "re-read at request time". |
+| F47-13 | Process | security.md isn't edited: it is the security reviewer's artefact. The SEC-F002-42 status is tracked in status.md and here, and the reviewer verifies the fix at the next pass. | Keeps the phase-6 review text as the reviewer wrote it. |
+
+### Checks (fix for #47)
+
+Local runs, Node 24.21.0, pnpm 11.27.1, dev stack up, after merging `main` at `4e70cab`:
+
+- `pnpm lint`: 33/33 tasks. `pnpm build`: 23/23 tasks.
+- `pnpm test`: 33/33 tasks, 2,348 unit tests (2,341 before plus 7): `@ralysa/protocol` 172, `@ralysa/auth` 122, `@ralysa/control-plane` 413.
+- `turbo run typecheck check:generated`: 38/38 tasks, and no drift in `principal.v1.json` or `openapi/control-plane.v1.json` afterwards (both are committed regenerated).
+- `pnpm repo:check`: every check passes, and Prettier is clean. The `i18n/untranslated` warning and the `needs-native-review` counts are pre-existing and outside F-002.
+- `pnpm --filter @ralysa/control-plane test:integration` against the dev stack: 173 tests in 12 files, none skipped (169 on `main` plus the 4 new `sessions.int.ts` cases; the TC-F-002-31 extension is inside an existing case).
+- The `@ralysa/auth` README's per-request example was type-checked against the package in a scratch file, which was then deleted.
+
+### Review round 2 (PR #58): R58-1 to R58-5, SEC-F002-52 to -55
+
+The code review of #58 requested changes (R58-1 to R58-5). The security reviewer's remediation review found SEC-F002-42 remediated and raised four Low findings (security.md P6-4, "SEC-F002-42 remediation review"). All of them are addressed on the same branch.
+
+| Item | What changed | Test |
+|---|---|---|
+| **R58-1** (blocking): replicas starting together raced in `reconcileGroupRoles`. On a first start `FOR UPDATE` locked no row, so N replicas wrote 2N events; on a config change, the second replica reported a false `null → platform_admin`. | `reconcileConfiguredGroups()` (renamed from `ensureConfiguredGroups`) starts with `pg_advisory_xact_lock(hashtextextended('idp-group-roles|' ‖ org_id, 0))`, the pattern of `audit/routes/client-events.ts`. It reports only rows that actually changed: the clearing `UPDATE … RETURNING`, and an upsert whose `DO UPDATE … WHERE idp_group.role IS DISTINCT FROM excluded.role` returns a row only when it inserted or changed one. | `sessions.int.ts`: the `admin_group_id` test runs two reconciles concurrently (one reports 2 changes, the other none, 2 events). "R58-1: replicas starting together on a new org …" runs three concurrently with two never-seen groups: 4 changes in all, each reported once, 4 events. |
+| **R58-2 / SEC-F002-54** (blocking): the one-argument `resolve(userId)` could still be used by a PEP. | The one-argument overload is `@deprecated` and points to `resolve(userId, sessionId)`. `@typescript-eslint/no-deprecated` was already on (it's part of `strictTypeChecked` in `@ralysa/eslint-config`), so every call is now a lint error. The resolver's own tests reach it through one `Reflect.get` helper, because the repo bans eslint directive comments. The reference fake gateway (`gateway.int.ts`, TC-F-002-10) calls `resolve(userId, sessionId)` from the verified token, asserts `session_id` and `session_roles`, and asserts that a foreign `sid` is `PrincipalSessionRefusedError`. That makes `?sid=` end to end over real HTTP. `packages/auth/README.md` says PEPs **must** use `session_roles` for any privileged decision, and that the one-argument form is deprecated. | `gateway.int.ts` TC-F-002-10; `pnpm lint` |
+| **R58-3 / SEC-F002-52**: sign-in's `syncGroups` rewrote group roles without audit. | Sign-in calls `ensureConfiguredGroupRows()`, which inserts a missing configured row (`ON CONFLICT DO NOTHING`, with its configured role) and returns the skew between stored roles and this replica's config without writing it. `completeSignIn` logs the skew as `group_role_config_skew` (warn: group ids and role names). Only the `serve` start reconcile changes roles. | `sign-in.int.ts` "R58-3: …": the admin group's stored role is cleared, as another replica's start would; erin signs in strongly. The role is still null, no `directory.group_role.changed` is written, `session_roles` is `['user']`, and one `group_role_config_skew` warning names the group. |
+| **R58-4 / SEC-F002-53**: the Graph write-back was last-writer-wins across the out-of-transaction Graph call. | Migration **cp/0007** adds `cp.app_user.graph_checked_at`. The refresh reads the database clock just before its Graph call (`graphCheckTime`). `recordGraphMembership` takes a per-user `pg_advisory_xact_lock` keyed by org and IdP subject, and skips the whole write and its event when the stored `graph_checked_at` is newer. Otherwise it writes the memberships with `observed_at` = that time and stores it. Sign-in's provisioning takes the same lock before it touches the user's row (one lock order, so no deadlock), and sets `graph_checked_at = greatest(graph_checked_at, clock_timestamp())`. | `sessions.int.ts` "R58-4: an older Graph answer never overwrites a newer one": refresh A (still an admin) is held inside its Graph call. Refresh B (removed from the admin group) completes. When A is released it succeeds, but writes and audits nothing, so the membership and `session_roles` keep B's answer and exactly two membership events exist. The fake directory now takes its answer when it is called, not when a held call resumes. |
+| **R58-5**: tests for F47-4 and F47-3. | Tests only. | `sessions.int.ts` "F47-4 …": a refresh denied `not_in_access_group` removes both memberships (`removed` both, `privileged`), and one denied `idp_session_revoked` removes the admin membership, each audited. "F47-3 …": an active session of a disabled user answers 200 with `status: disabled`, `roles: []`, `session_roles: []`. |
+| **SEC-F002-55**: config accepted one group for both roles. | The zod `access` object refines `access_group_id ≠ admin_group_id`, compared case-insensitively. | `config-serve.test.ts` "the access group and the admin group must differ …" |
+| Docs | security.md: the reviewer's remediation review is inserted verbatim after the P6-4 table, followed by the "Resolved in PR #58 (review round 2)" line. The control-plane README gains the runbook "Urgent removal of an admin" (revoke Ralysa sessions (G-1) rather than wait for Entra), and describes the skew log, the reconcile lock and write-back ordering. Design revision 10 is amended (§4.4 `graph_checked_at`, idp_group role ownership). | — |
+
+#### Recorded decisions (round 2)
+
+Items marked **self-decided** were decided under the standing authorization (CLAUDE.md), taking the reviewers' recommended option: standing authorization, recorded by Claude.
+
+| # | Type | What | Why |
+|---|---|---|---|
+| R58-D1 | Implementation (**self-decided**) | The ordering uses a per-user `graph_checked_at` column (migration cp/0007), not only the per-membership `observed_at` the review suggested. | A removal *deletes* the membership row, so its `observed_at` is gone. That is exactly the SEC-F002-53 case, a slow refresh re-adding a just-removed admin membership. The security reviewer's recommendation names a per-user `graph_checked_at`. `observed_at` is still set to the Graph-call time for the rows written. |
+| R58-D2 | Implementation (**self-decided**) | "When this refresh called Graph" is the **database** clock read just before the call, at the cost of one extra `select clock_timestamp()` per refresh. | Replicas' clocks can differ, and sign-in's stamp is the database clock. One clock keeps the order meaningful. |
+| R58-D3 | Implementation (**self-decided**) | The per-user lock is keyed by org and IdP subject, and sign-in takes it before `upsertUser`. | Sign-in may not know the user id yet (first sign-in). Taking the advisory lock before any row lock on both paths gives one lock order, so refresh and sign-in can't deadlock. |
+| R58-D4 | Behaviour (**self-decided**, **corrected in round 3**) | ~~Sign-in always writes its own Graph answer, and stamps `graph_checked_at` with its write time (`greatest`).~~ Round 2's reasoning was wrong: a sign-in stamped at write time, and overwriting without the skip check, could re-add an admin membership that a refresh whose Graph call started later had just removed (security review, round-2 verification: window ≈ 5 s). **Now** (R58-r2-1): sign-in reads the database clock before its Graph call, applies the same stale skip as refresh to the two configured groups' memberships, and stamps that time when its answer is the newest. Its session is still created from its own answer. | The stamp and the comparison have to use the same instant, the start of the Graph call, on both paths. |
+| R58-D5 | Behaviour (**self-decided**) | Sign-in still creates a *missing* configured group row with its configured role. | This is what R58-3 asks for (insert missing rows, `DO NOTHING`). After a `serve` start, the current config's rows always exist, so this happens only on a database no `serve` has started against (tests, a first sign-in racing the first start). |
+| R58-D6 | Lint (**self-decided**) | No eslint change was needed: `no-deprecated` is already on through `strictTypeChecked`. The deliberate one-argument calls in the resolver's tests go through a `Reflect.get` helper, not a disable comment. | `@eslint-community/eslint-comments/no-use` bans directive comments repo-wide, and one named helper keeps the deprecated call visible. |
+| R58-D8 | Test design (**self-decided**) | The sign-in skew test makes the stored roles differ from config by clearing the admin group's role in the database, rather than by building a second app with another config. | The code compares stored roles with config, so the two setups are the same case. A cleared role is what another replica's start would leave, and the test stays inside the existing app. |
+| R58-D7 | Scope (**decided**, round 3) | The runbook step "revoke the user's Ralysa sessions (G-1)" has no operator tool in Phase 0. **Operator session revocation stays in F-006 (REQ-017); decided under the standing authorization (recommended option), recorded by Claude, 2026-09-26.** The runbook lists the paths that exist and forbids unaudited manual SQL. | A revoke command is a new side-effecting admin action that needs its own design and approval hook. F-006 owns admin session revocation. The residual is documented (SEC-F002-56). |
+
+#### Checks (round 2)
+
+Local runs, Node 24.21.0, pnpm 11.27.1, dev stack up:
+
+- `pnpm lint`: 33/33 tasks (with `no-deprecated` flagging any one-argument `resolve`). `pnpm build`: 23/23 tasks.
+- `pnpm test`: 33/33 tasks; `@ralysa/protocol` 172, `@ralysa/auth` 122, `@ralysa/control-plane` 414 (the new SEC-F002-55 config case).
+- `turbo run typecheck check:generated`: 38/38 tasks, with no drift. `pnpm migrations:lock` recorded cp/0007 in `migrations.lock.json` and `migration-checksums.generated.ts`.
+- `pnpm repo:check`: every check passes (including `check-migrations-immutable`), and Prettier is clean; the i18n warning is pre-existing and outside F-002.
+- `pnpm --filter @ralysa/control-plane test:integration`: 178 tests in 12 files, none skipped (173 plus R58-1, R58-3, R58-4, F47-4 and F47-3; the TC-F-002-10 and `admin_group_id` cases were extended).
+
+### Review round 3 (PR #58): R58-r2-1 to R58-r2-3, SEC-F002-53 (sign-in path), SEC-F002-56
+
+`main` at `34a9d79` (#59, G6 recorded) was merged first. `status.md` conflicted in the open items and the history; main's C1, C2 and G6 wording is kept, and this branch's fix status is added to the SEC-F002-42 row.
+
+| Item | What changed | Test |
+|---|---|---|
+| **R58-r2-1 / SEC-F002-53** (sign-in path) | `completeSignIn` reads the database clock (`SignInStore.graphCheckTime`) just before `directory.check`, and passes it to `provision` as `graphCheckedAt`. `syncGroups` compares it with the stored `app_user.graph_checked_at` under the per-user lock. If a newer answer is stored, it neither adds nor removes the two configured groups' memberships, writes no stamp, and writes no event for them. Otherwise it stamps exactly `graphCheckedAt`, not `greatest(…, clock_timestamp())`. The session is still created from this sign-in's own answer. The wrong comment is replaced, and R58-D4 is corrected. | `sign-in.int.ts` "R58-r2-1": erin's second sign-in is held after Graph answered (still an admin). She is removed from the admin group, and a refresh that asked Graph later completes and removes the membership. The held sign-in then succeeds, but the membership stays removed, no membership event is added, `/v1/me` shows the session's own roles, and `session_roles` is `['user']`. With the stale check disabled, the test fails (checked locally). |
+| **R58-r2-2** | The R58-1 concurrency test forces the overlap. A separate connection holds the per-org reconcile lock, both reconciles start and are seen waiting on it (`pg_locks`, this database only), then it is released. One reports 4 changes, the other 0, and 4 events are written. | With the lock key changed so the reconciles don't share it, the test fails with "the reconciles never waited on the org lock" (checked locally). |
+| **R58-r2-3** | R58-D7 is decided (operator session revocation stays in F-006) and the status.md open item is closed. | — |
+| **SEC-F002-56** (docs) | README: `group_role_config_skew` is documented as only logged, with no alert rule yet. The "Urgent removal of an admin" runbook now states that a stolen, never-refreshed access token keeps `platform_admin` for up to one access TTL + 30 s whatever the operator does; that sign-out ends only the caller's own session; and that in step 3 a missing event is not a failure (wait one TTL, then check there is no `auth.refresh` success for the user after the removal). It also names the org-wide last resort (stopping the control plane trips G-1 within 60 s; incident commander's approval). security.md: the round-2 verification text and a round-3 resolution line. | — |
+
+#### Checks (round 3)
+
+Local runs, Node 24.21.0, pnpm 11.27.1, dev stack up, after merging `main` at `34a9d79`:
+
+- `pnpm lint`: 33/33 tasks. `pnpm build`: 23/23 tasks.
+- `pnpm test`: 33/33 tasks; `@ralysa/protocol` 172, `@ralysa/auth` 122, `@ralysa/control-plane` 414.
+- `turbo run typecheck check:generated`: 38/38 tasks, with no drift.
+- `pnpm repo:check`: every check passes, and Prettier is clean.
+- `pnpm --filter @ralysa/control-plane test:integration`: 179 tests in 12 files, none skipped (178 plus R58-r2-1).
+- Negative checks, reverted afterwards: with the sign-in stale check disabled, R58-r2-1 fails; with the reconcile lock key made unique per call, the R58-1 test fails with "the reconciles never waited on the org lock".
+

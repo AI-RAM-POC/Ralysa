@@ -83,7 +83,11 @@ const principals = createPrincipalResolver({ baseUrl: controlPlane, serviceToken
 ### Per request
 
 ```ts
-import { PrincipalNotFoundError, VerifierUnavailableError } from '@ralysa/auth';
+import {
+  PrincipalNotFoundError,
+  PrincipalSessionRefusedError,
+  VerifierUnavailableError,
+} from '@ralysa/auth';
 
 try {
   const result = await verifier.verify(request.headers.authorization ?? '', {
@@ -91,11 +95,16 @@ try {
     traceId,
   });
   if (!result.ok) return reply401(result.reason); // a TokenRejectReason, already reported
-  const principal = await principals.resolve(result.principal.userId);
+  // Always pass the token's sid: the answer then carries that session's roles.
+  const principal = await principals.resolve(result.principal.userId, result.principal.sessionId);
   if (principal.status !== 'active') return reply403();
-  // principal.roles, principal.groups: decide here (policy is enforced server-side)
+  // Authorize on principal.session_roles: the roles this session holds now (its sign-in roles ∩
+  // current memberships). principal.roles are directory roles and are never enough on their own
+  // for platform_admin (an admin who signed in by device code has no admin session role).
+  if (!principal.session_roles.includes('user')) return reply403();
 } catch (error) {
   if (error instanceof PrincipalNotFoundError) return reply403();
+  if (error instanceof PrincipalSessionRefusedError) return reply401('session_revoked');
   if (error instanceof VerifierUnavailableError) return reply503(); // fail closed, not a rejection
   throw error; // a RevocationSource fault, a ServiceTokenUnavailableError, …: 503, fail closed
 }
@@ -160,13 +169,35 @@ kill-switch state. It is the verifier's `RevocationSource`.
 ### Principal resolver
 
 Groups and roles are not in the token. `createPrincipalResolver({ baseUrl, serviceTokens })`
-returns a resolver whose `resolve(userId)` calls `GET /v1/internal/principals/{user_id}` and
-returns the protocol `Principal` (`user_id`, `org_id`, `status`, `roles`, `groups`, `as_of`).
+returns a resolver whose `resolve(userId, sessionId)` calls
+`GET /v1/internal/principals/{user_id}?sid={sessionId}` and returns the protocol `Principal`
+(`user_id`, `org_id`, `status`, `roles`, `groups`, `as_of`) plus `session_id` and
+`session_roles` (design §3.4.2 and §6.1, revision 10; #47, SEC-F002-42).
 
-- Cached for 30 s (`ttlMs`), at most 10,000 users (`maxEntries`); concurrent lookups for one user
-  share one request.
-- A 404 or a non-UUID id is `PrincipalNotFoundError`. Anything else (unreachable, another status,
-  an answer for another user) is `PrincipalUnavailableError`: fail closed.
+**Which roles to authorize on.** PEPs **must** use `session_roles` for any privileged decision,
+and for every other authorization decision; `roles` never authorize anything on their own:
+
+| Field | What it is | Use it for |
+|---|---|---|
+| `session_roles` | The roles of the session behind the token: decided at sign-in by the strong-flow rule, narrowed at every refresh, and intersected with the user's current memberships of the configured groups at request time | Every authorization decision, and the only basis for `platform_admin` |
+| `roles` | Directory roles: what the user's current memberships of the configured groups would allow. The same for all of the user's sessions | Display and diagnostics only. Never enough on their own for `platform_admin`: an admin who signed in by device code has `platform_admin` here but not in `session_roles` |
+
+"Current memberships" means what Microsoft Graph last confirmed for the two configured groups, at
+the user's last sign-in or refresh (RTS writes Graph's answer back at both). A removal from a
+group therefore reaches `Principal` at the user's next refresh, and a client holding an access
+token refreshes at least every access-token TTL (15 min). The cache below adds up to 30 s.
+`resolve(userId)` without a session id is **deprecated** (SEC-F002-54): it returns no
+`session_roles`, and `@typescript-eslint/no-deprecated` (on in `@ralysa/eslint-config`) flags every
+call. It stays only for diagnostics where no user session is involved, and no PEP may authorize on
+its answer.
+
+- Cached for 30 s (`ttlMs`) per (user, session), at most 10,000 entries (`maxEntries`); one
+  session's answer never serves another. Concurrent lookups for one key share one request.
+- A 404 or a non-UUID user id is `PrincipalNotFoundError`. A session the control plane refuses
+  (unknown, another user's, revoked, pending or past its absolute expiry: 403) or a non-UUID
+  session id is `PrincipalSessionRefusedError`; answer 401. Anything else (unreachable, another
+  status, an answer for another user or session, or one without `session_roles` when a session
+  id was given) is `PrincipalUnavailableError`: fail closed.
 
 ### Service-token source and renewal
 

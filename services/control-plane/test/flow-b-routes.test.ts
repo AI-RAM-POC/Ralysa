@@ -29,6 +29,7 @@ async function start(config = serveConfig()) {
     findUser: unused,
     revokeUser: unused,
     revokeSession: unused,
+    graphCheckTime: () => Promise.resolve(new Date()),
     groupsNeedingNames: unused,
     provision: unused,
     saveAuthRequest: () => Promise.resolve(),

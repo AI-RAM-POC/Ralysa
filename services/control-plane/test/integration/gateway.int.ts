@@ -15,6 +15,7 @@
 //     assertion (AR-1, SEC-F002-18 a).
 import { generateKeyPair, SignJWT } from 'jose';
 import {
+  PrincipalSessionRefusedError,
   type RejectInfo,
   type RejectionReporter,
   type RevocationFeed,
@@ -316,14 +317,23 @@ describe.skipIf(stack === undefined)('fake gateway on @ralysa/auth (F-002-T11)',
         audience: 'model-gateway',
       }),
     });
-    const principal = await principals.resolve(user);
+    // The reference PEP: always the verified token's sid, and authorize on session_roles
+    // (#47, SEC-F002-54). This is `?sid=` end to end over real HTTP.
+    if (!result.ok) throw new Error('unreachable');
+    const principal = await principals.resolve(result.principal.userId, result.principal.sessionId);
     expect(principal).toMatchObject({
       user_id: user,
       org_id: ORG,
       status: 'active',
       roles: ['user'],
       groups: [{ idp_group_id: config.access.access_group_id, role: 'access' }],
+      session_id: sid,
+      session_roles: ['user'],
     });
+    // A session the control plane refuses is refused through the resolver too.
+    await expect(principals.resolve(user, uuidv7())).rejects.toBeInstanceOf(
+      PrincipalSessionRefusedError,
+    );
   });
 
   it('TC-F-002-10: 20 negative cases → 20 rejections, stored as 20 auth.token_rejected events', async () => {

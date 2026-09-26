@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "Ralysa control plane",
-    "version": "1.0.0",
+    "version": "1.1.0",
     "description": "Generated from services/control-plane/src/http/contracts.ts. No route accepts a user-held shared secret (AC-3)."
   },
   "jsonSchemaDialect": "https://json-schema.org/draft/2020-12/schema",
@@ -4883,7 +4883,7 @@
     },
     "/v1/internal/principals/{user_id}": {
       "get": {
-        "summary": "Groups, roles and status of a user (service token)",
+        "summary": "Groups, directory roles and status of a user; with sid, that session's roles ∩ current memberships (service token)",
         "tags": [
           "internal"
         ],
@@ -4898,6 +4898,17 @@
             "in": "path",
             "required": true,
             "description": "Ralysa user id",
+            "schema": {
+              "type": "string",
+              "format": "uuid",
+              "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+            }
+          },
+          {
+            "name": "sid",
+            "in": "query",
+            "required": false,
+            "description": "The access token's sid. When given, the answer adds session_roles (the session's roles ∩ the current memberships); PEPs authorize privileged actions on session_roles, never on roles (rev 10, SEC-F002-42)",
             "schema": {
               "type": "string",
               "format": "uuid",
@@ -4976,6 +4987,21 @@
                       "type": "string",
                       "format": "date-time",
                       "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                    },
+                    "session_id": {
+                      "type": "string",
+                      "format": "uuid",
+                      "pattern": "^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$"
+                    },
+                    "session_roles": {
+                      "type": "array",
+                      "items": {
+                        "type": "string",
+                        "enum": [
+                          "user",
+                          "platform_admin"
+                        ]
+                      }
                     }
                   },
                   "required": [
@@ -4992,7 +5018,7 @@
             }
           },
           "400": {
-            "description": "Invalid user id",
+            "description": "Invalid user id or sid",
             "content": {
               "application/problem+json": {
                 "schema": {
@@ -5058,6 +5084,71 @@
           },
           "401": {
             "description": "Missing or invalid service token",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "type": {
+                      "type": "string",
+                      "pattern": "^urn:ralysa:problem:[a-z_]+$"
+                    },
+                    "title": {
+                      "type": "string",
+                      "maxLength": 200
+                    },
+                    "status": {
+                      "type": "integer",
+                      "minimum": 400,
+                      "maximum": 599
+                    },
+                    "detail": {
+                      "type": "string",
+                      "maxLength": 1000
+                    },
+                    "instance": {
+                      "type": "string",
+                      "maxLength": 200
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "invalid_request",
+                        "unauthorized",
+                        "forbidden",
+                        "not_found",
+                        "conflict",
+                        "locked",
+                        "payload_too_large",
+                        "unprocessable",
+                        "rate_limited",
+                        "audit_unavailable",
+                        "temporarily_unavailable",
+                        "internal"
+                      ]
+                    },
+                    "i18n_key": {
+                      "type": "string",
+                      "maxLength": 100
+                    },
+                    "trace_id": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{32}$"
+                    }
+                  },
+                  "required": [
+                    "type",
+                    "title",
+                    "status",
+                    "code"
+                  ],
+                  "additionalProperties": {}
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The sid is unknown, another user's, revoked, pending or expired",
             "content": {
               "application/problem+json": {
                 "schema": {

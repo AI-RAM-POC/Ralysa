@@ -28,7 +28,7 @@ import { createPool } from './db/pools.js';
 import type { Database } from './db/types.js';
 import type { Logger } from './observability/logger.js';
 import { createPinoLogger, loggerFromPino } from './observability/pino.js';
-import { ensureOrganization } from './org/bootstrap.js';
+import { ensureOrganization, reconcileGroupRoles } from './org/bootstrap.js';
 import { createIdpClientSecret } from './secrets/runtime.js';
 import { openVault } from './secrets/vault.js';
 
@@ -106,6 +106,10 @@ export async function serveCommand(args: string[]): Promise<number> {
   });
   const writer = createAuditWriter({ db: createDb<Database>(writerPool), spool });
   await ensureOrganization(db, config);
+  // Group roles follow config at start, audited (#47, SEC-F002-42).
+  const roleChanges = await reconcileGroupRoles(db, config, writer);
+  if (roleChanges.length > 0)
+    logger.info('group_roles_reconciled', { changed: roleChanges.length });
   // Device code off: end every live flow-A session (idempotent; config is authoritative, D-30).
   if (!config.access.device_code_enabled) {
     const revoked = await revokeDeviceCodeSessions({ db, orgId: config.org.id, writer });

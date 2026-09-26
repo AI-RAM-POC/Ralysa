@@ -38,6 +38,7 @@ import { REPORTS_PER_CLIENT_PER_MINUTE } from '../../src/auth/routes/sign-in-fai
 import { ServeConfig } from '../../src/config/schema.js';
 import { createDb } from '../../src/db/kysely.js';
 import type { Database } from '../../src/db/types.js';
+import { mintAccessToken } from '../../src/auth/tokens/mint.js';
 import { createRateLimiter } from '../../src/http/rate-limits.js';
 import { type MemoryMetrics, createMemoryMetrics } from '../../src/observability/metrics.js';
 import { ensureOrganization } from '../../src/org/bootstrap.js';
@@ -85,6 +86,21 @@ describe.skipIf(stack === undefined)('IdP sign-in, flow A (F-002-T10)', () => {
   let base: string;
   let directory: GraphDirectory;
   let metrics: MemoryMetrics;
+  let signingKeys: Awaited<ReturnType<typeof fakeKeys>>['keys'];
+  /**
+   * Holds a Graph answer after Graph gave it (R58-r2-1): while set, the next directory check
+   * waits at the gate with the answer it already has.
+   */
+  let graphGate: { arrive: () => Promise<void> } | undefined;
+  /** Warnings the RTS logged (R58-3: group_role_config_skew). */
+  const warnings: { msg: string; fields?: Record<string, unknown> }[] = [];
+  const logger = {
+    info: () => undefined,
+    error: () => undefined,
+    warn: (msg: string, fields?: Readonly<Record<string, unknown>>) => {
+      warnings.push({ msg, ...(fields === undefined ? {} : { fields: { ...fields } }) });
+    },
+  };
   const graphClock = { offset: 0 };
   const t = (): TestDatabase => {
     if (db === undefined) throw new Error('beforeAll did not create the database');
@@ -124,6 +140,29 @@ describe.skipIf(stack === undefined)('IdP sign-in, flow A (F-002-T10)', () => {
     form(app, { grant_type: 'refresh_token', client_id: CLI_CLIENT_ID, refresh_token: token });
   const me = (accessToken: string) =>
     app.inject({ url: '/v1/me', headers: { authorization: `Bearer ${accessToken}` } });
+  /** GET /v1/internal/principals/{user}?sid= with the PEP's service token (#47). */
+  const principalFor = async (accessToken: string) => {
+    const { sub, sid } = decodeJwt(accessToken);
+    const now = Math.floor(Date.now() / 1000);
+    const service = await mintAccessToken(signingKeys, {
+      iss: base,
+      aud: 'control-plane',
+      sub: 'svc:si-gateway',
+      client_id: 'svc:si-gateway',
+      tid: config.org.id,
+      token_use: 'service',
+      iat: now,
+      nbf: now,
+      exp: now + 300,
+      jti: uuidv7(),
+    });
+    const reply = await app.inject({
+      url: `/v1/internal/principals/${String(sub)}?sid=${String(sid)}`,
+      headers: { authorization: `Bearer ${service}` },
+    });
+    expect(reply.statusCode, reply.body).toBe(200);
+    return reply.json<{ roles: string[]; session_id: string; session_roles: string[] }>();
+  };
 
   const events = async (where: { action?: string; subject?: string; since?: Date } = {}) =>
     (
@@ -202,6 +241,15 @@ describe.skipIf(stack === undefined)('IdP sign-in, flow A (F-002-T10)', () => {
         require_mfa_claim: true,
       },
       access: { access_group_id: idp.accessGroupId, admin_group_id: idp.adminGroupId },
+      // A PEP that resolves principals (#47).
+      services: [
+        {
+          name: 'si-gateway',
+          client_id: 'svc:si-gateway',
+          transit_key: 'ralysa-svc-si-gateway',
+          audit_actions: ['model.call.completed'],
+        },
+      ],
     });
     config = serveConfig(input);
     const secrets = createInMemorySecretStore({
@@ -223,10 +271,21 @@ describe.skipIf(stack === undefined)('IdP sign-in, flow A (F-002-T10)', () => {
       db: createDb<Database>(await db.pool('audit_writer', 3)),
     });
     metrics = createMemoryMetrics();
+    signingKeys = (await fakeKeys()).keys;
+    // The real Graph directory, with a gate after the answer (R58-r2-1).
+    const gatedDirectory: GraphDirectory = {
+      ...directory,
+      check: async (user) => {
+        const answer = await directory.check(user);
+        await graphGate?.arrive();
+        return answer;
+      },
+    };
     const rts = {
+      logger,
       db: cpDb,
       custody: createInMemoryKeyCustody(),
-      directory,
+      directory: gatedDirectory,
       writer,
       rejections: createRejectionAggregator({ emit: () => undefined }),
       secrets,
@@ -235,7 +294,7 @@ describe.skipIf(stack === undefined)('IdP sign-in, flow A (F-002-T10)', () => {
     };
     app = await buildApp({
       config,
-      keys: (await fakeKeys()).keys,
+      keys: signingKeys,
       rts,
       rateLimiter: createRateLimiter({ perIpPerMinute: 10_000, globalPerMinute: 10_000 }),
       pingDatabase: () => Promise.resolve(true),
@@ -832,6 +891,118 @@ describe.skipIf(stack === undefined)('IdP sign-in, flow A (F-002-T10)', () => {
     expect(view.groups.map((g) => g.idp_group_id)).toEqual([idp.accessGroupId]);
   });
 
+  // --- R58-r2-1, SEC-F002-53 (sign-in path) --------------------------------------------------
+  it('R58-r2-1: a sign-in whose Graph call started before a newer refresh does not overwrite it', async () => {
+    const hasAdmin = async () =>
+      (
+        await t().superuser.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM cp.group_membership m
+             JOIN cp.idp_group g ON g.id = m.group_id JOIN cp.app_user u ON u.id = m.user_id
+            WHERE u.idp_subject = $1 AND g.idp_group_id = $2`,
+          [idp.user('erin').oid, idp.adminGroupId],
+        )
+      ).rows[0]?.n === 1;
+    const earlier = await signInAs('erin'); // strong: both groups stored
+    expect(await hasAdmin()).toBe(true);
+
+    // A second sign-in asks Graph (still an admin) and is held after the answer.
+    let open = (): void => undefined;
+    let signalArrived = (): void => undefined;
+    const opened = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const arrived = new Promise<void>((resolve) => {
+      signalArrived = resolve;
+    });
+    graphGate = {
+      arrive: () => {
+        signalArrived();
+        return opened;
+      },
+    };
+    const held = exchange(idp.mintAccessToken('erin'));
+    await arrived;
+    graphGate = undefined;
+    try {
+      // Meanwhile erin leaves the admin group; a refresh that asked Graph later completes.
+      idp.patchUser('erin', { groups: [idp.accessGroupId] });
+      const refreshed = await refresh(earlier.refresh_token);
+      expect(refreshed.statusCode).toBe(200);
+      expect(await hasAdmin()).toBe(false);
+      const removals = (
+        await events({
+          action: 'directory.group_membership.changed',
+          subject: idp.user('erin').oid,
+        })
+      ).length;
+
+      // The held sign-in finishes with its older answer: its session is created from that
+      // answer, but the stored memberships keep the newer one and nothing is audited.
+      open();
+      const late = await held;
+      expect(late.statusCode, late.body).toBe(200);
+      expect(await hasAdmin()).toBe(false);
+      expect(
+        (
+          await events({
+            action: 'directory.group_membership.changed',
+            subject: idp.user('erin').oid,
+          })
+        ).length,
+      ).toBe(removals);
+      const lateTokens = late.json<{ access_token: string }>();
+      expect((await me(lateTokens.access_token)).json()).toMatchObject({
+        roles: ['user', 'platform_admin'],
+      });
+      expect((await principalFor(lateTokens.access_token)).session_roles).toEqual(['user']);
+    } finally {
+      open();
+      graphGate = undefined;
+      idp.patchUser('erin', { groups: [idp.accessGroupId, idp.adminGroupId] });
+    }
+  });
+
+  // --- R58-3, SEC-F002-52 --------------------------------------------------------------------
+  it('R58-3: a sign-in under a config that differs from the stored roles changes no role and writes nothing', async () => {
+    const roleOf = async (idpGroupId: string) =>
+      (
+        await t().superuser.query<{ role: string | null }>(
+          'SELECT role FROM cp.idp_group WHERE idp_group_id = $1',
+          [idpGroupId],
+        )
+      ).rows[0]?.role;
+    const roleEvents = async () =>
+      (await events({ action: 'directory.group_role.changed' })).length;
+    // Another replica's start reconciled to a config without this admin group: the stored role
+    // is gone, while this replica's config still names the group.
+    expect(await roleOf(idp.adminGroupId)).toBe('platform_admin');
+    await t().superuser.query('UPDATE cp.idp_group SET role = NULL WHERE idp_group_id = $1', [
+      idp.adminGroupId,
+    ]);
+    const eventsBefore = await roleEvents();
+    warnings.length = 0;
+    try {
+      const tokens = await signInAs('erin');
+      // Nothing rewrote the role, and no role change was written anywhere.
+      expect(await roleOf(idp.adminGroupId)).toBeNull();
+      expect(await roleOf(idp.accessGroupId)).toBe('access');
+      expect(await roleEvents()).toBe(eventsBefore);
+      // So erin's admin membership backs no role here, whatever her strong sign-in holds.
+      expect((await principalFor(tokens.access_token)).session_roles).toEqual(['user']);
+      expect(warnings).toContainEqual({
+        msg: 'group_role_config_skew',
+        fields: {
+          groups: [{ idp_group_id: idp.adminGroupId, stored: null, configured: 'platform_admin' }],
+        },
+      });
+    } finally {
+      await t().superuser.query(
+        "UPDATE cp.idp_group SET role = 'platform_admin' WHERE idp_group_id = $1",
+        [idp.adminGroupId],
+      );
+    }
+  });
+
   // --- TC-F-002-31 -----------------------------------------------------------------------------
   it('TC-F-002-31: admin rights only on strong sign-ins; MFA evidence; ipaddr mismatch flagged', async () => {
     const dana = await exchange(idp.mintAccessToken('dana'));
@@ -844,8 +1015,9 @@ describe.skipIf(stack === undefined)('IdP sign-in, flow A (F-002-T10)', () => {
     });
 
     idp.patchUser('erin', { amr: ['pwd', 'mfa'], acrs: null });
+    let weak: Awaited<ReturnType<typeof signInAs>>;
     try {
-      const weak = await signInAs('erin');
+      weak = await signInAs('erin');
       expect((await me(weak.access_token)).json()).toMatchObject({ roles: ['user'] });
       expect((await signIns(idp.user('erin').oid)).at(-1)?.details).toMatchObject({
         roles: ['user'],
@@ -858,6 +1030,25 @@ describe.skipIf(stack === undefined)('IdP sign-in, flow A (F-002-T10)', () => {
     expect((await me(strong.access_token)).json()).toMatchObject({
       roles: ['user', 'platform_admin'],
     });
+
+    // #47, SEC-F002-42: what a PEP sees. The device-code session holds no admin role although
+    // erin is in the admin group; only the strong session does.
+    const weakPrincipal = await principalFor(weak.access_token);
+    expect(weakPrincipal).toMatchObject({
+      roles: ['user', 'platform_admin'],
+      session_id: decodeJwt(weak.access_token).sid,
+      session_roles: ['user'],
+    });
+    expect((await principalFor(strong.access_token)).session_roles).toEqual([
+      'user',
+      'platform_admin',
+    ]);
+    // A refresh of the device-code session doesn't add it either.
+    const refreshed = await refresh(weak.refresh_token);
+    expect(refreshed.statusCode).toBe(200);
+    expect(
+      (await principalFor(refreshed.json<{ access_token: string }>().access_token)).session_roles,
+    ).toEqual(['user']);
 
     const noMfa = await exchange(idp.mintAccessToken('alice', { claims: { amr: ['pwd'] } }));
     expect(noMfa.json()).toMatchObject({

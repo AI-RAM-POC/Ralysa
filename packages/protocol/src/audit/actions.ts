@@ -22,6 +22,7 @@ export const F002_ACTIONS = [
   'directory.user.provisioned',
   'directory.user.updated',
   'directory.group_membership.changed',
+  'directory.group_role.changed',
   'db.migration.applied',
 ] as const;
 export type F002Action = (typeof F002_ACTIONS)[number];

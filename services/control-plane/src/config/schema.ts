@@ -132,16 +132,22 @@ export const ServeConfig = z.strictObject({
     graph_timeout_ms: z.int().min(100).max(3000).default(3000),
     require_mfa_claim: z.boolean().optional(),
   }),
-  access: z.strictObject({
-    access_group_id: z.uuid(),
-    admin_group_id: z.uuid(),
-    device_code_enabled: z.boolean().default(true),
-    loopback_ip_mismatch: z.enum(['deny', 'alert']).default('deny'),
-    admin_auth_context: z.string().max(64).optional(),
-    phishing_resistant_amr: z.array(z.string().max(32)).default(['fido', 'wia']),
-    /** A documented exception id, required to run production with require_mfa_claim=false (Q5). */
-    mfa_claim_exception_ref: z.string().min(1).max(100).optional(),
-  }),
+  access: z
+    .strictObject({
+      access_group_id: z.uuid(),
+      admin_group_id: z.uuid(),
+      device_code_enabled: z.boolean().default(true),
+      loopback_ip_mismatch: z.enum(['deny', 'alert']).default('deny'),
+      admin_auth_context: z.string().max(64).optional(),
+      phishing_resistant_amr: z.array(z.string().max(32)).default(['fido', 'wia']),
+      /** A documented exception id, required to run production with require_mfa_claim=false (Q5). */
+      mfa_claim_exception_ref: z.string().min(1).max(100).optional(),
+    })
+    // One group can't carry both roles: it would hold platform_admin only (SEC-F002-55).
+    .refine((a) => a.access_group_id.toLowerCase() !== a.admin_group_id.toLowerCase(), {
+      message: 'access_group_id and admin_group_id must be different groups',
+      path: ['admin_group_id'],
+    }),
   tokens: z
     .strictObject({
       access_ttl_s: z.int().min(60).max(3600).default(900),

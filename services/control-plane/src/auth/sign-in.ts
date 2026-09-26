@@ -227,7 +227,10 @@ export async function authorizeAndProvision(
   const actor: Actor = { id: known?.id ?? null, idpSubject: identity.oid };
   const details = options.details;
 
-  // 1. Graph: account state, Entra session revocation, configured-group membership.
+  // 1. Graph: account state, Entra session revocation, configured-group membership. The
+  //    database clock just before the call orders this answer against a concurrent refresh's
+  //    (R58-r2-1, SEC-F002-53).
+  const graphCheckedAt = await env.store.graphCheckTime();
   const check = await env.directory.check({
     idpSubject: identity.oid,
     tenantId: identity.tenantId,
@@ -348,6 +351,7 @@ export async function authorizeAndProvision(
     groupNames,
     membership: [...membership].map(([idpGroupId, source]) => ({ idpGroupId, source })),
     claimsKnown: identity.groups.kind === 'list',
+    graphCheckedAt,
     configured: { access: accessId, admin: adminId },
     session: {
       flow: attempt.ctx.flow,
@@ -364,6 +368,18 @@ export async function authorizeAndProvision(
   });
 
   const user = { id: provisioned.userId, idpSubject: identity.oid };
+  // Stored group roles differ from this replica's config (a rolling config change, or a replica
+  // not yet restarted): sign-in changes no role; the next `serve` start reconciles and audits it.
+  // Group object ids and role names only (R58-3, SEC-F002-52).
+  if (provisioned.roleSkew.length > 0) {
+    env.logger.warn('group_role_config_skew', {
+      groups: provisioned.roleSkew.map((g) => ({
+        idp_group_id: g.idpGroupId,
+        stored: g.from,
+        configured: g.to,
+      })),
+    });
+  }
   const directoryEvents: StoredEventInput[] = [];
   if (provisioned.created || provisioned.changedAttributes.length > 0) {
     directoryEvents.push(
