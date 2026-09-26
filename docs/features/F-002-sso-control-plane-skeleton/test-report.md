@@ -9,7 +9,7 @@
 >
 > The section "Development close-out input (F-002-T15)" was written by the developer at T15 and is
 > kept as it was. Everything after it is the test engineer's (`/test F-002`). Nothing here is a G6
-> decision.
+> decision, except the Approval (G6) table, recorded under standing authorization.
 
 ## Development close-out input (F-002-T15)
 
@@ -257,8 +257,8 @@ Latency against real Entra can't be measured locally until E-1 is available.
 > Verdict (§P6-7): **pass with conditions**. There are no open Critical or High findings. Three new findings are Medium:
 > SEC-F002-42 (`Principal` roles ignore the strong-flow admin rule and are a sign-in snapshot),
 > -43 (a shared global rate-limit bucket enables an unauthenticated lockout), and -44 (no recovery for a flagged RTS
-> signing key). There are seven new Low findings (-45 to -51). G6 still needs the founder's written acceptance of
-> -35 (b)–(d), -36 and -37 (condition C1) and a decision on -42 (C2).
+> signing key). There are seven new Low findings (-45 to -51). C1 (-35 (b)–(d), -36, -37) was accepted
+> and C2 (-42 fixed before G7) confirmed by the founder on 2026-09-26 (P6-8).
 
 - **Tested and passing:**
   - authz bypass attempts (TC-10, -11, -25, -26, -27);
@@ -271,10 +271,9 @@ Latency against real Entra can't be measured locally until E-1 is available.
     run;
   - SEC-F002-39 and -40 (`checkpoint.test.ts`);
   - SEC-F002-35 (a): the TC-29 test "OpenBao 2.6.2 refuses to clear the flag again".
-- **Blocking G6 until C1 is confirmed** (security.md §E, P6-7 and P6-8; status.md). Each blocks G6
-  until a named human accepts it in writing; the test engineer can't accept them. The session selected
-  the option "Accept, dev/CI only", whose wording Claude drafted, so C1 is **pending Ram Mohan Rao
-  Adduri's own confirmation** on #46:
+- **Accepted as open risks (C1), no longer blocking G6** (security.md §E, P6-7 and P6-8; status.md).
+  Ram Mohan Rao Adduri accepted them in his own words on 2026-09-26, for dev and CI only, to be built
+  before F-011 or any non-dev deployment:
   - **SEC-F002-35 (b)–(d):** checkpoint-key recovery by key epoch, `audit-verify` still verifying
     with a flagged key, and the "checkpoint key compromised" runbook;
   - **SEC-F002-36:** pin the checkpoint trust anchor;
@@ -322,7 +321,7 @@ Observed and expected, so not defects:
   stay open.
 - **EXC-F002-01:** the production default of `idp.require_mfa_claim` (unset means `true` in
   production) isn't confirmed against real tokens (T15 section).
-- **Security items stay open:** SEC-F002-35 (b)–(d), -36 and -37 (C1 pending Ram's own confirmation; once confirmed, accepted for dev and CI only); SEC-F002-42 (fix before G7, #47); the non-dev blockers listed under Security review summary.
+- **Security items stay open:** SEC-F002-35 (b)–(d), -36 and -37 (C1: accepted for dev and CI only); SEC-F002-42 (fix before G7, #47); the non-dev blockers listed under Security review summary.
 - **Metrics go to `noopMetrics`** in `serve` (status.md). Counters such as
   `audit_write_failures_total` and `auth_device_ip_mismatch_total` aren't exported, so alerts must
   key on log lines until F-011 or F-023.
@@ -341,15 +340,14 @@ Observed and expected, so not defects:
 
 ## Recommendation
 
-**Not ready until C1 is confirmed; then go with conditions.** G6 waits for two founder decisions (security.md P6-8):
-- **C1 (pending):** SEC-F002-35 (b)–(d), -36 and -37 accepted as open risks for dev and CI with
-  synthetic identities only, to be built before F-011 or any non-dev deployment, whichever comes
-  first. The session selected this option, but Claude drafted its wording. G6 stays blocked until
-  Ram Mohan Rao Adduri confirms it in his own words (a comment on #46 from his own GitHub account);
+**Go with conditions.** The two founder decisions G6 waited for are recorded in security.md P6-8
+(Ram Mohan Rao Adduri, in his own words in chat, identity asserted, 2026-09-26):
+- **C1 (accepted):** SEC-F002-35 (b)–(d), -36 and -37 are open risks for dev and CI with synthetic
+  identities only, to be built before F-011 or any non-dev deployment, whichever comes first;
 - **C2:** SEC-F002-42 is **fixed before G7**
   ([#47](https://github.com/AI-RAM-POC/Ralysa/issues/47)).
 
-Once C1 is confirmed, the recommendation is **go with conditions**, as follows.
+The conditions follow.
 
 The quality evidence supports a release candidate for a dev-only Phase 0 skeleton:
 - Every automated TC passes in all of these:
@@ -373,7 +371,7 @@ Conditions:
    - nothing is deployed outside dev before G6 and TC-28.
 
    TC-28 must run, and Q4, Q5 and EXC-F002-01 must close, **before any non-dev deployment and
-   before G8 UAT with real users**.
+   before G8 UAT with real users**. Until then, flow-A IP mismatch stays alert-only (SEC-F002-05; deny waits on Q4).
 3. **Before any non-dev deployment** (security.md P6-7 item 3):
    - C1's items: SEC-F002-35 (b)–(d), -36 and -37 built (or before F-011, whichever comes first);
    - SEC-F002-38: require `--log-checkpoints` outside dev and ship the log off-host;
@@ -392,8 +390,8 @@ Conditions:
    - SEC-F002-47 (#52), -48 (#53), -50 (#55) and -51 (#56);
    - #38 and #39 remain follow-ups.
 
-**Not ready until C1 is confirmed** by Ram Mohan Rao Adduri in his own words. After that: **ready for
-release candidate, with conditions 1–4** (C2 is decided: SEC-F002-42 is fixed before G7, #47).
+**Ready for release candidate, with conditions 1–4.** C1 is accepted, and C2 is confirmed: SEC-F002-42 is fixed
+before G7 (#47).
 
 ## Approval (G6)
 
@@ -401,4 +399,4 @@ release candidate, with conditions 1–4** (C2 is decided: SEC-F002-42 is fixed 
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| | | | | |
+| Ram Mohan Rao Adduri | Founder / product owner (QA approver) | Approved with conditions | 2026-09-26 | Standing authorization, recorded by Claude. It rests on his chat statement "I am Ram and accept C1& C2". The identity was asserted in chat and not checked against his own account, and the P6-7 channel wasn't used (security.md P6-8). Conditions 1–4 above. |
