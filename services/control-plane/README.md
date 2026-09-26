@@ -473,7 +473,25 @@ operator can't export, back up or reconfigure the key.
 version is retired: verifiers treat those versions as gone and in-flight tokens fail. Don't delete
 and recreate the key: RTS detects the changed public key (`key_replaced`), stops signing and makes
 `/readyz` unready. To go back to a version (a rollback, design §9) set
-`tokens.signing_key_pin_version` and restart. Rotation is not revocation: tokens signed with the old
+`tokens.signing_key_pin_version` and restart every replica:
+- The pinned version signs and is never retired while pinned. If it had been superseded, the
+  first poll clears that and records `secret.rotated phase=pinned` once.
+- Every newer version that was ever active is superseded on that poll, so the bad version stays
+  in JWKS for `access_ttl_s` + 5 min (its tokens verify until they expire), then retires
+  (`phase=retired`) and leaves JWKS while the pin still holds. A newer version that was only
+  published (never active) stays in JWKS and activates once the pin is removed.
+- Removing the pin (and restarting): if the newer version has **not** retired yet, it is selected
+  again, signs, and records `phase=reactivated`; the former pin is superseded and retires after
+  the retention. So keep the pin until `phase=retired` has been recorded for the bad version
+  (rotating to a good version before that doesn't help: until the new version's activation delay
+  has passed, the newest **active** version, the bad one, would sign again). If the bad version
+  has retired, the former pin stays the newest live version and keeps signing, and a version
+  rotated in while pinned activates after its delay as usual.
+- While a rolling restart changes the pin, replicas with the old and the new setting disagree:
+  both versions stay in JWKS and `pinned`/`reactivated` may be recorded more than once until the
+  rollout ends.
+
+A version already retired can't be pinned. Rotation is not revocation: tokens signed with the old
 version stay valid until they expire, so a suspected key compromise is an incident, not a rotation.
 
 Evidence: TC-F-002-15 (CI, compressed timings under load) and TC-F-002-16 (the 10-minute soak at
@@ -518,7 +536,8 @@ state is a certificate credential signed through Transit, which removes the stat
    Allow a few minutes for Entra to propagate the new credential before step 2 (a replica that
    adopts it too early gets `invalid_client` with no newer version to retry).
 2. Write it to KV from stdin, never as a command-line argument, then drop the variable:
-   `printf '%s' "$NEW_SECRET" | bao kv put kv/ralysa/control-plane/idp-client-secret value=- && unset NEW_SECRET`.
+   `printf '%s' "$NEW_SECRET" | bao kv put kv/ralysa/control-plane/idp-client-secret value=-; unset NEW_SECRET`
+   (`;`, so the variable is dropped even if the write fails).
    `bao kv metadata get …` shows the new version number.
 3. Wait until every replica reports it: `idp_client_secret_observed version=<n>` from each `serve`
    instance (at most one poll, 60 s), and the one `secret.rotated … phase=observed version=<n>`

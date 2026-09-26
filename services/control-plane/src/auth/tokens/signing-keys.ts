@@ -12,11 +12,24 @@
 //   and writes secret.rotated phase=published;
 // - activate: the newest version whose published_at + activation_delay_s has passed on the
 //   DATABASE clock becomes active (the first key ever is active at once); the replica that sets
-//   activated_at writes phase=activated and marks EVERY lower version superseded, including one
-//   that was published but never activated (several versions at the first start, or two
-//   rotations within one poll), so none stays in JWKS for ever (T07 follow-up, review of #35);
+//   activated_at writes phase=activated;
+// - supersede: on EVERY poll, from any replica, every live version below the selected one that
+//   has no superseded_at is marked superseded, including one that was published but never
+//   activated (several versions at the first start, or two rotations within one poll), so none
+//   stays in JWKS for ever (T07 follow-up, review of #35). Guarded by superseded_at IS NULL, so
+//   racing replicas change each row once;
+// - pin (rollback, design §9): tokens.signing_key_pin_version forces a version. While pinned,
+//   the versions ABOVE the pin that were ever active are superseded too, so the bad version
+//   leaves JWKS after the retention even though the pin holds (review of #37);
+// - un-supersede: the selected version never carries superseded_at, pinned or not. A pinned
+//   version that had been superseded is live again (phase=pinned), and a newer version that the
+//   pin had superseded and that has not retired yet signs again once the pin is removed
+//   (phase=reactivated); the lower versions are superseded again on the same poll. The replica
+//   whose guarded UPDATE changed the row writes the event (#36, review of #37);
 // - retire: a superseded version leaves JWKS once superseded_at + max access TTL + 5 min has
-//   passed (phase=retired). tokens.signing_key_pin_version forces a version (rollback, §9).
+//   passed on the database clock (phase=retired). The selected (and the pinned) version is never
+//   retired, and the UPDATE re-checks superseded_at itself, so a version un-superseded on the same
+//   poll can't retire from a stale read.
 // JWKS is always read from the table, so every replica publishes the same set [SEC-F002-33].
 import { createHash } from 'node:crypto';
 import { kidFor } from '@ralysa/protocol/auth';
@@ -68,12 +81,65 @@ export function selectActiveVersion(
 }
 
 /**
- * The versions to mark superseded when `activated` becomes active: every lower live version not
- * yet superseded, whether or not it was ever active. Pure (unit-tested).
+ * The versions to mark superseded while `selected` signs: every lower live version not yet
+ * superseded, whether or not it was ever active. While `selected` is the pin (a rollback, §9),
+ * also every higher live version that was ever active, so the bad version retires after the
+ * retention even though the pin holds (review of #37). A higher version never activated is left
+ * alone: it is only published, and activates once the pin is removed. Pure (unit-tested); poll()
+ * supersedes exactly these.
  */
-export function versionsToSupersede(rows: readonly KeyRow[], activated: number): number[] {
+export function versionsToSupersede(
+  rows: readonly KeyRow[],
+  selected: number,
+  pinVersion?: number,
+): number[] {
+  const pinned = pinVersion === selected;
   return rows
-    .filter((r) => r.version < activated && r.superseded_at === null && r.retired_at === null)
+    .filter(
+      (r) =>
+        r.superseded_at === null &&
+        r.retired_at === null &&
+        (r.version < selected || (pinned && r.version > selected && r.activated_at !== null)),
+    )
+    .map((r) => r.version)
+    .sort((a, b) => a - b);
+}
+
+/**
+ * The selected version, when its row still carries superseded_at: the version that signs is
+ * never superseded, pinned or not (#36, review of #37). Pure (unit-tested); poll() clears
+ * superseded_at on exactly this one.
+ */
+export function versionToUnsupersede(
+  rows: readonly KeyRow[],
+  selected: number | undefined,
+): number | undefined {
+  const row = rows.find((r) => r.version === selected);
+  return row !== undefined && row.retired_at === null && row.superseded_at !== null
+    ? row.version
+    : undefined;
+}
+
+/**
+ * The versions to retire now: superseded for longer than the retention, never the pinned or the
+ * selected one (a rollback must keep signing, #36). Pure (unit-tested); poll() retires exactly
+ * these, and its UPDATE re-checks the retention on the database clock.
+ */
+export function versionsToRetire(
+  rows: readonly KeyRow[],
+  now: Date,
+  timing: KeyTiming,
+  selected?: number,
+): number[] {
+  return rows
+    .filter(
+      (r) =>
+        r.retired_at === null &&
+        r.superseded_at !== null &&
+        r.version !== timing.pinVersion &&
+        r.version !== selected &&
+        r.superseded_at.getTime() + timing.retentionMs <= now.getTime(),
+    )
     .map((r) => r.version)
     .sort((a, b) => a - b);
 }
@@ -166,7 +232,10 @@ export function createSigningKeys(options: SigningKeysOptions): SigningKeys {
       });
     }
   };
-  const rotated = (version: number, phase: 'published' | 'activated' | 'retired') =>
+  const rotated = (
+    version: number,
+    phase: 'published' | 'activated' | 'pinned' | 'reactivated' | 'retired',
+  ) =>
     audit({
       action: 'secret.rotated',
       outcome: 'success',
@@ -307,47 +376,82 @@ export function createSigningKeys(options: SigningKeysOptions): SigningKeys {
 
       const { now, rows } = await readRows();
       const next = selectActiveVersion(rows, now, options.timing);
+      const kidOf = (version: number) => kidFor(options.key, version);
       if (next !== undefined) {
         const row = rows.find((r) => r.version === next);
         if (row !== undefined && row.activated_at === null) {
-          const won = await withOrg(options.db, options.orgId, async (trx) => {
-            const updated = await trx
+          const won = await withOrg(options.db, options.orgId, (trx) =>
+            trx
               .updateTable('cp.signing_key_version')
               .set({ activated_at: sql<Date>`clock_timestamp()` })
               .where('kid', '=', row.kid)
               .where('activated_at', 'is', null)
               .returning('kid')
-              .executeTakeFirst();
-            // Every lower version (versionsToSupersede), also one that was never active.
-            await trx
-              .updateTable('cp.signing_key_version')
-              .set({ superseded_at: sql<Date>`clock_timestamp()` })
-              .where('kid', 'like', `${options.key.replace(/[\\%_]/g, '\\$&')}.v%`)
-              .where('version', '<', next)
-              .where('superseded_at', 'is', null)
-              .execute();
-            return updated !== undefined;
-          });
-          if (won) await rotated(next, 'activated');
+              .executeTakeFirst(),
+          );
+          if (won !== undefined) await rotated(next, 'activated');
         }
-      }
-      for (const row of rows) {
-        if (
-          row.retired_at === null &&
-          row.superseded_at !== null &&
-          row.superseded_at.getTime() + options.timing.retentionMs <= now.getTime()
-        ) {
-          const retired = await withOrg(options.db, options.orgId, (trx) =>
+        // The selected version never carries superseded_at (versionToUnsupersede): a pinned
+        // version the newer one had superseded, or, once the pin is removed, a newer version the
+        // pin had superseded and that hasn't retired yet. Guarded, so one replica records it.
+        const unsupersede = versionToUnsupersede(rows, next);
+        if (unsupersede !== undefined) {
+          const cleared = await withOrg(options.db, options.orgId, (trx) =>
             trx
               .updateTable('cp.signing_key_version')
-              .set({ retired_at: sql<Date>`clock_timestamp()` })
-              .where('kid', '=', row.kid)
+              .set({ superseded_at: null })
+              .where('kid', '=', kidOf(unsupersede))
+              .where('superseded_at', 'is not', null)
               .where('retired_at', 'is', null)
               .returning('kid')
               .executeTakeFirst(),
           );
-          if (retired !== undefined) await rotated(row.version, 'retired');
+          if (cleared !== undefined) {
+            const phase = options.timing.pinVersion === next ? 'pinned' : 'reactivated';
+            options.logger.info('signing_key_unsuperseded', {
+              key: options.key,
+              version: next,
+              phase,
+            });
+            await rotated(next, phase);
+          }
         }
+        // Every lower version not yet superseded (also one never active, or a former pin once the
+        // pin is removed) and, while pinned, every newer version that was active
+        // (versionsToSupersede, the unit-tested rule). Guarded, so racing replicas change each
+        // row once.
+        const supersede = versionsToSupersede(rows, next, options.timing.pinVersion);
+        if (supersede.length > 0) {
+          await withOrg(options.db, options.orgId, (trx) =>
+            trx
+              .updateTable('cp.signing_key_version')
+              .set({ superseded_at: sql<Date>`clock_timestamp()` })
+              .where('kid', 'in', supersede.map(kidOf))
+              .where('superseded_at', 'is', null)
+              .execute(),
+          );
+        }
+      }
+      // The retention is re-checked in the UPDATE on the database clock, so a version whose
+      // superseded_at was cleared (or set again) since readRows() is left alone.
+      const retentionMs = Math.max(0, Math.floor(options.timing.retentionMs));
+      for (const version of versionsToRetire(rows, now, options.timing, next)) {
+        const retired = await withOrg(options.db, options.orgId, (trx) =>
+          trx
+            .updateTable('cp.signing_key_version')
+            .set({ retired_at: sql<Date>`clock_timestamp()` })
+            .where('kid', '=', kidOf(version))
+            .where('retired_at', 'is', null)
+            .where('superseded_at', 'is not', null)
+            .where(
+              'superseded_at',
+              '<=',
+              sql<Date>`clock_timestamp() - make_interval(secs => ${retentionMs / 1000})`,
+            )
+            .returning('kid')
+            .executeTakeFirst(),
+        );
+        if (retired !== undefined) await rotated(version, 'retired');
       }
       if (active !== next)
         options.logger.info('signing_key_active', { key: options.key, version: next });
