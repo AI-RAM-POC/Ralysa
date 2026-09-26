@@ -10,7 +10,7 @@ flows the CLI wraps (F-002 design §3.6).
   `Audience`, `Principal`, `AuthConfig`, reason codes) come from `@ralysa/protocol`.
 - **No environment variables and no config files.** Callers pass URLs and identifiers explicitly,
   from their own validated config.
-- **Every network call** takes an optional `fetch` and `timeoutMs` (default 10 s), follows no
+- **Every network call** takes an optional `fetch` and `timeoutMs` (default 10 s; JWKS 5 s), follows no
   redirects, and validates the answer with the protocol's zod contract.
 - **No file-backed `TokenStore`.** F-005 implements the interface on the OS credential store.
 

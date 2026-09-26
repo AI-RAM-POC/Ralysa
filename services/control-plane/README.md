@@ -55,8 +55,9 @@ job exits non-zero, saying the migrations were applied but not recorded.
 **Exit codes.** `0` success; `1` a runtime failure (an unknown option counts as one), or
 `audit-verify` findings (including a checkpoint key custody violation); `2` a usage or config error
 (an unknown command, no config path, an invalid config, a production-guard refusal, a signing key
-that violates custody at `serve` start). Every failure writes one JSON error line naming the
-command.
+that violates custody at `serve` start, an invalid `--shard` value). Every failure writes one JSON
+error line naming the command, except an unknown command, which prints the plain-text usage to
+stderr.
 
 ## Ports
 
@@ -175,7 +176,7 @@ Command-line options are under [Entry points](#entry-points).
 | `idp.signin_scope` | 1–200 characters | required | The full scope URI the RTS app exposes, e.g. `api://<app id URI>/Ralysa.SignIn`. RTS checks the part after the last `/` in `scp`, and `/v1/auth/config` hands the full value to the CLI. |
 | `idp.client_secret_path` | KV path | required | The RTS client secret (see the [IdP client-secret runbook](#runbook-rotating-the-idp-client-secret-sec-f002-10)). |
 | `idp.client_secret_poll_s` | 1–300 | `60` | How often each replica re-reads the client secret. |
-| `idp.graph_base_url` | URL | required | Exactly `https://graph.microsoft.com` in production. |
+| `idp.graph_base_url` | URL | required | Exactly `https://graph.microsoft.com` in production (a trailing `/` is allowed). |
 | `idp.graph_timeout_ms` | 100–3000 | `3000` | One deadline per Graph check. |
 | `idp.require_mfa_claim` | boolean | unset: `true` in production, `false` otherwise | MFA evidence: `amr` contains `mfa` or `acrs` is non-empty, else `failure mfa_claim_missing`. `false` in production needs `access.mfa_claim_exception_ref` (Q5). Can't be overridden. |
 | `access.access_group_id` | UUID | required | Object id of the group that may use Ralysa (role `user`). |
