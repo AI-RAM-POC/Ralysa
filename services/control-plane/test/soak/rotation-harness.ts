@@ -29,6 +29,11 @@
 // Graph's own invalid_client path runs under load too.
 //
 // The report holds counts, timings, kids and versions only: never a token, code or secret.
+//
+// With `logLines` set, both replicas log at `info` through pino (the `serve` logger with its
+// redaction, also behind the Logger port the watchers use) and every line is kept for the
+// TC-F-002-20 scan of the rotation logs; `onSecretValue` hands that scan each IdP client-secret
+// value the run uses. Neither is ever printed.
 import {
   type RevocationFeed,
   buildAuthorizeUrl,
@@ -61,7 +66,7 @@ import type { Database } from '../../src/db/types.js';
 import { createRateLimiter } from '../../src/http/rate-limits.js';
 import type { Logger } from '../../src/observability/logger.js';
 import { type MemoryMetrics, createMemoryMetrics } from '../../src/observability/metrics.js';
-import { createPinoLogger } from '../../src/observability/pino.js';
+import { createPinoLogger, loggerFromPino } from '../../src/observability/pino.js';
 import { ensureOrganization } from '../../src/org/bootstrap.js';
 import { type IdpClientSecret, createIdpClientSecret } from '../../src/secrets/runtime.js';
 import { serveConfig, serveConfigInput } from '../fixtures/serve-config.js';
@@ -89,6 +94,10 @@ export interface ScenarioOptions {
   removeOldSecretWhen: 'observed' | 'all_replicas';
   /** Progress lines (the soak prints them). */
   progress?: (line: string) => void;
+  /** TC-F-002-20: every log line of both replicas, at `info` (see the header). */
+  logLines?: string[];
+  /** TC-F-002-20: receives each IdP client-secret value the run uses, for the exact-value scan. */
+  onSecretValue?: (value: string) => void;
 }
 
 export type OperationKind = 'exchange' | 'refresh' | 'flow_b' | 'verify_gateway' | 'verify_cp';
@@ -186,6 +195,7 @@ export async function runRotationScenario(options: ScenarioOptions): Promise<Sce
     const idp: MockIdp = await startMockIdp({ rtsRedirectUris: [`${BASE}/oauth2/idp/callback`] });
     cleanups.push(() => idp.close());
     await kvPut(idp.clientSecret);
+    options.onSecretValue?.(idp.clientSecret);
     // The operator can't read the value back (runbook: versions only, from metadata). Checked
     // once the entry exists, and only 403 passes: a 404 would prove nothing (review of #35).
     const readBack = await operator('GET', `kv/data/${secretPath.slice('kv/'.length)}`);
@@ -247,19 +257,40 @@ export async function runRotationScenario(options: ScenarioOptions): Promise<Sce
     const tokenEndpoint = async () => (await idpMetadata.get()).tokenEndpoint;
 
     // --- two replicas ----------------------------------------------------------------------------
+    const capture = options.logLines;
     const portLogger = (replica: string): Logger => {
       const count = (level: string) => (msg: string) => {
         if (level === 'info') return;
         const key = `${replica}:${level}:${msg}`;
         warnings[key] = (warnings[key] ?? 0) + 1;
       };
-      return { info: count('info'), warn: count('warn'), error: count('error') };
+      const counted: Logger = { info: count('info'), warn: count('warn'), error: count('error') };
+      if (capture === undefined) return counted;
+      // As in serve: the Logger port on a pino instance, so the same redaction applies.
+      const real = loggerFromPino(
+        createPinoLogger('info', {
+          write: (line: string) => {
+            capture.push(line);
+          },
+        }),
+      );
+      const both =
+        (level: 'info' | 'warn' | 'error'): Logger['info'] =>
+        (msg, fields) => {
+          counted[level](msg, fields);
+          real[level](msg, fields);
+        };
+      return { info: both('info'), warn: both('warn'), error: both('error') };
     };
     const pinoLines = (replica: string) =>
-      createPinoLogger('warn', {
+      createPinoLogger(capture === undefined ? 'warn' : 'info', {
         write: (line: string) => {
-          const msg = (JSON.parse(line) as { msg?: string }).msg ?? 'unknown';
-          const key = `${replica}:pino:${msg}`;
+          capture?.push(line);
+          const record = JSON.parse(line) as { level?: unknown; msg?: string };
+          if (record.level === 'info' || record.level === 'debug' || record.level === 'trace') {
+            return;
+          }
+          const key = `${replica}:pino:${record.msg ?? 'unknown'}`;
           warnings[key] = (warnings[key] ?? 0) + 1;
         },
       });
@@ -591,6 +622,7 @@ export async function runRotationScenario(options: ScenarioOptions): Promise<Sce
     const rotateSecret = async () => {
       const oldSecret = idp.clientSecret;
       const next = idp.addClientSecret(); // 1. a second secret at the IdP
+      options.onSecretValue?.(next);
       const put = (await kvPut(next)) as { data?: { version?: number } }; // 2. kv put
       versionAfter = put.data?.version ?? versionBefore + 1;
       secretRotatedAtMs = at();
