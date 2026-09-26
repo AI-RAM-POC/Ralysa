@@ -271,10 +271,9 @@ Latency against real Entra can't be measured locally until E-1 is available.
     run;
   - SEC-F002-39 and -40 (`checkpoint.test.ts`);
   - SEC-F002-35 (a): the TC-29 test "OpenBao 2.6.2 refuses to clear the flag again".
-- **Blocking G6 until C1 is confirmed** (security.md §E, P6-7 and P6-8; status.md). Each blocks G6
-  until a named human accepts it in writing; the test engineer can't accept them. The session selected
-  the option "Accept, dev/CI only", whose wording Claude drafted, so C1 is **pending Ram Mohan Rao
-  Adduri's own confirmation** on #46:
+- **Accepted as open risks (C1), no longer blocking G6** (security.md §E, P6-7 and P6-8; status.md).
+  Ram Mohan Rao Adduri accepted them in his own words on 2026-09-26, for dev and CI only, to be built
+  before F-011 or any non-dev deployment:
   - **SEC-F002-35 (b)–(d):** checkpoint-key recovery by key epoch, `audit-verify` still verifying
     with a flagged key, and the "checkpoint key compromised" runbook;
   - **SEC-F002-36:** pin the checkpoint trust anchor;
@@ -322,7 +321,7 @@ Observed and expected, so not defects:
   stay open.
 - **EXC-F002-01:** the production default of `idp.require_mfa_claim` (unset means `true` in
   production) isn't confirmed against real tokens (T15 section).
-- **Security items stay open:** SEC-F002-35 (b)–(d), -36 and -37 (C1 pending Ram's own confirmation; once confirmed, accepted for dev and CI only); SEC-F002-42 (fix before G7, #47); the non-dev blockers listed under Security review summary.
+- **Security items stay open:** SEC-F002-35 (b)–(d), -36 and -37 (C1: accepted for dev and CI only); SEC-F002-42 (fix before G7, #47); the non-dev blockers listed under Security review summary.
 - **Metrics go to `noopMetrics`** in `serve` (status.md). Counters such as
   `audit_write_failures_total` and `auth_device_ip_mismatch_total` aren't exported, so alerts must
   key on log lines until F-011 or F-023.
@@ -341,15 +340,14 @@ Observed and expected, so not defects:
 
 ## Recommendation
 
-**Not ready until C1 is confirmed; then go with conditions.** G6 waits for two founder decisions (security.md P6-8):
-- **C1 (pending):** SEC-F002-35 (b)–(d), -36 and -37 accepted as open risks for dev and CI with
-  synthetic identities only, to be built before F-011 or any non-dev deployment, whichever comes
-  first. The session selected this option, but Claude drafted its wording. G6 stays blocked until
-  Ram Mohan Rao Adduri confirms it in his own words (a comment on #46 from his own GitHub account);
+**Go with conditions.** The two founder decisions G6 waited for are recorded in security.md P6-8
+(Ram Mohan Rao Adduri, in his own words, 2026-09-26):
+- **C1 (accepted):** SEC-F002-35 (b)–(d), -36 and -37 are open risks for dev and CI with synthetic
+  identities only, to be built before F-011 or any non-dev deployment, whichever comes first;
 - **C2:** SEC-F002-42 is **fixed before G7**
   ([#47](https://github.com/AI-RAM-POC/Ralysa/issues/47)).
 
-Once C1 is confirmed, the recommendation is **go with conditions**, as follows.
+The conditions follow.
 
 The quality evidence supports a release candidate for a dev-only Phase 0 skeleton:
 - Every automated TC passes in all of these:
@@ -392,8 +390,8 @@ Conditions:
    - SEC-F002-47 (#52), -48 (#53), -50 (#55) and -51 (#56);
    - #38 and #39 remain follow-ups.
 
-**Not ready until C1 is confirmed** by Ram Mohan Rao Adduri in his own words. After that: **ready for
-release candidate, with conditions 1–4** (C2 is decided: SEC-F002-42 is fixed before G7, #47).
+**Ready for release candidate, with conditions 1–4.** C1 is accepted, and C2 is confirmed: SEC-F002-42 is fixed
+before G7 (#47).
 
 ## Approval (G6)
 
@@ -401,4 +399,4 @@ release candidate, with conditions 1–4** (C2 is decided: SEC-F002-42 is fixed 
 
 | Approver | Role | Decision (Approved / Changes requested) | Date | Notes |
 |---|---|---|---|---|
-| | | | | |
+| Ram Mohan Rao Adduri | Founder / product owner (QA approver) | Approved with conditions | 2026-09-26 | Standing authorization, recorded by Claude. It rests on his chat statement "I am Ram and accept C1& C2" (security.md P6-8). Conditions 1–4 above. |
