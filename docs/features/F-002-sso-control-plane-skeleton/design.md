@@ -21,6 +21,7 @@
 | 2026-09-26 | 7 | Implementation feedback (F-002-T13), recorded under the standing authorization: §3.8 `idp` gains `client_secret_poll_s` (default 60, 1–300), the watch interval §5.7 names, so TC-F-002-15 can compress it. §5.7: the `invalid_client` retry is made only when the re-read returns a **newer** KV version (a retry with the same value can't succeed), and `secret.rotated idp_client_secret phase=observed` carries an event id derived from the org, the path hash and the version, so every replica (and a restart) writes the same event and the store keeps one per version; the first version a process reads is recorded the same way. See implementation-notes.md T13. |
 | 2026-09-26 | 8 | Code review of #35 (F-002-T13), recorded under the standing authorization: §3.4.4 and §3.4.5 accept only **version 7** `event_id`s from services and clients (`ServiceAuditEventInput`, `ClientAuditEventInput`; protocol `UuidV7`), because the server derives version 8 ids for its own idempotent events (`secret.rotated observed`, sign-in failure reports, client-session events) and an external writer could otherwise store one first and suppress the server's event (R35-1). The stored envelope (`AuditEventInput`) still accepts any UUID. §3.2.4: when a signing-key version activates, every lower version is superseded, including one never active, so it retires and leaves JWKS (T07 follow-up). §5.7 diagram: the retry is made only for a newer KV version. |
 | 2026-09-26 | 9 | Code review of #37 (the #36 pin follow-up), self-decided under the standing authorization, recorded by Claude: §3.2.4 and §9 clarify the pin. While `tokens.signing_key_pin_version` holds, every higher version that was ever active is superseded too, so a bad version leaves JWKS after the usual retention (the §9 rollback promise: its tokens verify until they expire, not for as long as the pin holds). The selected version never carries `superseded_at`, pinned or not: a pinned version is un-superseded, and after the pin is removed a newer version that hasn't retired is selected again and un-superseded while the former pin is superseded; if it has retired, the former pin keeps signing. §3.5 `secret.rotated` gains phases `pinned` and `reactivated`, written once by the replica whose guarded UPDATE changed the row. Retirement re-checks the retention in its UPDATE on the database clock. See implementation-notes.md "Code review of PR #37". |
+| 2026-09-26 | 10 | Fix for [#47](https://github.com/AI-RAM-POC/Ralysa/issues/47) (SEC-F002-42, founder decision C2: fixed before G7), self-decided details under the standing authorization, recorded by Claude. **The `Principal` contract is clarified.** §3.4.2: `roles` are *directory* roles (current memberships of the configured groups), never enough on their own for `platform_admin`; `GET /v1/internal/principals/{user_id}?sid=` adds `session_id` and `session_roles` = the session's roles ∩ current memberships, and refuses (403) an unknown, another user's, revoked, pending or expired `sid`. PEPs authorize on `session_roles` (§3.6, §5.5, §6.1). "Current memberships" and the §3.4.6/§6.1 "re-read at request time" mean: the memberships Graph last confirmed at a sign-in **or refresh**, read from the database at request time; the refresh grant now writes Graph's answer for the two configured groups back to `cp.group_membership` (`graph_check`) and audits a change (§3.5, §4.4, §5.3). `serve` reconciles `cp.idp_group.role` with `access.*` at start and writes the new `directory.group_role.changed` per change (§3.5, §4.4). §3.6: `resolve(userId, sessionId)`, cached per (user, session), `PrincipalSessionRefusedError`. Control-plane API 1.1.0 (§3.10: optional fields only). See implementation-notes.md "Fix for #47". |
 
 ---
 
@@ -251,7 +252,7 @@ All routes are served by `services/control-plane` (`serve` entry point). Every `
 | `POST /oauth2/revoke` | public client id | RFC 7009 revocation = sign-out | AC-8 |
 | `POST /v1/auth/sign-in-failures` | none; rate-limited per IP and per org; idempotent per `attempt_id` | Client-reported IdP-side failures in flow A | AC-4 |
 | `GET /v1/me` | user access token, `aud=control-plane` | The signed-in user, session roles and groups | AC-1, AC-15 |
-| `GET /v1/internal/principals/{user_id}` | service token | Groups, roles and status for a user (AC-7's "yields groups") | AC-7 |
+| `GET /v1/internal/principals/{user_id}[?sid=]` | service token | Groups, directory roles and status for a user (AC-7's "yields groups"); with `sid`, that session's roles ∩ current memberships (`session_roles`, rev 10) | AC-7 |
 | `GET /v1/internal/governance` | service token | Revocations, kill-switch state, epoch (G-1 heartbeat, poll) | AC-6, AC-8 |
 | `POST /v1/audit/events` | service token | Service ingestion path (per-service action allow-list) | AC-11 |
 | `POST /v1/audit/client-events` | user access token, `aud=control-plane` | Client-attested ingestion path | AC-16 |
@@ -508,11 +509,19 @@ export const Me = z.strictObject({
 });
 export const Principal = z.strictObject({
   user_id: z.uuid(), org_id: z.uuid(), status: z.enum(['active', 'disabled']),
-  roles: z.array(z.enum(['user', 'platform_admin'])),
+  roles: z.array(z.enum(['user', 'platform_admin'])),   // directory roles (rev 10)
   groups: z.array(z.strictObject({ idp_group_id: z.uuid(), role: GroupView.shape.role })),
   as_of: z.iso.datetime(),
+  session_id: z.uuid().optional(),                                      // rev 10: exactly when ?sid=
+  session_roles: z.array(z.enum(['user', 'platform_admin'])).optional(), // rev 10: exactly when ?sid=
 });
 ```
+
+**The `Principal` contract (rev 10, #47, SEC-F002-42).**
+- `roles` are **directory roles**: `user` for a current membership of `access.access_group_id`, `platform_admin` for one of `access.admin_group_id`, none for a disabled user. They describe the user, not a session, and are **never enough on their own for `platform_admin`**: an admin who signed in by device code holds no admin role (§6.1, SEC-F002-06) but has it here.
+- `GET /v1/internal/principals/{user_id}?sid={sid}` adds `session_id` and `session_roles` = the roles of that session (`auth_session.roles`, decided at sign-in, narrowed at each refresh, §5.3) ∩ the directory roles above. An unknown `sid`, another user's, or a session that is revoked, pending or past its absolute expiry is refused with `403 forbidden` and gets no roles. A malformed `sid` is `400`.
+- **PEPs authorize on `session_roles`** and pass the verified token's `sid` on every lookup (§3.6, §5.5). `GET /v1/audit/events` applies the same rule in-process (§3.4.6).
+- **Current memberships** are the `cp.group_membership` rows read at request time; for the two configured groups they hold what Graph confirmed at the user's last sign-in or refresh (§6.3; both write Graph's answer back). A removal in Entra therefore reaches `Principal` at the user's next refresh, which an active client makes at least every access-token TTL; the resolver cache adds ≤ 30 s. `as_of` is the database clock of the read.
 
 #### 3.4.3 Governance feed
 
@@ -621,7 +630,7 @@ Server rules (observability-audit §3.3):
 
 `GET /v1/audit/events?from&to&user_id&action&outcome&limit&cursor`:
 - `from` and `to` are required, with a range of at most 31 days; `limit` ≤ 500; keyset pagination on `(ts, event_id)`.
-- It needs the **session role** `platform_admin` (§6.1), read from `auth_session.roles` for the token's `sid` at request time, and a current admin-group membership.
+- It needs the **session role** `platform_admin` (§6.1), read from `auth_session.roles` for the token's `sid` at request time, and a current admin-group membership: the `session_roles` rule of §3.4.2 (rev 10), where "current" is as Graph last confirmed it at a sign-in or refresh.
 - Allowed: `audit.query outcome=success` (filters, `policy_version`) is **written and committed before any result is returned**; if that write fails, the query fails with `503 audit_unavailable` [SEC-F002-06 c]. Then `200 { events: AuditEvent[], next_cursor }`, where each event carries its seal (`shard`, `seq`) when sealed, and `result_count` goes into the log line.
 - Not admin: `403` plus `audit.query outcome=denied reason_code=not_platform_admin` (written before the response).
 - Reads use the `ralysa_audit_reader` role under RLS.
@@ -721,7 +730,8 @@ export const AuditEvent = AuditEventInput.extend({
 | `secret.rotated` | `success` | `credential_ref_hash`, `kind` (`idp_client_secret`, `signing_key`, `checkpoint_key`), `version`, `phase` (`observed`, `published`, `activated`, `pinned`, `reactivated`, `retired`; `pinned`/`reactivated` rev 9, §3.2.4) | control plane |
 | `secret.custody_violation` | `error` | `key`, `flag` (`exportable`, `allow_plaintext_backup`) | control plane, sealer [SEC-F002-11] |
 | `directory.user.provisioned` / `.updated` | `success` | `source: sign_in`, `changed_attributes` (names only) | RTS |
-| `directory.group_membership.changed` | `success` | `added[]`, `removed[]` (IdP object ids), `privileged` (true if the admin group changed, TM-49) | RTS |
+| `directory.group_membership.changed` | `success` | `added[]`, `removed[]` (IdP object ids), `privileged` (true if the admin group changed, TM-49) | RTS, at sign-in and (rev 10) at a refresh whose Graph answer changed the configured groups' memberships |
+| `directory.group_role.changed` (rev 10) | `success` | `idp_group_id`, `from`, `to` (`access`, `platform_admin` or null), `cause: config`, `privileged` (true if `platform_admin` is involved, TM-49); actor `system`/`rts` | `serve` start, one per group whose role config changed |
 | `db.migration.applied` | `success` | `set` (`cp`, `audit`), `migration`, `checksum` | migrate jobs (SR-29: every migration path audited) |
 
 [AR-3] Outcome semantics: `failure` = an authentication or protocol attempt failed for a caller- or IdP-side reason (`auth.*` only); `denied` = refused by policy; `error` = a dependency or internal fault. `audit.modify_denied` and `db.migration.applied` use `source=control-plane`, `attestation=server`, `actor.type=system`, `actor.service` = `audit-store` or `migrator`. (`audit.schema_changed` uses `actor.service=dba-event-trigger`.)
@@ -763,7 +773,10 @@ export function createRevocationFeed(opts: {
 
 export function createPrincipalResolver(opts: {
   baseUrl: string; serviceTokens: ServiceTokenSource; ttlMs?: number /* 30000 */;
-}): { resolve(userId: string): Promise<Principal> };   // groups + roles (AC-7)
+}): {                                                  // groups + roles (AC-7)
+  resolve(userId: string, sessionId: string): Promise<SessionPrincipal>; // rev 10: authorize on session_roles
+  resolve(userId: string): Promise<Principal>;                            // directory roles only
+};   // cached per (user, session); a refused sid → PrincipalSessionRefusedError
 
 export function createServiceTokenSource(opts: {
   tokenEndpoint: string; clientId: string; signer: AssertionSigner;   // Transit-backed in services
@@ -991,7 +1004,7 @@ PII classes are data-model §4: **N** none, **W** workforce identifiers, **C** c
 | **cp.idp_group** | | | Mirrors IdP | PK `id`; UNIQUE `(org_id, idp_group_id)` |
 | .idp_group_id | uuid (Entra object id; non-GUID claim values are never stored) [SEC-F002-08] | N | | |
 | .display_name | text null (from Graph, display only, never matched) | W (can name people) | | |
-| .role | text null (`access`, `platform_admin`), set only from config | N | | |
+| .role | text null (`access`, `platform_admin`), set only from config; reconciled with `access.*` at `serve` start and audited (rev 10) | N | | |
 | .name_refreshed_at | timestamptz null | N | | |
 | **cp.group_membership** | | | Replaced at each sign-in/refresh | PK `(org_id, user_id, group_id)`; index `(org_id, group_id)` |
 | .user_id, .group_id | uuid FK | W | | |
@@ -1001,7 +1014,7 @@ PII classes are data-model §4: **N** none, **W** workforce identifiers, **C** c
 | .user_id | uuid FK | W | | |
 | .client_id, .surface, .flow | text | N | | |
 | .status | text (`pending`, `active`, `revoked`) | N | | |
-| .roles | text[] (`user`, `platform_admin`), decided at sign-in [SEC-F002-06] | N | | |
+| .roles | text[] (`user`, `platform_admin`), decided at sign-in [SEC-F002-06], narrowed at refresh; PEPs see them only ∩ current memberships (`session_roles`, rev 10) | N | | |
 | .device_label | text null (client-supplied, sanitised) | W | | |
 | .created_ip | inet | W | | |
 | .created_at, .last_refresh_at, .absolute_expires_at, .revoked_at | timestamptz | N | | |
@@ -1195,6 +1208,8 @@ sequenceDiagram
             RTS->>A: auth.refresh error idp_unavailable
             RTS-->>C: temporarily_unavailable (refresh token not consumed)
         else OK
+            RTS->>DB: Write Graph's answer for the configured groups to group_membership (graph_check, rev 10)
+            RTS->>A: directory.group_membership.changed, only if it changed (privileged for the admin group)
             RTS->>DB: Mark old token rotated, insert new (one statement guard)
             RTS-->>C: new access_token + refresh_token
         end
@@ -1247,8 +1262,8 @@ sequenceDiagram
         GW->>RTS: POST /v1/audit/events auth.token_rejected (aggregated)
         GW-->>CL: 401
     else Valid
-        GW->>RTS: GET /v1/internal/principals/{sub} (30 s cache)
-        RTS-->>GW: org_id, roles, groups
+        GW->>RTS: GET /v1/internal/principals/{sub}?sid={sid} (30 s cache per user and session)
+        RTS-->>GW: org_id, roles, groups, session_roles (authorize on these, rev 10)
         GW->>RTS: POST /v1/audit/events (service token)
         RTS->>RTS: Action in the service's allow-list, else 403 and audit.ingest_rejected
         RTS->>A: INSERT per event in a savepoint as ralysa_audit_writer, source from token
@@ -1353,7 +1368,8 @@ sequenceDiagram
 | Issuer and tenant pinning | `entra-token-validator.ts`, `oidc-client.ts` | Exact `alg`, `ver`, `iss` and `tid` (SR-06) |
 | Sign-in access | `identity-mapping.ts` | Membership comes from Graph `checkMemberGroups` for the two configured object ids (§6.3). Roles: `user` if in the access group; `platform_admin` if in the admin group **and** the sign-in is strong: `flow=loopback_pkce`, or `acrs` contains `access.admin_auth_context`, or `amr` contains a value in `access.phishing_resistant_amr` [SEC-F002-06]. A user in both groups who signs in through device code gets `user` only (`details.admin_role_withheld=true`). No role → `denied` (`not_in_access_group`, or `admin_requires_strong_flow` for an admin-only user on a weak flow) (D-23 revised) |
 | Audience minting | Refresh and exchange grants | `model-gateway`, `agent-host`, `mcp-gateway`, `workspace-runtime` require the session role `user` |
-| Audit query | `routes/query.ts` | Session role `platform_admin` plus current admin-group membership, re-read at request time |
+| Audit query | `routes/query.ts` | Session role `platform_admin` plus current admin-group membership, read from the database at request time (memberships as Graph last confirmed them at a sign-in or refresh; rev 10) |
+| Privileged decisions at PEPs (rev 10) | Every PEP, through `@ralysa/auth` `resolve(userId, sid)` | `Principal.session_roles` (session roles ∩ current memberships), never `Principal.roles` alone; a refused `sid` is 401 at the PEP (SEC-F002-42) |
 | Service-only routes | `/v1/internal/*`, `/v1/audit/events` | `token_use=service`, registered `sub`; audit actions within the service's allow-list |
 | Client-attested route | `/v1/audit/client-events` | User token, server-issued session bound to `sid`, allow-list, reserved keys, actor overwrite, kill-switch scopes |
 | Token validity at every PEP | `packages/auth` verifier | §3.2.2 checks + revocation + G-1 staleness |

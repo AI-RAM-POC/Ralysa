@@ -1838,3 +1838,72 @@ Local runs, Node 24.21.0, pnpm 11.27.1, dev stack up:
   - `gateway.int.ts` 24-way: 24/24 (unchanged file: 0/24).
   - `audit-routes.int.ts` 10-way: 10/10 (unchanged file: 0/10).
   - `audit.int.ts` 4-way: 4/4. At 12-way the dev Postgres ran out of connection slots, which says nothing about the tests.
+
+## Fix for #47: `Principal` session roles, membership at refresh, group roles at start (SEC-F002-42)
+
+Branch `fix/F-002-principal-session-roles`, based on `main` at `f795d6b` with `main` at `4e70cab` (#46) merged in. Issue [#47](https://github.com/AI-RAM-POC/Ralysa/issues/47), security.md P6-4 SEC-F002-42 (Medium; High once an F-003/F-004 PEP authorizes admin actions on it). Founder decision C2: fixed before G7. Design revision 10 records the clarified contract.
+
+### The problem, in one line each
+
+1. `Principal.roles` came from group memberships only, so an admin who signed in by device code (session roles `[user]`) still showed `platform_admin` to every PEP.
+2. `cp.group_membership` was written only at sign-in, so a removal from the admin group in Entra reached `Principal` only at the next full sign-in (up to 7 days).
+3. A changed `access.admin_group_id` wasn't applied to `cp.idp_group.role` until someone signed in.
+4. The `@ralysa/auth` guide told PEPs to decide on `principal.roles`.
+
+### What changed
+
+- **Contract** (`packages/protocol/src/control-plane/principals.ts`, design §3.4.2): `Principal` gains optional `session_id` and `session_roles`. `roles` is documented as directory roles that are never enough on their own for `platform_admin`. `principal.v1.json` and `openapi/control-plane.v1.json` are regenerated; the control-plane API is 1.1.0.
+- **Route** (`src/directory/routes.ts`): `GET /v1/internal/principals/{user_id}?sid=` answers `session_roles` = the session's roles ∩ the roles the user's current memberships give. An unknown `sid`, another user's, or a session that is revoked, pending or past its absolute expiry is `403`; a malformed `sid` is `400`. Without `sid` the answer is unchanged.
+- **One rule** (`src/directory/membership.ts`, new): `sessionRoles()` (session lookup plus intersection), `directoryRoles()`, `intersectRoles()`, `ensureConfiguredGroups()` and `recordGraphMembership()`. The audit query (`audit/routes/query.ts`) now calls `sessionRoles()` instead of its own SQL, so the audit route and PEPs apply the same rule.
+- **Refresh** (`src/auth/grants/refresh-token.ts`): once Graph has answered for an enabled user, the grant writes that answer for the two configured groups back to `cp.group_membership` (`source = graph_check`; a group left is deleted, whatever its earlier source) and writes `directory.group_membership.changed` when something changed (`privileged` when the admin group is in `added` or `removed`). This happens before the session checks, so it also runs when the refresh is then denied `idp_session_revoked` or `not_in_access_group`.
+- **Start** (`src/org/bootstrap.ts` `reconcileGroupRoles`, called by `serve` after `ensureOrganization`): `cp.idp_group.role` is set from `access.access_group_id` and `access.admin_group_id` (other groups get none), and each change writes `directory.group_role.changed` (actor `system`/`rts`, `details.idp_group_id`, `from`, `to`, `cause: config`, `privileged`). Sign-in's `syncGroups` uses the same `ensureConfiguredGroups()`.
+- **Audit catalogue**: `directory.group_role.changed` is added to `F002_ACTIONS` (protocol) and design §3.5. It's in the reserved `directory.` namespace, so no service can be allow-listed for it (§3.4.4); no allow-list change was needed.
+- **`@ralysa/auth`** (`src/verify/principal-resolver.ts`): `resolve(userId, sessionId)` sends `?sid=`, returns a `SessionPrincipal` (typed with `session_id` and `session_roles`), caches per (user, session), and throws `PrincipalSessionRefusedError` on 403 or a malformed session id. An answer without `session_roles`, or for another session, is `PrincipalUnavailableError`. `resolve(userId)` still works.
+- **Docs**: `packages/auth/README.md` (the per-request example now passes the `sid` and authorizes on `session_roles`; the resolver section has a roles table), `services/control-plane/README.md` (route table; roles, refresh write-back and start reconcile under sign-in), design revision 10.
+
+### Tests
+
+| Case | Where | What it proves |
+|---|---|---|
+| Device-code admin | `sign-in.int.ts` TC-F-002-31 (extended), end to end through the mock IdP and Graph | erin, in both groups, signs in on a weak flow: `principals?sid=` gives `roles` with `platform_admin` but `session_roles: ['user']`. Her strong session gives `['user', 'platform_admin']`. A refresh of the weak session doesn't add it. |
+| Device-code admin (seeded) | `sessions.int.ts` "#47: a device-code session of an admin …" | The same with two seeded sessions of one user and the fake directory. |
+| Admin removal after one refresh | `sessions.int.ts` "#47: removal from the admin group reaches Principal after one refresh …" | After the first refresh (both groups): `added` both, `privileged: true`. The directory then drops the admin group, and **one** refresh later `roles`, `groups` and `session_roles` no longer have it, the only row left is `graph_check`, `directory.group_membership.changed` has `removed: [admin]`, `privileged: true`, and an unchanged answer writes no event. |
+| `admin_group_id` change at start | `sessions.int.ts` "#47: an admin_group_id change takes effect at start …" | `reconcileGroupRoles` with a moved admin group (what `serve` runs at start): the old group loses its role, and with no sign-in or refresh `roles` and `session_roles` drop `platform_admin`. Two `directory.group_role.changed` events (`privileged: true`). A second run changes and writes nothing. |
+| sid refusals | `sessions.int.ts` "#47: an unknown, foreign, revoked, pending or expired sid is refused …" | A random `sid`, another user's, a pending and an expired session: 403 without roles; a malformed `sid`: 400; after sign-out the same `sid`: 403. |
+| Existing principals test | `sessions.int.ts` | Updated: a refresh now writes Graph's answer back, so a user who refreshed shows the access group and `user`. No `session_roles` without `?sid=`. |
+| Resolver | `packages/auth/test/principal-resolver.test.ts` | `?sid=` sent; cache per (user, session); 403 → `PrincipalSessionRefusedError`; non-UUID sid never sent; an answer without `session_roles`, for another session, or with them to a plain lookup fails closed. |
+| Role rules | `services/control-plane/test/membership.test.ts` (new) | `directoryRoles` and `intersectRoles`: a weak session never gains `platform_admin`; a strong one keeps it only while the admin membership lasts. |
+| Contract | `packages/protocol/test/control-plane.test.ts` | `session_id`/`session_roles` optional; only the two roles parse. |
+
+`serve` itself isn't started by any test (none does). The start path is `reconcileGroupRoles`, which the integration test calls with the changed config, plus the one call in `serveCommand`.
+
+### Recorded decisions
+
+Items marked **self-decided** were decided under the standing authorization (CLAUDE.md), taking the recommended option from the issue: standing authorization, recorded by Claude.
+
+| # | Type | What | Why |
+|---|---|---|---|
+| F47-1 | Contract (**self-decided**) | A refused `sid` is `403 forbidden`. Refused are: unknown, another user's, `revoked`, `pending`, and past `absolute_expires_at`. | The issue says "refused, not given the roles". 404 is taken by "no such user", and a distinct status lets the resolver raise a distinct error (`PrincipalSessionRefusedError`, answered 401 by the PEP). A pending session has no token yet, and an expired one can't have a valid one. |
+| F47-2 | Contract (**self-decided**) | The answer echoes `session_id`, and the resolver checks it, as it already checks `user_id`. | An answer for another session must never be cached or used for this one. |
+| F47-3 | Contract (**self-decided**) | A disabled user's session that is still active (a race with revocation) answers `session_roles: []`, not 403. | `status: disabled` already says it all, and a disabled user has no directory roles either. Revocation ends the session right after. |
+| F47-4 | Implementation (**self-decided**) | Refresh write-back runs in its own transaction right after Graph answers for an enabled user, before the `signInSessionsValidFrom` and group checks, and whatever the rotation outcome. | Graph's answer is a fact about the user, true whether or not this refresh then succeeds. Writing it on the denials too means a user removed from both groups loses the memberships at once. |
+| F47-5 | Implementation (**self-decided**) | The refresh's `directory.group_membership.changed` goes through `writeOrSpool` (awaited): an audit outage spools it and doesn't fail the refresh. The event carries the catalogue fields (`added`, `removed`, `privileged`) and the envelope `session_id`. | It records a directory fact, not an access decision. The refresh's own denials already use the same path. Same `details` shape as the sign-in event, so queries and alerts (TM-49) don't change. |
+| F47-6 | Catalogue (**self-decided**) | New action `directory.group_role.changed`, one per group, written after the change commits, through `writeOrSpool`, actor `system`/`rts`. `privileged` when `platform_admin` is `from` or `to`. On the first start of an org, the two configured groups are created, so two events are written. | Nothing in the catalogue fit a config-driven role change. It follows the device-code switch at start (spool-backed, written after the change). One event per group keeps `privileged` precise. |
+| F47-7 | Scope (**self-decided**) | The reconcile runs at `serve` start only, not in `bootstrap-org`. | The issue asks for `serve` start, and `serve` always runs it before serving. `bootstrap-org` serves nothing, and the next `serve` start reconciles. |
+| F47-8 | Behaviour change (**self-decided**) | The audit query now uses `sessionRoles()`, so it also refuses a session past its absolute expiry and gives a disabled user nothing. | One rule for privileged decisions. Both cases were already unreachable with a valid token (the verifier and revocation reject them first), so this only removes a divergence. |
+| F47-9 | Implementation (**self-decided**) | `recordGraphMembership` creates a missing configured group row with its configured role. It never changes an existing row's role, which start owns. | After a start the rows exist. Creating them role-less would make a new member look like a non-member until the next sign-in. |
+| F47-10 | Versioning (**self-decided**) | Control-plane API version 1.0.0 → 1.1.0. | §3.10: a minor version adds optional fields. A resolver that doesn't send `?sid=` gets exactly the old answer. |
+| F47-11 | Scope | `/v1/me` still reports the calling session's stored roles, not intersected. Session roles are still decided at sign-in, and a refresh never adds one. | `/v1/me` is the user's own view and isn't used for authorization. The intersection is a PEP concern (`session_roles`). |
+| F47-12 | Residual | A removal in Entra reaches `Principal` at the user's next refresh, not instantly: at most the access-token TTL (15 min) for a client that keeps working, plus the resolver's 30 s cache. Without a refresh the access token expires in the same time. | Graph is called only at sign-in and refresh (§6.3). Instant propagation would need change notifications (F-006/F-018). Design §3.4.2 now says this, replacing "re-read at request time". |
+| F47-13 | Process | security.md isn't edited: it is the security reviewer's artefact. The SEC-F002-42 status is tracked in status.md and here, and the reviewer verifies the fix at the next pass. | Keeps the phase-6 review text as the reviewer wrote it. |
+
+### Checks (fix for #47)
+
+Local runs, Node 24.21.0, pnpm 11.27.1, dev stack up, after merging `main` at `4e70cab`:
+
+- `pnpm lint`: 33/33 tasks. `pnpm build`: 23/23 tasks.
+- `pnpm test`: 33/33 tasks, 2,348 unit tests (2,341 before plus 7): `@ralysa/protocol` 172, `@ralysa/auth` 122, `@ralysa/control-plane` 413.
+- `turbo run typecheck check:generated`: 38/38 tasks, and no drift in `principal.v1.json` or `openapi/control-plane.v1.json` afterwards (both are committed regenerated).
+- `pnpm repo:check`: every check passes, and Prettier is clean. The `i18n/untranslated` warning and the `needs-native-review` counts are pre-existing and outside F-002.
+- `pnpm --filter @ralysa/control-plane test:integration` against the dev stack: 173 tests in 12 files, none skipped (169 on `main` plus the 4 new `sessions.int.ts` cases; the TC-F-002-31 extension is inside an existing case).
+- The `@ralysa/auth` README's per-request example was type-checked against the package in a scratch file, which was then deleted.
