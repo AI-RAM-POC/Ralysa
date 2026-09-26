@@ -6,6 +6,7 @@ import {
   ciDuration,
   ciDurationReport,
   formatDuration,
+  formatExcluded,
   formatReport,
   ghRunListArgs,
   type GhRun,
@@ -65,7 +66,7 @@ describe('percentile (nearest rank)', () => {
 describe('ci-duration report (fixture)', () => {
   const runs = parseRuns(FIXTURE);
 
-  it('counts only finished runs (success, failure) and keeps the newest 30', () => {
+  it('counts finished runs (success, failure, timed_out) and keeps the newest 30', () => {
     const durations = runDurations(runs);
     expect(runs).toHaveLength(35);
     expect(durations).toHaveLength(30);
@@ -87,8 +88,10 @@ describe('ci-duration report (fixture)', () => {
         'CI wall clock over the last 30 completed PR runs',
         '  p50 5m 00s  (budget 10m 00s: ok)',
         '  p95 9m 40s  (budget 15m 00s: ok)',
+        '  excluded: cancelled 3',
       ].join('\n'),
     );
+    expect(report.excluded).toEqual({ cancelled: 3 });
   });
 
   it('a smaller --limit takes the newest runs only', () => {
@@ -96,6 +99,42 @@ describe('ci-duration report (fixture)', () => {
     // Newest three counted runs: k = 17, 3, 29 → 340 s, 60 s, 580 s.
     expect(report.runs.map((d) => d.ms)).toEqual([340_000, 60_000, 580_000]);
     expect(report.p50).toBe(340_000);
+    // The first cancelled run is older than the third counted one, so none is in this window.
+    expect(report.excluded).toEqual({});
+    expect(formatReport(report, 3)).toContain('  excluded: none');
+  });
+});
+
+describe('conclusions (review R63-1)', () => {
+  it('counts a timed_out run: it is the slow pipeline the budget is about', () => {
+    const report = ciDurationReport([run(1, 'success', 60), run(2, 'timed_out', 20 * 60)]);
+    expect(report.runs.map((d) => d.conclusion)).toEqual(['success', 'timed_out']);
+    expect(report.p95).toBe(20 * 60_000);
+    expect(report.withinBudget).toBe(false);
+    expect(report.excluded).toEqual({});
+  });
+
+  it('prints the runs left out inside the window, by conclusion, and ignores older ones', () => {
+    const runs = [
+      run(1, 'cancelled', 30),
+      run(2, 'success', 60),
+      run(3, 'skipped', 0),
+      run(4, 'cancelled', 30),
+      run(5, 'action_required', 0),
+      run(6, 'failure', 120),
+      run(7, 'cancelled', 30), // older than the second counted run: outside a limit of 2
+    ];
+    const report = ciDurationReport(runs, 2);
+    expect(report.runs.map((d) => d.id)).toEqual([2, 6]);
+    expect(report.excluded).toEqual({ cancelled: 2, skipped: 1, action_required: 1 });
+    expect(formatReport(report, 2)).toContain(
+      '  excluded: action_required 1, cancelled 2, skipped 1',
+    );
+  });
+
+  it('formatExcluded sorts by conclusion and says none when empty', () => {
+    expect(formatExcluded({})).toBe('none');
+    expect(formatExcluded({ stale: 1, cancelled: 4 })).toBe('cancelled 4, stale 1');
   });
 });
 

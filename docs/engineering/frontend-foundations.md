@@ -7,7 +7,7 @@ How to build UI in Ralysa: design tokens, RTL-safe layout, i18n keys, icons, dep
 - [`tooling/eslint-config/README.md`](../../tooling/eslint-config/README.md) and [`tooling/stylelint-config/README.md`](../../tooling/stylelint-config/README.md): the lint rules
 - [`tooling/repo-scripts/README.md`](../../tooling/repo-scripts/README.md): `check-i18n`, `check-contrast`, `check-no-demo`, `check-banned-deps`
 
-**Scope.** The rules apply to every UI workspace, meaning any workspace with `"ralysa": { "ui": true }` in its `package.json` (today `packages/ui`, `apps/web` and `apps/ui-lab`; later `apps/desktop`, `packages/workbench` and `packages/views`). `check-ui-lint` fails a UI workspace whose `lint` script doesn't run ESLint with `reactUi()` and Stylelint with `@ralysa/stylelint-config`. Every rule is an error; there is no warning phase.
+**Scope.** The rules apply to every UI workspace, meaning any non-placeholder workspace with `"ralysa": { "ui": true }` in its `package.json` (today `packages/ui`, `apps/web` and `apps/ui-lab`; later `apps/desktop`, `packages/workbench` and `packages/views`). Placeholder workspaces (`"kind": "placeholder"`) hold only a README and are skipped. `check-ui-lint` fails a UI workspace whose `lint` script doesn't run ESLint with `reactUi()` and Stylelint with `@ralysa/stylelint-config`. Every rule is an error; there is no warning phase.
 
 ## Quick checklist
 
@@ -23,11 +23,11 @@ How to build UI in Ralysa: design tokens, RTL-safe layout, i18n keys, icons, dep
 
 **Source** (`packages/ui/tokens/`, DTCG Format 2025.10):
 
-| File | Holds |
-|---|---|
-| `core.tokens.json` | Primitives (`palette.*`: gray, blue, red, green, amber, shadow) and the theme-independent tokens: `font` (family, size, weight, lineHeight, letterSpacing), `space`, `size` (control, icon, container, focusRing), `radius`, `elevation.layer` (z-index) and `motion` (duration, easing) |
-| `semantic.light.tokens.json`, `semantic.dark.tokens.json` | Semantic colours and shadows as aliases into the palette. Both themes must have the same keys. |
-| `contrast-pairs.json` | Every foreground/background pair used for text or a UI boundary, with its kind (`text`, `largeText`, `nonText`, `focus`), plus the exempt tokens and why |
+| File                                                      | Holds                                                                                                                                                                                                                                                                                    |
+| --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `core.tokens.json`                                        | Primitives (`palette.*`: gray, blue, red, green, amber, shadow) and the theme-independent tokens: `font` (family, size, weight, lineHeight, letterSpacing), `space`, `size` (control, icon, container, focusRing), `radius`, `elevation.layer` (z-index) and `motion` (duration, easing) |
+| `semantic.light.tokens.json`, `semantic.dark.tokens.json` | Semantic colours and shadows as aliases into the palette. Both themes must have the same keys.                                                                                                                                                                                           |
+| `contrast-pairs.json`                                     | Every foreground/background pair used for text or a UI boundary, with its kind (`text`, `largeText`, `nonText`, `focus`), plus the exempt tokens and why                                                                                                                                 |
 
 The semantic colours are `color.bg.{canvas,surface,surfaceRaised,subtle}`, `color.fg.{default,muted,onAccent,disabled}`, `color.accent.{default,hover}`, `color.border.{decor,control}`, `color.focus.ring`, `color.link` and `color.status.{danger,success,warning}`. The values are neutral placeholders. Brand values will replace them through the token files only (design §7.1.3), and the contrast gate reruns when they do.
 
@@ -64,15 +64,15 @@ Arabic is a first-class locale, so every screen must work in both directions fro
 
 **Layout rules (AC-4).**
 
-| Instead of | Use |
-|---|---|
-| `ml-*`, `mr-*`, `pl-*`, `pr-*` | `ms-*`, `me-*`, `ps-*`, `pe-*` |
-| `left-*`, `right-*` | `inset-s-*`, `inset-e-*` |
-| `border-l`, `border-r` | `border-s`, `border-e` |
-| `rounded-l-*`, `rounded-tr-*`, … | `rounded-s-*`, `rounded-se-*`, … |
-| `text-left`, `text-right`, `float-left`, `clear-right` | `text-start`, `text-end`, `float-start`, `clear-end` |
+| Instead of                                                                    | Use                                                                                                           |
+| ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| `ml-*`, `mr-*`, `pl-*`, `pr-*`                                                | `ms-*`, `me-*`, `ps-*`, `pe-*`                                                                                |
+| `left-*`, `right-*`                                                           | `inset-s-*`, `inset-e-*`                                                                                      |
+| `border-l`, `border-r`                                                        | `border-s`, `border-e`                                                                                        |
+| `rounded-l-*`, `rounded-tr-*`, …                                              | `rounded-s-*`, `rounded-se-*`, …                                                                              |
+| `text-left`, `text-right`, `float-left`, `clear-right`                        | `text-start`, `text-end`, `float-start`, `clear-end`                                                          |
 | CSS `margin-left`, `padding-right`, `left`, `border-left`, `text-align: left` | `margin-inline-start`, `padding-inline-end`, `inset-inline-start`, `border-inline-start`, `text-align: start` |
-| `style={{ marginLeft: … }}` | `style={{ marginInlineStart: … }}` |
+| `style={{ marginLeft: … }}`                                                   | `style={{ marginInlineStart: … }}`                                                                            |
 
 - Block-axis and sizing properties (`top`, `bottom`, `mt-*`, `pb-*`, `w-*`, `h-*`, `width`, `height`) are allowed, because they don't depend on text direction in horizontal writing.
 - **ESLint** (`reactUi()`): `better-tailwindcss/enforce-logical-properties` flags and auto-fixes physical classes. `no-restricted-classes` flags directional utilities with no logical form: unpaired `translate-x-*`, `bg-left*`, `origin-*left/right` and `bg-linear-to-l/r…`. `ralysa/no-physical-inline-style` flags physical `style` keys. Class strings are checked in `className`, `class`, and calls to `cn`, `clsx`, `cva` and `tv` (`packages/ui` uses `cn` from `src/lib/cn.ts`).
@@ -125,6 +125,7 @@ Arabic is a first-class locale, so every screen must work in both directions fro
   - an `ar` key missing from `review.json`, or a `review.json` entry with no key
 
   An `ar` value that equals its `en` value and contains Latin letters is a warning. The run prints how many strings still need native review.
+
 - At runtime in test mode, a missing key throws. Playwright's console guard fails the test.
 
 Test files and `e2e/**` are exempt from the literal-string rules. Demo sample text is not exempt: it lives in JSON data (`apps/ui-lab/src/samples/`), not in TSX.
@@ -145,14 +146,14 @@ Test files and `e2e/**` are exempt from the literal-string rules. Demo sample te
 
 `packages/ui` has the Phase 0 set:
 
-| Group | Components |
-|---|---|
-| Layout | `AppShell`, `SkipLink`, `VisuallyHidden` |
-| Text | `Text`, `Heading`, `Code`, `CodeBlock`, `Ltr`, `T` |
-| Actions | `Button`, `IconButton`, `Link` |
-| Forms (Radix) | `TextField`, `Checkbox`, `RadioGroup`, `Select`, `Tabs` |
-| States | `EmptyState`, `LoadingState`, `ErrorState`, `PermissionDenied` |
-| Preferences | `LocaleSwitcher`, `ThemeSwitcher`, `LocaleProvider`, `ThemeProvider` |
+| Group         | Components                                                           |
+| ------------- | -------------------------------------------------------------------- |
+| Layout        | `AppShell`, `SkipLink`, `VisuallyHidden`                             |
+| Text          | `Text`, `Heading`, `Code`, `CodeBlock`, `Ltr`, `T`                   |
+| Actions       | `Button`, `IconButton`, `Link`                                       |
+| Forms (Radix) | `TextField`, `Checkbox`, `RadioGroup`, `Select`, `Tabs`              |
+| States        | `EmptyState`, `LoadingState`, `ErrorState`, `PermissionDenied`       |
+| Preferences   | `LocaleSwitcher`, `ThemeSwitcher`, `LocaleProvider`, `ThemeProvider` |
 
 Use these rather than new primitives, and use the four state components for every data view's empty, loading, error and denied states. A new component follows the same rules: translated text or a typed key as props, semantic token classes, logical layout, and `focus-visible:focus-ring`. It also gets a `*.examples.tsx` registered in `ALL_EXAMPLES` (`@ralysa/ui/examples`). Examples hold no text of their own: the gallery passes `labels` from ui-lab's `lab` catalog. The ui-lab gallery then scans every example with axe in `en` and `ar`, light and dark (AC-10).
 
@@ -160,15 +161,15 @@ Use these rather than new primitives, and use the four state components for ever
 
 **What the UI stack uses.** Versions come from the `catalog:` in `pnpm-workspace.yaml` or are pinned exactly in the workspace:
 
-| Need | Package |
-|---|---|
-| UI runtime | `react`, `react-dom` (`packages/ui` has React as a peer) |
-| Accessible primitives | `radix-ui`, `@radix-ui/react-direction` |
-| i18n | `i18next`, `react-i18next`; `i18next-cli` (dev, offline extract and types) |
-| Icons | `lucide-react`, pinned exactly and imported only by the registry |
-| Fonts | `@fontsource-variable/noto-sans`, `-noto-sans-arabic`, `-noto-sans-mono`, pinned exactly and licence-checked (`FONT_PACKAGES` in `packages/ui/scripts/font-licenses.ts`) |
-| Styling | `tailwindcss`, `@tailwindcss/vite` |
-| Build and test | `vite`, `@vitejs/plugin-react`, `vitest`, `jsdom`, `@playwright/test`, `@axe-core/playwright` |
+| Need                  | Package                                                                                                                                                                  |
+| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| UI runtime            | `react`, `react-dom` (`packages/ui` has React as a peer)                                                                                                                 |
+| Accessible primitives | `radix-ui`, `@radix-ui/react-direction`                                                                                                                                  |
+| i18n                  | `i18next`, `react-i18next`; `i18next-cli` (dev, offline extract and types)                                                                                               |
+| Icons                 | `lucide-react`, pinned exactly and imported only by the registry                                                                                                         |
+| Fonts                 | `@fontsource-variable/noto-sans`, `-noto-sans-arabic`, `-noto-sans-mono`, pinned exactly and licence-checked (`FONT_PACKAGES` in `packages/ui/scripts/font-licenses.ts`) |
+| Styling               | `tailwindcss`, `@tailwindcss/vite`                                                                                                                                       |
+| Build and test        | `vite`, `@vitejs/plugin-react`, `vitest`, `jsdom`, `@playwright/test`, `@axe-core/playwright`                                                                            |
 
 **Not allowed in UI code:**
 
@@ -194,10 +195,10 @@ The ban lists are in `tooling/eslint-config/boundaries.js`, and ESLint, dependen
 
 The E2E harness lives in `apps/ui-lab/e2e/` and runs against `vite preview` of the **production builds** of ui-lab and `apps/web`. CI runs it in the `ui-e2e` job inside a pinned Playwright image.
 
-| Spec | Baselines | What |
-|---|---|---|
-| `visual.spec.ts` (TC-F-001-18, AC-9), chromium | 8 | Full-page showcase in `en`/`ar` × light/dark at 1280×800 and 360×740 |
-| `shaping.spec.ts` (TC-F-001-15, AC-8), chromium, firefox, webkit | 60 | `document.fonts.check()` for Noto Sans Arabic, then each of the 20 Arabic samples on its own, per engine |
+| Spec                                                             | Baselines | What                                                                                                     |
+| ---------------------------------------------------------------- | --------- | -------------------------------------------------------------------------------------------------------- |
+| `visual.spec.ts` (TC-F-001-18, AC-9), chromium                   | 8         | Full-page showcase in `en`/`ar` × light/dark at 1280×800 and 360×740                                     |
+| `shaping.spec.ts` (TC-F-001-15, AC-8), chromium, firefox, webkit | 60        | `document.fonts.check()` for Noto Sans Arabic, then each of the 20 Arabic samples on its own, per engine |
 
 - Baselines are in `apps/ui-lab/e2e/__screenshots__/<engine>/` (`snapshotPathTemplate: '{testDir}/__screenshots__/{projectName}/{arg}{ext}'`). The comparison uses `maxDiffPixelRatio` 0.001 and `threshold` 0.2.
 - `updateSnapshots: 'none'`: a missing baseline fails the run. **CI never writes baselines**, because committing them from CI would need `contents: write` on PR runs (RF-2).
