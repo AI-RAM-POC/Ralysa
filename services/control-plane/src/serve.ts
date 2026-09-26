@@ -255,7 +255,8 @@ export async function serveCommand(args: string[]): Promise<number> {
 /** `bootstrap-org`: create or check the one Organization from the serve config (ADR-0003). */
 export async function bootstrapOrgCommand(args: string[], logger: Logger): Promise<number> {
   const config = loadServeConfig(args);
-  const refusals = serveProductionRefusals(config);
+  // The same guards as serve, OpenBao storage included (§3.8, SEC-F002-12; #41).
+  const refusals = [...serveProductionRefusals(config), ...(await openBaoStorageRefusals(config))];
   if (refusals.length > 0) throw new ConfigError('refusing to start', refusals);
   const { secrets } = openVault(config);
   const pool = cpPool(config, secrets, 'bootstrap-org');

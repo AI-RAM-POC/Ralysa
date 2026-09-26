@@ -209,18 +209,22 @@ Command-line options are under [Entry points](#entry-points).
 With `env: production` an entry point refuses to start (exit 2) and names each setting, never a
 value:
 
-- **Every entry point:** `vault.auth.method: token`; `approle` without `vault.allow_approle`; a
-  `vault.addr` that isn't `https://`; `db.ssl: false`.
+- **Every entry point** (`serve`, `bootstrap-org`, `migrate`, `migrate --audit`, `sealer`,
+  `audit-verify`): `vault.auth.method: token`; `approle` without `vault.allow_approle`; a
+  `vault.addr` that isn't `https://`; `db.ssl: false`; and OpenBao `sys/seal-status` at
+  `vault.addr` reporting in-memory storage (a dev server), sealed, or unreachable (checked with a
+  3 s timeout, before any OpenBao login or database connection). `vault.addr` may be overridden
+  with `RALYSA_CFG__VAULT__ADDR`, and a dev server can serve TLS, so the seal-status check is what
+  keeps a dev OpenBao away from the sealer's Transit key and `audit-verify`'s public keys (#41).
 - **`serve` and `bootstrap-org` also:** a `public_base_url` that isn't `https://`; an `idp.issuer`
   other than `https://login.microsoftonline.com/<tenant_id>/v2.0`; an `idp.graph_base_url` other
   than `https://graph.microsoft.com`; `0.0.0.0/0` or `::/0` in `trust_proxy_cidrs`;
   `idp.require_mfa_claim: false` without `access.mfa_claim_exception_ref`.
-- **`serve` only:** OpenBao `sys/seal-status` reporting in-memory storage (a dev server), sealed,
-  or unreachable (checked with a 3 s timeout); and, in every environment, a Transit
-  `ralysa-rts-signing` key that is `exportable` or allows plaintext backup.
+- **`serve` only:** in every environment, a Transit `ralysa-rts-signing` key that is `exportable`
+  or allows plaintext backup.
 
-Design §3.8 lists the OpenBao storage check for every entry point; the code runs it in `serve`
-only (implementation notes T15-2).
+A process that can't reach `vault.addr/v1/sys/seal-status` within 3 s at start doesn't start in
+production (fail closed); the endpoint is unauthenticated, so the network path is all it needs.
 
 ### Environment variables
 
