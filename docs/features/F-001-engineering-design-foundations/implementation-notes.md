@@ -1039,7 +1039,7 @@ T18 is split into three PRs, so the agent-mergeable part doesn't wait for the hu
 |---|---|---|---|
 | #61 | `feat/F-001-codeowners-docs` | `.github/CODEOWNERS` | **Human merge required** (touches `.github/CODEOWNERS`) |
 | #62 | `feat/F-001-reviewer-checklist` | `.claude/agents/code-reviewer.md`: new-dependency review; `protected-paths-reviewed` marker | **Human merge required** (touches `.claude/**`) |
-| this PR | `feat/F-001-frontend-docs` | `docs/engineering/frontend-foundations.md`; `tooling/repo-scripts/src/ci-duration.ts` with its test; these notes and status.md | Agent merge after review (`tooling/` is a CODEOWNERS path, so the approval needs `protected-paths-reviewed`) |
+| #63 | `feat/F-001-frontend-docs` | `docs/engineering/frontend-foundations.md`; `tooling/repo-scripts/src/ci-duration.ts` with its test; these notes and status.md | Agent merge after review (`tooling/` is a CODEOWNERS path, so the approval needs `protected-paths-reviewed`) |
 
 ### What landed
 
@@ -1058,7 +1058,7 @@ T18 is split into three PRs, so the agent-mergeable part doesn't wait for the hu
 | T18-4 | Implementation choice (standing authorization, recorded by Claude) | Wall clock = `updatedAt − startedAt` from `gh run list`. Percentiles are nearest-rank, so each is the duration of a real run. | These are the fields `gh run list --json` offers. For a re-run, `startedAt` is the latest attempt, which measures the attempt that produced the result. Nearest-rank needs no interpolation and gives a clear meaning for 30 samples (p95 is the 29th fastest). |
 | T18-5 | Implementation choice (standing authorization, recorded by Claude) | `ci-duration` exits 1 over budget, and is not part of `repo-check`. | A scheduled workflow can fail on a breach with no parsing. It needs the network and a GitHub login, which `repo-check` must never need. |
 | T18-6 | Implementation choice (standing authorization, recorded by Claude) | The script entry is in `@ralysa/repo-scripts` (`ci-duration`), not the root `package.json`. | The root `package.json` is a CODEOWNERS path; a root alias adds nothing over `pnpm --filter @ralysa/repo-scripts ci-duration`. |
-| T18-7 | Scope | T18 is split into three PRs: #61 (CODEOWNERS) and #62 (reviewer checklist) are human merges, and the docs and script PR is agent-mergeable. | As the coordinator instructed, so the docs don't wait on the human merges. The implementation notes and status are in the agent-mergeable PR only, which avoids merge conflicts between the three. |
+| T18-7 | Scope | T18 is split into three PRs: #61 (CODEOWNERS) and #62 (reviewer checklist) are human merges, and the docs and script PR (#63) is agent-mergeable. | As the coordinator instructed, so the docs don't wait on the human merges. The implementation notes and status are in the agent-mergeable PR only, which avoids merge conflicts between the three. |
 | T18-8 | Not done (out of the given scope) | The release-manager checklist item from design "Accepted risks" (at every `/release`, check the accepted-risk list and stop and ask if a customer-operated artefact would ship while any entry is open). | The task scope named the code-reviewer items only. It is another human-merge edit, to `.claude/agents/release-manager.md`, and is listed under follow-ups. |
 
 ### Tests added (T18)
