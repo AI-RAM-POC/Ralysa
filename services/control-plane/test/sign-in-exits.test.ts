@@ -274,6 +274,7 @@ function setUp(s: Scenario) {
       revokedSessions.push(sid);
       return Promise.resolve(true);
     },
+    graphCheckTime: () => Promise.resolve(new Date()),
     groupsNeedingNames: () => Promise.resolve([]),
     provision: () =>
       s.provisionFails === true

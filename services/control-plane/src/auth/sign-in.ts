@@ -227,7 +227,10 @@ export async function authorizeAndProvision(
   const actor: Actor = { id: known?.id ?? null, idpSubject: identity.oid };
   const details = options.details;
 
-  // 1. Graph: account state, Entra session revocation, configured-group membership.
+  // 1. Graph: account state, Entra session revocation, configured-group membership. The
+  //    database clock just before the call orders this answer against a concurrent refresh's
+  //    (R58-r2-1, SEC-F002-53).
+  const graphCheckedAt = await env.store.graphCheckTime();
   const check = await env.directory.check({
     idpSubject: identity.oid,
     tenantId: identity.tenantId,
@@ -348,6 +351,7 @@ export async function authorizeAndProvision(
     groupNames,
     membership: [...membership].map(([idpGroupId, source]) => ({ idpGroupId, source })),
     claimsKnown: identity.groups.kind === 'list',
+    graphCheckedAt,
     configured: { access: accessId, admin: adminId },
     session: {
       flow: attempt.ctx.flow,

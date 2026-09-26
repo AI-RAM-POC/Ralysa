@@ -15,6 +15,7 @@ import type { Database } from '../db/types.js';
 import {
   type GroupRoleChange,
   ensureConfiguredGroupRows,
+  graphCheckTime,
   lockGraphMembership,
 } from '../directory/membership.js';
 import type { SignInFlow } from './identity-mapping.js';
@@ -52,6 +53,12 @@ export interface ProvisionInput {
    * token says nothing about them (review of #29, R29-4).
    */
   claimsKnown: boolean;
+  /**
+   * When this sign-in's Graph call started (database clock). If a newer Graph answer is stored
+   * (`app_user.graph_checked_at`), the two configured groups' memberships are left as they are;
+   * the session is still created from this sign-in's own answer (R58-r2-1, SEC-F002-53).
+   */
+  graphCheckedAt: Date;
   configured: { access: string; admin: string };
   session: {
     flow: SignInFlow;
@@ -117,6 +124,8 @@ export interface SignInStore {
   /** Of `ids`, those whose display name is unknown or older than a day (at most 20). */
   groupsNeedingNames(ids: readonly string[]): Promise<string[]>;
   provision(input: ProvisionInput): Promise<ProvisionResult>;
+  /** The database clock, read just before the Graph call. */
+  graphCheckTime(): Promise<Date>;
 
   // Flow B (§3.3, §5.2).
   /** Stores a request for `ttlSeconds` (10 min). */
@@ -203,6 +212,16 @@ async function syncGroups(
   input: ProvisionInput,
 ): Promise<{ added: string[]; removed: string[]; roleSkew: GroupRoleChange[] }> {
   const { access, admin } = input.configured;
+  // A Graph answer newer than this sign-in's is stored (a refresh whose Graph call started after
+  // ours finished first): the configured groups' memberships stay as that answer left them.
+  const stored = await trx
+    .selectFrom('cp.app_user')
+    .select('graph_checked_at')
+    .where('id', '=', userId)
+    .executeTakeFirst();
+  const storedAt = stored?.graph_checked_at ?? null;
+  const graphStale = storedAt !== null && storedAt > input.graphCheckedAt;
+  const configuredIds = new Set([access, admin]);
   // Roles come from config, and only the audited `serve` start changes them: sign-in creates a
   // missing configured row and reports any skew, never rewriting a role (R58-3, SEC-F002-52).
   const roleSkew = await ensureConfiguredGroupRows(trx, orgId, input.configured);
@@ -233,7 +252,11 @@ async function syncGroups(
       .execute();
   }
 
-  const desired = new Map(input.membership.map((m) => [m.idpGroupId, m.source]));
+  const desired = new Map(
+    input.membership
+      .filter((m) => !(graphStale && configuredIds.has(m.idpGroupId)))
+      .map((m) => [m.idpGroupId, m.source]),
+  );
   const current = await trx
     .selectFrom('cp.group_membership as m')
     .innerJoin('cp.idp_group as g', 'g.id', 'm.group_id')
@@ -241,7 +264,10 @@ async function syncGroups(
     .where('m.user_id', '=', userId)
     .execute();
   const removed = current.filter(
-    (c) => !desired.has(c.idpGroupId) && (input.claimsKnown || c.source === 'graph_check'),
+    (c) =>
+      !desired.has(c.idpGroupId) &&
+      !(graphStale && configuredIds.has(c.idpGroupId)) &&
+      (input.claimsKnown || c.source === 'graph_check'),
   );
   if (removed.length > 0) {
     await trx
@@ -279,13 +305,16 @@ async function syncGroups(
       )
       .execute();
   }
-  // This sign-in's Graph answer is the newest at its write: a refresh whose Graph call started
-  // earlier is skipped by recordGraphMembership (R58-4).
-  await trx
-    .updateTable('cp.app_user')
-    .set({ graph_checked_at: sql<Date>`greatest(graph_checked_at, clock_timestamp())` })
-    .where('id', '=', userId)
-    .execute();
+  // Stamp when this sign-in's Graph call started, unless a newer answer is already stored: a
+  // refresh whose Graph call started earlier is then skipped by recordGraphMembership, and one
+  // that started later still wins (R58-r2-1).
+  if (!graphStale) {
+    await trx
+      .updateTable('cp.app_user')
+      .set({ graph_checked_at: input.graphCheckedAt })
+      .where('id', '=', userId)
+      .execute();
+  }
   return {
     added: [...desired.keys()].filter((id) => !held.has(id)).sort(),
     removed: removed.map((r) => r.idpGroupId).sort(),
@@ -434,6 +463,8 @@ export function createSignInStore(db: Kysely<Database>, orgId: string): SignInSt
       );
       return issued?.token;
     },
+
+    graphCheckTime: () => graphCheckTime(db, orgId),
 
     provision: (input) =>
       withOrg(db, orgId, async (trx) => {

@@ -1023,17 +1023,42 @@ describe.skipIf(stack === undefined)('sessions and grants (F-002-T08)', () => {
     });
     const count = async () => (await events({ action: 'directory.group_role.changed' })).length;
     const before = await count();
+    // Force the overlap (R58-r2-2): hold the per-org reconcile lock from another connection, start
+    // both reconciles so both are waiting on it, then release it. Without the lock the two would
+    // never be seen waiting, and without "report only what changed" both would report 4.
+    const holderPool = await t().pool('cp_app', 1);
+    const holder = await holderPool.connect();
+    const waiting = async () =>
+      (
+        await t().superuser.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM pg_locks
+            WHERE locktype = 'advisory' AND NOT granted
+              AND database = (SELECT oid FROM pg_database WHERE datname = current_database())`,
+        )
+      ).rows[0]?.n ?? 0;
     try {
-      const results = await Promise.all(
-        [1, 2, 3].map(() => reconcileGroupRoles(cpDb, fresh, auditWriter)),
-      );
-      // 4 changes in all (the two old groups lose their roles, the two new ones get theirs), each
-      // reported by exactly one replica.
+      await holder.query('BEGIN');
+      await holder.query(`SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, [
+        `idp-group-roles|${ORG}`,
+      ]);
+      const running = [1, 2].map(() => reconcileGroupRoles(cpDb, fresh, auditWriter));
+      const deadline = Date.now() + 10_000;
+      while ((await waiting()) < 2) {
+        if (Date.now() > deadline) throw new Error('the reconciles never waited on the org lock');
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+      await holder.query('COMMIT');
+      const results = await Promise.all(running);
+      // 4 changes in all (the two old groups lose their roles, the two new ones get theirs), all
+      // reported by the replica that got the lock first; the other finds nothing to change.
       const all = results.flat();
       expect(all).toHaveLength(4);
       expect(new Set(all.map((c) => c.idpGroupId)).size).toBe(4);
+      expect(results.map((r) => r.length).sort()).toEqual([0, 4]);
       expect(await count()).toBe(before + 4);
     } finally {
+      await holder.query('ROLLBACK').catch(() => undefined);
+      holder.release();
       await reconcileGroupRoles(cpDb, config, auditWriter);
     }
   });

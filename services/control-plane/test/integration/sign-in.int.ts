@@ -87,6 +87,11 @@ describe.skipIf(stack === undefined)('IdP sign-in, flow A (F-002-T10)', () => {
   let directory: GraphDirectory;
   let metrics: MemoryMetrics;
   let signingKeys: Awaited<ReturnType<typeof fakeKeys>>['keys'];
+  /**
+   * Holds a Graph answer after Graph gave it (R58-r2-1): while set, the next directory check
+   * waits at the gate with the answer it already has.
+   */
+  let graphGate: { arrive: () => Promise<void> } | undefined;
   /** Warnings the RTS logged (R58-3: group_role_config_skew). */
   const warnings: { msg: string; fields?: Record<string, unknown> }[] = [];
   const logger = {
@@ -267,11 +272,20 @@ describe.skipIf(stack === undefined)('IdP sign-in, flow A (F-002-T10)', () => {
     });
     metrics = createMemoryMetrics();
     signingKeys = (await fakeKeys()).keys;
+    // The real Graph directory, with a gate after the answer (R58-r2-1).
+    const gatedDirectory: GraphDirectory = {
+      ...directory,
+      check: async (user) => {
+        const answer = await directory.check(user);
+        await graphGate?.arrive();
+        return answer;
+      },
+    };
     const rts = {
       logger,
       db: cpDb,
       custody: createInMemoryKeyCustody(),
-      directory,
+      directory: gatedDirectory,
       writer,
       rejections: createRejectionAggregator({ emit: () => undefined }),
       secrets,
@@ -875,6 +889,77 @@ describe.skipIf(stack === undefined)('IdP sign-in, flow A (F-002-T10)', () => {
     const tokens = await signInAs('alice');
     const view = (await me(tokens.access_token)).json<{ groups: { idp_group_id: string }[] }>();
     expect(view.groups.map((g) => g.idp_group_id)).toEqual([idp.accessGroupId]);
+  });
+
+  // --- R58-r2-1, SEC-F002-53 (sign-in path) --------------------------------------------------
+  it('R58-r2-1: a sign-in whose Graph call started before a newer refresh does not overwrite it', async () => {
+    const hasAdmin = async () =>
+      (
+        await t().superuser.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM cp.group_membership m
+             JOIN cp.idp_group g ON g.id = m.group_id JOIN cp.app_user u ON u.id = m.user_id
+            WHERE u.idp_subject = $1 AND g.idp_group_id = $2`,
+          [idp.user('erin').oid, idp.adminGroupId],
+        )
+      ).rows[0]?.n === 1;
+    const earlier = await signInAs('erin'); // strong: both groups stored
+    expect(await hasAdmin()).toBe(true);
+
+    // A second sign-in asks Graph (still an admin) and is held after the answer.
+    let open = (): void => undefined;
+    let signalArrived = (): void => undefined;
+    const opened = new Promise<void>((resolve) => {
+      open = resolve;
+    });
+    const arrived = new Promise<void>((resolve) => {
+      signalArrived = resolve;
+    });
+    graphGate = {
+      arrive: () => {
+        signalArrived();
+        return opened;
+      },
+    };
+    const held = exchange(idp.mintAccessToken('erin'));
+    await arrived;
+    graphGate = undefined;
+    try {
+      // Meanwhile erin leaves the admin group; a refresh that asked Graph later completes.
+      idp.patchUser('erin', { groups: [idp.accessGroupId] });
+      const refreshed = await refresh(earlier.refresh_token);
+      expect(refreshed.statusCode).toBe(200);
+      expect(await hasAdmin()).toBe(false);
+      const removals = (
+        await events({
+          action: 'directory.group_membership.changed',
+          subject: idp.user('erin').oid,
+        })
+      ).length;
+
+      // The held sign-in finishes with its older answer: its session is created from that
+      // answer, but the stored memberships keep the newer one and nothing is audited.
+      open();
+      const late = await held;
+      expect(late.statusCode, late.body).toBe(200);
+      expect(await hasAdmin()).toBe(false);
+      expect(
+        (
+          await events({
+            action: 'directory.group_membership.changed',
+            subject: idp.user('erin').oid,
+          })
+        ).length,
+      ).toBe(removals);
+      const lateTokens = late.json<{ access_token: string }>();
+      expect((await me(lateTokens.access_token)).json()).toMatchObject({
+        roles: ['user', 'platform_admin'],
+      });
+      expect((await principalFor(lateTokens.access_token)).session_roles).toEqual(['user']);
+    } finally {
+      open();
+      graphGate = undefined;
+      idp.patchUser('erin', { groups: [idp.accessGroupId, idp.adminGroupId] });
+    }
   });
 
   // --- R58-3, SEC-F002-52 --------------------------------------------------------------------

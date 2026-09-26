@@ -445,8 +445,9 @@ Microsoft references (accessed 2026-09-25, design §6.7):
     change writes `directory.group_membership.changed` (`privileged: true` when the admin
     group changed). A removal in Entra reaches `Principal` at the user's next refresh. Answers
     are ordered by when their Graph call started (`cp.app_user.graph_checked_at`, under a
-    per-user advisory lock), so a slower refresh with an older answer writes and audits
-    nothing (SEC-F002-53).
+    per-user advisory lock), so a slower refresh or sign-in with an older answer leaves the
+    configured groups' memberships alone and audits nothing (SEC-F002-53). A sign-in's session
+    is still created from its own answer.
   - **Group roles follow config at start**: `serve` reconciles `cp.idp_group.role` with
     `access.access_group_id` and `access.admin_group_id` before it serves, so after changing
     either id the old group loses its role at the restart, not at someone's next sign-in. Each
@@ -458,7 +459,8 @@ Microsoft references (accessed 2026-09-25, design §6.7):
     actually changed are reported, so each change is audited once. **Only this start changes
     roles:** a sign-in on a replica whose config differs from the stored roles (a rolling
     change) creates a missing configured group row at most, rewrites no role, and logs
-    `group_role_config_skew` (warn, group ids and role names) for the alert rule
+    `group_role_config_skew` (warn, group ids and role names). It is only logged: no alert
+    rule backs it yet (SEC-F002-56), so watch the logs during a rolling change
     (SEC-F002-52). Restart the remaining replicas to finish the change.
   - **Audit:** every attempt writes exactly one `auth.sign_in` with the `policy_version`. A
     success is written fail-closed after the session is committed: if the write fails, the
@@ -848,22 +850,36 @@ user's next refresh (#47): `session_roles` lose `platform_admin` within `tokens.
 effect: a revocation reaches every PEP through the governance feed within 60 s, and the control
 plane's own routes at once.
 
+**The residual no step below removes (SEC-F002-56).** An access token that is already issued and
+never refreshed (for example one that was stolen) keeps `platform_admin` until it expires,
+whatever the operator does in Entra: up to one `tokens.access_ttl_s` plus 30 s, including on
+`GET /v1/audit/events`. Only a Ralysa-side revocation of that session, or the last resort below,
+ends it sooner.
+
 1. In Entra ID, remove the user from the admin group (and from the access group, or disable the
    account, if the user must lose all access). Then use **Revoke sessions** on the user, so no
    IdP token issued before now can start a new Ralysa session.
 2. Revoke the user's Ralysa sessions. **Phase 0 has no operator command or API for this:**
-   admin-initiated session revocation is F-006 (REQ-017, the admin session revocation UI, out of
-   F-002's scope). Until it ships, the fastest Ralysa-side paths are:
-   - the user's own sign-out (`POST /oauth2/revoke`), which revokes that session through the
-     feed;
+   operator session revocation stays in F-006 (REQ-017, the admin session revocation UI; decided
+   2026-09-26). Until it ships, the Ralysa-side paths are:
+   - sign-out (`POST /oauth2/revoke`, `ralysa /logout`), which ends **only the caller's own
+     session**: the user can end theirs, but nobody can end someone else's this way;
    - otherwise the Entra step above: the user's next refresh is refused (`user_disabled` or
      `idp_session_revoked`), which revokes every session of the user and sets `revoked_before`,
-     so the feed stops their access tokens at every PEP within 60 s of that refresh. The window
-     is still up to one access-token TTL.
+     so the feed stops their access tokens at every PEP within 60 s of that refresh. A token
+     that is never refreshed is the residual above.
+   - **Last resort, org-wide:** stopping the control plane (or its governance feed) makes every
+     PEP refuse every token within 60 s (G-1, `governance_stale`), and the control plane's own
+     routes stop at once. That is an **outage for the whole org**, not a targeted removal: only
+     with the incident commander's approval.
 
    Don't edit `cp.auth_session` or `cp.app_user` by hand: such a write isn't audited.
-3. Confirm in `GET /v1/audit/events`: `directory.group_membership.changed` with the admin group
-   in `removed` and `privileged: true`, or `auth.session.revoked` for the user.
+3. Check in `GET /v1/audit/events` for `directory.group_membership.changed` with the admin group
+   in `removed` and `privileged: true`, or `auth.session.revoked` for the user. **A missing event
+   is not a failure:** both appear only when the user's client next refreshes, and a client that
+   stopped never does. In that case wait one access-token TTL after the removal, then check that
+   there is no `auth.refresh` with outcome `success` for the user after the removal. After that
+   time, every access token they held has expired.
 
 ## Runbook: checkpoint key custody violation
 
