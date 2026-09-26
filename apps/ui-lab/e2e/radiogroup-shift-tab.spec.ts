@@ -39,7 +39,11 @@ for (const lang of LOCALES) {
         )
         .toBe(true);
 
-      // The group is a tab stop again (its tabIndex was only dropped while tabbing back out).
+      // The group is a tab stop again: its tabIndex was only dropped while tabbing back out.
+      await expect(
+        group,
+        `${name}: the group's tabindex is restored after blur`,
+      ).not.toHaveAttribute('tabindex', '-1');
       await page.keyboard.press('Tab');
       await expect(checked, `${name}: Tab re-enters on the checked item`).toBeFocused();
     }
