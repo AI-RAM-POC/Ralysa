@@ -7,11 +7,18 @@
 //   secret-scan history                        the full git history (repository config)
 //   secret-scan artefacts                      every shipped artefact (artefact config; missing path fails)
 //   secret-scan selftest                       dir, git, artefact and canary self-tests
+//   secret-scan image (--dockerfile <path> | --image <ref>) [--exact-values <file>]
+//                                              a container image: filesystem, config and history,
+//                                              exact values, no dev stack or oidc-provider (F-002-T14)
+//   secret-scan dir <path> [--exact-values <file>]
+//                                              one folder (DB dump, logs) with the artefact config
 // Options: --report-dir <dir> (default $RUNNER_TEMP/secret-scan-reports or .tools/reports).
+// --exact-values reads KEY=VALUE lines from a file (never the command line, so no value reaches
+// the process list or a shell's history); a finding names the KEY only.
 // Exit codes: 0 clean, 1 findings or a failed self-test, 2 usage or scanner error.
 import { rmSync } from 'node:fs';
-import { join } from 'node:path';
-import { findRepoRoot, formatFindings } from './lib/core.ts';
+import { join, resolve } from 'node:path';
+import { type Finding, findRepoRoot, formatFindings } from './lib/core.ts';
 import {
   type ScanContext,
   type ScanResult,
@@ -23,6 +30,7 @@ import {
   toFindings,
   verifiedGitleaks,
 } from './secret-scan.ts';
+import { scanDirectory, scanImage } from './secret-scan-image.ts';
 import { runSelftests } from './secret-scan-selftest.ts';
 
 function flag(args: string[], name: string): string | undefined {
@@ -30,8 +38,20 @@ function flag(args: string[], name: string): string | undefined {
   return index === -1 ? undefined : args[index + 1];
 }
 
-function report(results: ScanResult[]): number {
+function report(
+  results: ScanResult[],
+  extra: { label: string; findings: Finding[] }[] = [],
+): number {
   let failed = false;
+  for (const { label, findings } of extra) {
+    if (findings.length === 0) {
+      console.log(`✓ secret-scan ${label}: 0 findings`);
+      continue;
+    }
+    failed = true;
+    console.error(`✗ secret-scan ${label}: ${String(findings.length)} finding(s)`);
+    console.error(formatFindings(findings));
+  }
   for (const result of results) {
     if (result.findings.length === 0) {
       console.log(`✓ secret-scan ${result.label}: 0 findings`);
@@ -58,7 +78,7 @@ function main(argv: string[]): number {
       ? join(process.env.RUNNER_TEMP, 'secret-scan-reports')
       : join(root, '.tools', 'reports'));
 
-  const commands = ['pr', 'tree', 'history', 'artefacts', 'selftest'];
+  const commands = ['pr', 'tree', 'history', 'artefacts', 'selftest', 'image', 'dir'];
   if (command === undefined || !commands.includes(command)) {
     console.error(
       `usage: secret-scan <${commands.join('|')}> [--base <sha> --head <sha>] [--report-dir <dir>]`,
@@ -84,6 +104,40 @@ function main(argv: string[]): number {
         return report([scanHistory(ctx)]);
       case 'artefacts':
         return report(scanArtefacts(ctx));
+      case 'image': {
+        const dockerfile = flag(args, '--dockerfile');
+        const image = flag(args, '--image');
+        const exactValues = flag(args, '--exact-values');
+        if ((dockerfile === undefined) === (image === undefined)) {
+          console.error(
+            'usage: secret-scan image (--dockerfile <path> | --image <ref>) [--exact-values <file>]',
+          );
+          return 2;
+        }
+        const scanned = scanImage({
+          ctx,
+          ...(dockerfile === undefined ? {} : { dockerfile: resolve(root, dockerfile) }),
+          ...(image === undefined ? {} : { image }),
+          ...(exactValues === undefined ? {} : { exactValuesFile: resolve(exactValues) }),
+        });
+        return report(scanned.results, [
+          { label: `image checks (${scanned.image})`, findings: scanned.findings },
+        ]);
+      }
+      case 'dir': {
+        const target = args[0];
+        const exactValues = flag(args, '--exact-values');
+        if (target === undefined || target.startsWith('--')) {
+          console.error('usage: secret-scan dir <path> [--exact-values <file>]');
+          return 2;
+        }
+        const scanned = scanDirectory(
+          ctx,
+          resolve(target),
+          exactValues === undefined ? undefined : resolve(exactValues),
+        );
+        return report(scanned.results, [{ label: 'exact values', findings: scanned.findings }]);
+      }
       default: {
         const results = runSelftests({
           root,

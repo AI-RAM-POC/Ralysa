@@ -229,13 +229,35 @@ export const WORKSPACE_DEPENDENCY_RULES = [
 
 /**
  * Development-only packages that must never reach a shipped workspace (F-002 design §2,
- * SEC-F002-13, [AR-12]): the Entra-shaped mock IdP and its engine. check-workspaces
- * (`deps/dev-only-in-shipped`) fails when one is a production dependency of a `shipped: true`
- * workspace, directly or through another workspace's production dependencies (F-002-T01).
- * F-002-T14 extends the check to the lockfile's production closure, dependency-cruiser and the
- * image scan. @type {string[]}
+ * SEC-F002-13, [AR-12]): the Entra-shaped mock IdP and its engine. Four layers read this list:
+ * - check-workspaces `deps/dev-only-in-shipped`: not a production dependency of a `shipped: true`
+ *   workspace, directly or through another workspace's production dependencies (F-002-T01);
+ * - check-banned-deps `banned-deps/dev-only-in-shipped`: not in the lockfile's production closure
+ *   of a `shipped: true` workspace, at any depth (F-002-T14, SEC-F002-13 b);
+ * - dependency-cruiser `no-dev-only-in-shipped`: not imported from outside
+ *   DEV_ONLY_IMPORT_ALLOWED_IN (F-002-T14, SEC-F002-13 a);
+ * - `secret-scan-cli.ts image`: not in the built control-plane image (F-002-T14, SEC-F002-13 c).
+ * @type {string[]}
  */
 export const DEV_ONLY_PACKAGES = ['@ralysa/dev-stack', 'oidc-provider'];
+
+/**
+ * Where a DEV_ONLY_PACKAGES import is allowed (repo-relative globs): tooling, and each
+ * workspace's top-level test/ folder (integration tests import the dev-stack harness and the mock
+ * IdP from there). Anchored per workspace: a `src/test/` folder is compiled into dist and ships
+ * (review of #34, R34-2).
+ * @type {string[]}
+ */
+export const DEV_ONLY_IMPORT_ALLOWED_IN = [
+  'tooling/**',
+  'apps/*/test/**',
+  'packages/*/test/**',
+  'services/*/test/**',
+  'packs/**/test/**',
+];
+
+export const DEV_ONLY_MESSAGE =
+  'The mock IdP and the dev stack are development-only (SEC-F002-13, AR-12): import @ralysa/dev-stack or oidc-provider only from tooling/** or a test/** folder, and depend on them through devDependencies only.';
 
 /**
  * Model-provider API hostnames (SEC-F001-09 d): a raw `fetch` needs no SDK, so check-provider-hosts

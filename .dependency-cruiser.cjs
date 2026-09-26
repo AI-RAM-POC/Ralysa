@@ -7,6 +7,9 @@
 
 const {
   BANNED_PACKAGE_GROUPS,
+  DEV_ONLY_IMPORT_ALLOWED_IN,
+  DEV_ONLY_MESSAGE,
+  DEV_ONLY_PACKAGES,
   globSource,
   groupNameSource,
 } = require('./tooling/eslint-config/boundaries.js');
@@ -35,6 +38,17 @@ module.exports = {
       severity: 'error',
       from: { pathNot: '^apps/ui-lab/' },
       to: { path: `^apps/ui-lab/|${packagePath('@ralysa/ui-lab')}` },
+    },
+    {
+      // F-002-T14, SEC-F002-13 (a): the mock IdP never reaches shipped code, whether by package
+      // name or by a relative path into tooling/dev-stack.
+      name: 'no-dev-only-in-shipped',
+      comment: DEV_ONLY_MESSAGE,
+      severity: 'error',
+      from: { pathNot: pathsSource(DEV_ONLY_IMPORT_ALLOWED_IN) },
+      to: {
+        path: `^tooling/dev-stack/|${packagePath(`(?:${DEV_ONLY_PACKAGES.map(globSource).join('|')})`)}`,
+      },
     },
     {
       name: 'no-packs',
@@ -74,14 +88,19 @@ module.exports = {
     },
   ],
   options: {
-    // Only `exclude` narrows the scan, and only to build output inside our own folders.
-    // `includeOnly`, or an unanchored `node_modules`/`dist` exclude, would also drop the
-    // node_modules and unresolved targets (`vite/dist/...`), and with them every banned-package
-    // match. check-imports asserts that package targets are still in the graph.
-    exclude: {
-      path: '^(?:apps|packages|services|tooling|packs)/[^/]+/(?:dist|coverage|\\.turbo|\\.tsc)/',
+    // Nothing is `exclude`d. `includeOnly`, or an unanchored `node_modules`/`dist` exclude, would
+    // drop the node_modules and unresolved targets (`vite/dist/...`), and with them every
+    // banned-package match; check-imports asserts that package targets are still in the graph.
+    // Build output inside our own folders is `doNotFollow` instead (review of #34, R34-1): it is
+    // not cruised as a source, but it stays a TARGET, so a workspace import that resolves through
+    // `exports` into a built dist (`@ralysa/dev-stack/mock-idp` → tooling/dev-stack/dist/…) is
+    // still seen by the rules.
+    doNotFollow: {
+      path: [
+        '(?:^|/)node_modules/',
+        '^(?:apps|packages|services|tooling|packs)/[^/]+/(?:dist|coverage|\\.turbo|\\.tsc)/',
+      ],
     },
-    doNotFollow: { path: '(?:^|/)node_modules/' },
     moduleSystems: ['es6', 'cjs', 'tsd'],
     // Type-only imports count too: `import type` from a banned SDK is still a dependency on it.
     tsPreCompilationDeps: true,

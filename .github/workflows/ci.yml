@@ -246,9 +246,23 @@ jobs:
       # Transit keys, KV entries, per-entry-point policies and AppRoles; DB login roles over stdin.
       - name: Bootstrap the dev stack
         run: node tooling/dev-stack/src/cli.ts bootstrap --env-file deploy/docker/dev/.env
+      # Same hash-pinned gitleaks as the quality job: the integration suite's DB-dump, log and
+      # deploy/** scans (TC-F-002-14, -20) and the image scan below run it.
+      - uses: actions/cache@v4
+        with:
+          path: .tools/gitleaks
+          key: tools-gitleaks-${{ runner.os }}-${{ hashFiles('tooling/repo-scripts/bin/tool-hashes.txt') }}
+      - name: Install gitleaks
+        run: sh tooling/repo-scripts/bin/install-tool.sh gitleaks
       - name: Integration tests
         run: pnpm exec turbo run test:integration --continue=dependencies-successful --summarize
-      # The image secret scan (AC-9) joins this job with F-002-T14 (secret-scan-cli.ts image).
+      # Builds deploy/docker/control-plane.Dockerfile and scans the image: filesystem, `docker image
+      # inspect` config and history, this run's dev-stack credentials as exact values, and no dev
+      # stack or oidc-provider in it (AC-9, TC-F-002-14, -35; SEC-F002-13 c, -29). Outside Turbo and
+      # uncached, like the other scans (check-ci-invariants: ci/integration-image-scan).
+      - name: Image secret scan (AC-9)
+        if: ${{ !cancelled() }}
+        run: node tooling/repo-scripts/src/secret-scan-cli.ts image --dockerfile deploy/docker/control-plane.Dockerfile --exact-values deploy/docker/dev/.env
       # Postgres logs only: the OpenBao dev server prints its root token and unseal key.
       - name: Container logs on failure
         if: ${{ failure() }}

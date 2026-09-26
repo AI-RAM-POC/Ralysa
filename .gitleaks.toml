@@ -19,7 +19,7 @@ useDefault = true
 description = "vendored gitleaks default config (sha256-pinned)"
 paths = ['''^tooling/repo-scripts/vendor/gitleaks-8\.30\.1-default\.toml$''']
 
-# --- Custom rules (T05, SEC-F001-24). Keep in sync with .gitleaks.artefacts.toml. -------------
+# --- Custom rules (F-001-T05, SEC-F001-24; F-002-T14). Keep in sync with .gitleaks.artefacts.toml. -------------
 
 [[rules]]
 id = "azure-openai-key"
@@ -52,6 +52,22 @@ regex = '''\b(gsk_[A-Za-z0-9]{52})\b'''
 secretGroup = 1
 entropy = 3.5
 keywords = ["gsk_"]
+
+[[rules]]
+id = "ralysa-refresh-token"
+description = "Ralysa refresh token: rly_rt_ + 43 base64url characters (F-002 design section 3.2.1, T14)"
+regex = '''(rly_rt_[A-Za-z0-9_-]{43})'''
+secretGroup = 1
+entropy = 3.5
+keywords = ["rly_rt_"]
+
+[[rules]]
+id = "ralysa-auth-code"
+description = "Ralysa authorization code: rly_ac_ + 43 base64url characters (F-002 design section 3.2.1, T14)"
+regex = '''(rly_ac_[A-Za-z0-9_-]{43})'''
+secretGroup = 1
+entropy = 3.5
+keywords = ["rly_ac_"]
 
 [[rules]]
 id = "ralysa-selftest-canary"

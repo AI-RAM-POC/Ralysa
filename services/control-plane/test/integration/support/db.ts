@@ -99,6 +99,14 @@ export async function createTestDatabase(
         password: await dbPassword(stack, key),
         max,
       });
+      // drop() ends the pools, then DROP DATABASE … WITH (FORCE) terminates any backend still
+      // closing (57P01). Without a listener, that late error event on a client is an unhandled
+      // error that fails the whole run, and Vitest prints the client (with its per-run password)
+      // into the CI log. Query errors still reject their promises (F-002-T14 CI finding, R34-n7).
+      pool.on('error', () => undefined);
+      pool.on('connect', (client) => {
+        client.on('error', () => undefined);
+      });
       pools.push(pool);
       return pool;
     },
