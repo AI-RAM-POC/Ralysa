@@ -1797,7 +1797,7 @@ Evidence:
 - **CI reproduction.** The unchanged `gateway.int.ts`, run 24 times in parallel on one machine, failed TC-F-002-10 in all 24 runs, reading 2 to 14 of 20 rows: the CI failure, amplified.
 - **After the fix.** The same 24-way run passed 24 of 24, and the injected 400 ms hold passes.
 
-**Production is not affected.** `serve` builds the writer with a spool (`serve.ts`). A timed-out event is spooled, and the late commit makes its replay a `duplicate`. A write that fails outright is replayed from the spool. So AC-14 evidence is not lost. The loss existed only in what the test observed.
+**Production is not affected.** `serve` builds the writer with a spool (`serve.ts`). A timed-out event is spooled, and the late commit makes its replay a `duplicate`. A write that fails outright is replayed from the spool. So the rejection evidence (AC-7, TC-F-002-10) is not lost. The loss existed only in what the test observed. Two caveats (review of #44, R44-2): this holds only when the spool append succeeds (R44-1, [#45](https://github.com/AI-RAM-POC/Ralysa/issues/45)), and `migrate` has no spool, so a timed-out `db.migration.applied` write that rolls back is lost until OI-3 ships.
 
 **The 600-a-minute test.** The `audit-routes.int.ts` "600 events a minute, then 429" test had the same class of problem: an assertion that depends on the 250 ms budget holding on a loaded machine.
 
