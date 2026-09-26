@@ -25,6 +25,7 @@ node tooling/repo-scripts/src/secret-scan-cli.ts image (--dockerfile <path> | --
 node tooling/repo-scripts/src/secret-scan-cli.ts dir <path> [--exact-values <file>]                                  # F-002-T14
 pnpm scaffold <apps|packages|services>/<name> --kind <library|library-isomorphic|service|app|cli>
 node tooling/repo-scripts/src/cli.ts summary [--file .turbo/runs/<id>.json] [--out "$GITHUB_STEP_SUMMARY"]
+pnpm --filter @ralysa/repo-scripts ci-duration [--limit 30] [--workflow ci.yml] [--repo <owner>/<name>]   # needs gh
 ralysa-repo placeholder-guard                          # the four scripts of every placeholder package
 ```
 
@@ -46,6 +47,18 @@ ralysa-repo placeholder-guard                          # the four scripts of eve
 | `check-tsrefs` | The root `tsconfig.json` doesn't reference exactly the workspaces that have a `tsconfig.json`, or a workspace doesn't reference a TypeScript library it depends on; or a referenced project isn't referenceable: not `composite` (TS6306), `noEmit` (TS6310; libraries use the declaration-only `.tsc/` convention), or its config can't be read. Options are resolved through `extends`. |
 | `check-ui-lint` (§7.3.1; AC-3 to AC-5) | A non-placeholder UI workspace (`ralysa.ui: true`) doesn't run `eslint` in its `lint` script; doesn't run `stylelint "**/*.css"` (the glob quoted, chained with `&&` so a finding fails the script, and no `--config`, `--ignore-pattern` or `--ignore-path`); has no `stylelint.config.*` using `@ralysa/stylelint-config`; or its ESLint config doesn't call `reactUi({ workspaceDir: import.meta.dirname })`. |
 | `check-i18n` (§7.4.5, AC-6) | In a UI workspace's catalog folder (`locales/` or `src/locales/`): the locale folders aren't exactly `en` and `ar`; a namespace file is missing in a locale; the key sets differ, allowing for plurals (a key with `en` `_one`/`_other` needs all six CLDR categories in `ar`); a key breaks the `KEY_RE` grammar; a value is empty or not a string; `{{interpolation}}` names differ between locales; an `ar` key has no entry in `review.json` (`"needs-native-review"`, or `{ "reviewer", "date" }` once a native speaker approves it; OQ-D8), or `review.json` names a key that doesn't exist; or the workspace lacks an `i18next.config.ts`, `i18next-cli extract --ci` in `lint` or `i18next-cli types` in `check:generated`. An `ar` value equal to its `en` value and containing Latin letters is a **warning**. The run prints how many strings still need native review. |
+
+## CI duration (F-001 design §8.3, T18)
+
+`ci-duration` prints the p50 and p95 wall-clock time of the last 30 completed pull-request runs of `.github/workflows/ci.yml` and compares them with the budget (p50 ≤ 10 min, p95 ≤ 15 min). The tech lead runs it weekly; on a breach, shard Playwright or apply `--affected` to e2e only.
+
+- Data: `gh run list --workflow ci.yml --event pull_request --status completed --json …` (GitHub REST API, `actions: read`). It uses your existing `gh auth login`; the script never reads or prints a token. The gh output is validated with zod.
+- A run's wall clock is `updatedAt − startedAt`. Only runs that finished (`success` or `failure`) count: the PR concurrency group cancels superseded pushes, and those partial runs would pull the numbers down.
+- Percentiles are nearest-rank, so each is a real run's duration (p95 of 30 runs is the 29th fastest).
+- Flags: `--limit` (1–100, default 30), `--workflow` (a workflow file name, default `ci.yml`), `--repo` (`owner/name`, default: the current checkout's repo). Anything else is refused.
+- Exit code: 0 within budget, 1 over budget, 2 on a usage or `gh` error.
+
+It isn't part of `repo-check`: it needs the network and a GitHub login. The unit test (`test/ci-duration.test.ts`) runs on a fixture and a fake `gh`, with no network. There are no environment variables.
 
 ## Library exports (run inside other packages' tests)
 
