@@ -2,7 +2,7 @@
 
 - **Current phase:** 5 – Development. T01–T14 and T16 are merged (#12–#15, #17, #20, #22). T15 (Claude Code guard) is in review on `feat/F-001-claude-guard` and T17 (local secret guard) is stacked on it, on `feat/F-001-local-secret-guard`; both need a human merge (`.claude/**`). T18 (CODEOWNERS and docs) is not started. D-F001-E2E-1 blocks G6 until the manual TC-F-001-25 run in a stock Firefox. T20–T25 are deferred (BC-11).
 - **GitHub issue:** https://github.com/AI-RAM-POC/Ralysa/issues/4
-- **Branch / PR:** T13–T14 merged in #20; T15 `feat/F-001-claude-guard` (PR open, human merge)
+- **Branch / PR:** T13–T14 merged in #20; T15 `feat/F-001-claude-guard` (#66, human merge); T17 `feat/F-001-local-secret-guard` (stacked on #66, human merge)
 - **Release:**
 
 ## Gate log
@@ -25,3 +25,4 @@
 | 2026-09-25 | PR #20 review (changes requested) addressed. **D-F001-E2E-1 stays open and blocks G6** for F-001 until the manual TC-F-001-25 run in a stock Firefox either clears it (a Playwright-Firefox artefact) or confirms it (then `RadioGroup` needs a fix: WCAG 2.1.2). |
 | 2026-09-26 | Status corrected by the requirements audit (docs/product/requirements-audit.md): T13–T14 merged in #20 on 2026-09-25; T15, T17, T18 not started (need a human merge); D-F001-E2E-1 still blocks G6. |
 | 2026-09-26 | T15 (Claude Code guard) implemented on `feat/F-001-claude-guard`, with the phase 6 security fixes SEC-F001-28 to -31 and -39. TC-F-001-41 fixtures green (171 cases). PR open; **human merge required**. The settings-layer run and the local-override check need a human; `disableAllHooks` in a local settings file turns the guard off (implementation-notes.md, T15). |
+| 2026-09-26 | T17 (local secret guard) implemented on `feat/F-001-local-secret-guard`, stacked on T15: `.githooks/pre-commit`, `gitleaks-staged.sh`, `hooks:install`, guard G-6/G-7 scans, rotation runbook. TC-F-001-40 green (fixtures 36–39 and `pre-commit-hook.test.ts`); one blocked agent commit recorded in the notes. PR open with base `feat/F-001-claude-guard`; **human merge required**. |

@@ -32,6 +32,7 @@ nvm use && corepack enable
 node tooling/repo-scripts/src/pre-install-gate.ts  # before pnpm, especially on someone else's branch
 pnpm install
 pnpm tools:install                               # once: hash-pinned gitleaks into .tools/ (the tests use it)
+pnpm hooks:install                               # once: the pre-commit secret scan (.githooks)
 pnpm lint && pnpm typecheck && pnpm test && pnpm build
 pnpm repo:check                                  # workspace, boundary, gitleaks-config and CI checks + prettier
 pnpm secret-scan tree                            # also: pr --base <sha> --head <sha>, history, artefacts, selftest

@@ -10,7 +10,8 @@ A `PreToolUse` hook on the Bash tool, registered in `.claude/settings.json`. It 
 |---|---|
 | parse | substitution, `eval`, `sh -c`, `xargs`, variables or globs in command position, `GIT_*`/`GH_*`/`TURBO_*`/`HOME` assignments, `source`, `sudo`, git aliases, inline interpreter code that mentions git/gh/push/merge/release |
 | G-1 to G-5 | force, rewrite, mirror and prune pushes; any push that would update `main`; remote deletions; remotes other than `origin`, `--tags`, `--no-verify`, `--repo`, `--receive-pack`, `-o`; release-tag pushes that aren't one annotated `refs/tags/vX.Y.Z[-rc.N]` on `origin/main` with its release record and not yet on origin |
-| G-7 | `git commit --no-verify` / `-n` |
+| G-6 | an allowed branch or tag push whose outgoing commits (`origin/main..<ref>`) hold a secret, per gitleaks with `.gitleaks.toml` |
+| G-7 | `git commit --no-verify` / `-n`; a commit whose staged diff or unstaged tracked diff holds a secret; `git commit` after other commands in the same call unless `core.hooksPath` is `.githooks` |
 | G-8 | `git diff/log/show --output`, `--ext-diff`, `--textconv` |
 | G-9 | git config writes to aliases, remotes, URLs, credentials, push, includes, pagers, `core.hooksPath` (except `.githooks`); `git remote add/set-url/rename`, `send-pack`, `http-push`, `credential` |
 | H-1 | `gh -R/--repo` naming another repository |
@@ -22,6 +23,8 @@ A `PreToolUse` hook on the Bash tool, registered in `.claude/settings.json`. It 
 Human-merge paths (H-2): `.claude/**`, any `CLAUDE.md`, `CODEOWNERS` (`.github/`, root, `docs/`), `.github/required-checks.json`, `.github/workflows/release.yml`, `.githooks/**`, `tooling/repo-scripts/bin/**`.
 
 It is plain Node 24 ESM with no dependencies. It reads nothing from the environment beyond what git and gh themselves read; there are no configuration variables. The hook command in `settings.json` ends in `|| exit 2`, so a missing `node` or a crash blocks rather than passes.
+
+The G-6/G-7 scans need the hash-pinned gitleaks in this checkout's `.tools/` (`pnpm tools:install`; every git worktree needs its own). A missing or tampered binary blocks every commit and push, with that instruction.
 
 **Limits.** Only commands Claude Code runs directly are seen. A script run by an allowed command (`pnpm test` runs `package.json` scripts) is not, and nothing here binds a client outside Claude Code. These controls stop mistakes and prompt-injected shortcuts; they are not a boundary against a deliberately hostile agent (accepted risk SEC-F001-01). A developer's `.claude/settings.local.json` can set `disableAllHooks` (see the T15 notes in `implementation-notes.md`).
 
