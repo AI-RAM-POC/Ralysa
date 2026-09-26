@@ -167,6 +167,17 @@ describe('versionToUnsupersede (#36, review of #37)', () => {
     expect(versionsToRetire(rows, at(1_000_000), timing, 2)).toEqual([]);
   });
 
+  it('a good version rotated in while pinned does not help if unpinned before the bad one retired (runbook)', () => {
+    const rows = [
+      row(1, { activated_at: at(-3000) }),
+      row(2, { activated_at: at(-600), superseded_at: at(-100) }),
+      row(3, { published_at: at(-10) }),
+    ];
+    expect(versionsToSupersede(rows, 1, 1)).toEqual([]); // v3 was never active: left alone
+    expect(selectActiveVersion(rows, at(0), timing)).toBe(2); // within v3's activation delay
+    expect(selectActiveVersion(rows, at(110), timing)).toBe(3);
+  });
+
   it('unpinned after the newer version retired: the former pin simply keeps signing', () => {
     const rows = [
       row(1, { activated_at: at(-3000) }),

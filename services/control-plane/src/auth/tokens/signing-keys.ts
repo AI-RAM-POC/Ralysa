@@ -232,7 +232,10 @@ export function createSigningKeys(options: SigningKeysOptions): SigningKeys {
       });
     }
   };
-  const rotated = (version: number, phase: 'published' | 'activated' | 'pinned' | 'reactivated' | 'retired') =>
+  const rotated = (
+    version: number,
+    phase: 'published' | 'activated' | 'pinned' | 'reactivated' | 'retired',
+  ) =>
     audit({
       action: 'secret.rotated',
       outcome: 'success',
