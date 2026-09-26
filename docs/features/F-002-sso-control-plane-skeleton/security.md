@@ -471,6 +471,10 @@ T-1 and T-4 in P6-5: the "PEPs can't see the session role" and "`Principal` snap
 
 **Resolved in PR #58 (review round 2):** SEC-F002-52, -53, -54 (deprecated plus the reference PEP), -55.
 
+**Round-2 verification (2026-09-26, dbbf421/1402e9a):** SEC-F002-52, -54 (lint `no-deprecated` via `strictTypeChecked`, confirmed firing on the overload), -55 **fixed**. SEC-F002-53 **partially fixed**: refresh-vs-refresh is ordered, but sign-in stamps `graph_checked_at` at write time rather than when its Graph call started and overwrites without the skip check, so a sign-in racing an Entra removal can re-add an admin membership for up to one refresh (window ≈ 5 s, audited). New SEC-F002-56 (Low, docs): no alert rule backs `group_role_config_skew`; the admin-removal runbook must state the stolen-token TTL residual, that sign-out covers only the caller's own session, and that a missing event in step 3 is not a failure. Neither blocks G7.
+
+**Resolved in PR #58 (review round 3):** SEC-F002-53 fully (sign-in reads the database clock before its Graph call, stamps that time, and applies the same stale skip to the two configured groups' memberships, with a latch test) and SEC-F002-56 (the skew warning is documented as log-only; the runbook states the stolen-token residual, that sign-out ends only the caller's own session, and that a missing event in step 3 is not a failure).
+
 ### P6-5. Threat table (Phase 6 update)
 
 | # | Threat | Likelihood | Impact | Control now in code | Gap | Recommendation |
