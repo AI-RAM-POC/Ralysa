@@ -2,7 +2,7 @@
 
 - **Current phase:** 5 – Development, **complete once the T15 PR merges** (T01–T14, T16 and the SEC-F002-34 remediation merged: #18, #19, #21, #23–#30, #32–#35, #37; T15 close-out in review). **Next: `/test F-002`** (phase 6, test engineer and security reviewer).
 - **GitHub issue:** https://github.com/AI-RAM-POC/Ralysa/issues/5
-- **Branch / PR:** `feat/F-002-closeout` (T15: operator and integrator READMEs, test-report input), in review; every earlier task merged (#18–#37)
+- **Branch / PR:** `feat/F-002-closeout`, [#40](https://github.com/AI-RAM-POC/Ralysa/pull/40) (T15: operator and integrator READMEs, test-report input), in review; every earlier task merged (#18–#37)
 - **Release:**
 
 ## Open items
