@@ -1,6 +1,6 @@
 # Repository conventions
 
-> Owner: tech lead · Source: [F-001 design](../features/F-001-engineering-design-foundations/design.md) §2.1, §3.1, §6.1, §6.4 · Created by F-001-T03 (2026-09-25). Later F-001 tasks add the local secret hook and the rotation runbook (T17).
+> Owner: tech lead · Source: [F-001 design](../features/F-001-engineering-design-foundations/design.md) §2.1, §3.1, §6.1, §6.4 · Created by F-001-T03 (2026-09-25). F-001-T17 added the local secret hooks and the rotation runbook (§6.2.4, §6.2.6).
 
 ## Toolchain
 
@@ -160,11 +160,37 @@ node tooling/repo-scripts/src/pre-install-gate.ts
 
 It needs no installed packages and starts no subprocess. It also fails if your shell sets an `npm_config_*`/`pnpm_config_*` variable for a pnpmfile, config dependencies or workspace dir, and it refuses `pnpm-workspace.yaml` or `.npmrc` files that contain a carriage return without a line feed. CI runs it before any pnpm command in every job that installs.
 
+## Secrets: local hooks and the rotation runbook
+
+CI's `secret-scan` job only sees a secret after it has been pushed, and on GitHub Free a red scan doesn't block a merge. Two local hooks stop it before the commit exists (F-001 design §6.2.4; SEC-F001-07).
+
+**Once per clone:**
+
+```sh
+pnpm tools:install   # the hash-pinned gitleaks, into .tools/ (git-ignored); each worktree needs its own
+pnpm hooks:install   # git config core.hooksPath .githooks
+```
+
+- `.githooks/pre-commit` runs `tooling/repo-scripts/bin/gitleaks-staged.sh`, which re-hashes the gitleaks binary against `tool-hashes.txt` and then runs `gitleaks git --pre-commit --staged` with `.gitleaks.toml`, redacted. A finding, a missing or tampered binary, or a scanner error blocks the commit. `git commit -a` is covered, because git stages the tracked changes before the hook runs.
+- `hooks:install` is an explicit command, not a `prepare` or `postinstall` script: lifecycle scripts are banned (§ Dependencies). No hook manager (husky, lefthook) is used.
+- A human can still skip the hook with `git commit --no-verify`, and CI remains the backstop. Agents can't: the Claude Code guard (`.claude/hooks/guard-bash.mjs`) blocks `--no-verify` and `-n`.
+- **The guard (agents).** Before any `git commit`, it scans the staged diff and the unstaged diff of tracked files itself, whether or not `core.hooksPath` is set (G-7). Before an allowed `git push`, it scans `origin/main..<ref>` (G-6), which also covers commits made outside Claude Code. When `git commit` follows other commands in the same call (`git add -A && git commit …`), what those commands stage isn't in the index yet when the guard runs. So that form is allowed only with `core.hooksPath` set to `.githooks`, where the git hook scans at commit time. Without it, run `git commit` as its own command. Both hooks show the rule and file:line of a finding, never the value.
+
+### Rotation runbook
+
+If a real credential reaches any commit that has been pushed, to any branch or PR:
+
+1. **Revoke and rotate it at the issuer first** (the provider console, OpenBao, GitHub settings). Assume it is compromised from the moment it was pushed.
+2. **Then remove it in a new commit.** Squash-merging keeps it off `main`, but GitHub keeps every PR's ref (`refs/pull/N/head`), and forks and clones keep their copies. Rewriting history is **not** remediation, and agents can't force-push anyway: any history rewrite is a human decision.
+3. **Record the incident in the PR:** what leaked, when it was rotated, and who rotated it. Never include the value.
+
+If a hook blocks a commit, nothing has left your machine: remove the value (use an environment variable or the dev-stack `.env`), then commit again. No rotation is needed unless the value was pushed before.
+
 ## CI (`.github/workflows/ci.yml`)
 
 | Job | What it runs |
 |---|---|
-| `repo-checks` | The pre-install config gate, then `pnpm install --frozen-lockfile`, then `pnpm repo:check` |
+| `repo-checks` | The pre-install config gate, the hash-pinned gitleaks, the Claude Code guard fixtures (`node --test '.claude/hooks/test/*.test.mjs'`, no install), then `pnpm install --frozen-lockfile`, then `pnpm repo:check` |
 | `quality` | The pre-install config gate, `pnpm install --frozen-lockfile`, then `turbo run lint typecheck test build check:generated --continue=dependencies-successful --summarize`, a generated-drift check, then a workspace × task table in the job summary |
 | `integration` | Least-privilege (`permissions: contents: read`, `persist-credentials: false`, no repository secrets). The pre-install config gate, `pnpm install --frozen-lockfile`, per-run dev-stack credentials (masked), `docker compose up --wait` of Postgres and OpenBao, the bootstrap, the hash-pinned gitleaks, then `turbo run test:integration` and the control-plane image build and scan (`secret-scan-cli.ts image`, F-002-T14). On failure it uploads the Postgres container log only (the OpenBao dev server prints its root token), kept for 3 days |
 | `secret-scan` | gitleaks over the PR range, the working tree, the full history (main) and the self-tests; no install and no build |

@@ -1076,6 +1076,52 @@ Not done by the agent. This session loads its settings from the main checkout, s
 
 - `.claude/hooks/test/guard-bash.test.mjs`, 176 tests: the 171 fixture cases, a check that the design's ids 1 to 35 and 40 to 64 are all present, and 4 hook-contract tests (other tools pass, unreadable input blocks, a symlinked hook path still judges, a parse error blocks only in a command that mentions git/gh/pnpm). Local run: 176 pass, about 95 s.
 
+## T17: local secret guard (branch `feat/F-001-local-secret-guard`, stacked on T15, 2026-09-26; **human merge**)
+
+### What landed
+
+- `.githooks/pre-commit` (POSIX sh) runs `tooling/repo-scripts/bin/gitleaks-staged.sh`. The script verifies the binary with `install-tool.sh gitleaks --verify` and refuses a `.gitleaksignore`. It then runs `gitleaks git --pre-commit --staged --config .gitleaks.toml --redact --ignore-gitleaks-allow --exit-code 1 --verbose` with a JSON report and an empty `--gitleaks-ignore-path`. Exit 0 passes. Findings and any other exit block the commit.
+- Root scripts: `hooks:install` (`git config core.hooksPath .githooks`) is new; `tools:install` already existed (T05). Neither is a lifecycle script.
+- Guard hook (`guard-bash.mjs`) changes:
+  - **G-7:** before any `git commit`, `gitleaks git --pre-commit --staged` and `gitleaks git --pre-commit` (unstaged tracked changes).
+  - **G-6:** before an allowed branch or tag push, `gitleaks git --log-opts=refs/remotes/origin/main..<sha>` for each pushed source.
+  - Both re-hash the binary against `tool-hashes.txt`, use the repo config and the fixed flags, refuse a `.gitleaksignore`, and block with the rule id and file:line only.
+- `.github/workflows/ci.yml`: `repo-checks` restores or installs the hash-pinned gitleaks before the guard fixtures.
+- `docs/engineering/repo-conventions.md`: "Secrets: local hooks and the rotation runbook" (§6.2.4, §6.2.6), and the `repo-checks` row. The README setup and the `tooling/repo-scripts` README name `hooks:install` and `gitleaks-staged.sh`.
+
+### Recorded decisions and deviations (standing authorization, recorded by Claude)
+
+| # | Decision | Why |
+|---|---|---|
+| T17-1 | A `git commit` that follows other commands in the same Bash call (`git add -A && git commit …`) is allowed only when `core.hooksPath` is `.githooks`. Otherwise G-7 blocks it, and the message says to run `git commit` on its own or `pnpm hooks:install` once. | The guard runs before the whole command. Files an earlier segment stages or edits aren't in either diff yet, so its scans would miss them. The git hook scans at commit time, so with it installed the combined form stays safe (fixtures 301 to 303). A single-segment `git commit` is scanned by the guard itself, with or without the git hook. |
+| T17-2 | G-6 scans each pushed source separately against `refs/remotes/origin/main` as fetched, with no fresh fetch. A missing `origin/main` blocks the push. | A stale `origin/main` only makes the range larger, which is safe. A fetch before every push would add a network call to each push. |
+| T17-3 | The guard reads `gitleaks`, `tool-hashes.txt` and `.gitleaks.toml` from its own checkout (the directory above `.claude/hooks/`). It scans the repository the command runs in. | This is the same trust root as the hook itself. Each git worktree needs its own `pnpm tools:install`, and the block message says so. |
+| T17-4 | The git hook prints gitleaks' `--verbose --redact` output, which includes `Secret: REDACTED`, the rule, file and line, so a developer can find the leak. The guard prints only rule and file:line. | Values never appear. The guard's message goes into the agent's context and transcript. |
+
+### One blocked agent commit (TC-F-001-40, manual part)
+
+Run on 2026-09-26 in a scratch clone of this branch. The fake GitHub token was generated at run time, and the clone was deleted afterwards. The guard was invoked exactly as Claude Code's `PreToolUse` hook calls it. It can't take effect in this agent session itself, which loads its settings from the main checkout (see T15).
+
+```
+$ git commit -m "F-001-T17: add demo config"   # the guard
+guard exit 2
+guard-bash blocked this command [G-7]: gitleaks found 1 secret(s) in the staged changes (values redacted):
+github-pat at packages/demo/config.ts:1. Remove them before committing or pushing; if one was ever pushed,
+rotate it first (docs/engineering/repo-conventions.md, "Rotation runbook")
+
+$ git commit -m "F-001-T17: add demo config"   # the git hook, core.hooksPath=.githooks
+git exit 1
+RuleID: github-pat   File: packages/demo/config.ts   Line: 1   Secret: REDACTED
+gitleaks-staged: secrets found in the staged changes (values redacted above); the commit is blocked.
+```
+
+In both outputs the token value doesn't appear (checked by the script). A human should repeat this once in a live Claude Code session on the merged settings (PR checklist).
+
+### Tests added (T17)
+
+- `.claude/hooks/test/`: fixtures 36 to 39 (the design's set) and 300 to 310. They cover a pathspec commit with an unstaged secret, the combined `git add && git commit` with and without `core.hooksPath`, pushes of a committed secret (explicit and implicit), a clean push, a missing gitleaks (a hook copy with no `.tools`), a tampered gitleaks and a `.gitleaksignore`. Every blocked case also asserts that no token-shaped value appears in the message. Local run: 190 tests pass (185 fixture cases, the id-coverage check and 4 contract tests), about 115 s.
+- `tooling/repo-scripts/test/pre-commit-hook.test.ts` (6): a staged synthetic key blocks the commit, with the value not printed and HEAD unchanged; `git commit -a` with a key in a tracked file blocks; a clean commit passes; a missing binary, a tampered binary and a `.gitleaksignore` each fail closed.
+
 ## Left incomplete / follow-ups
 
 - **TC-F-001-02 in CI.** It needs a throw-away PR; see above. Run it on the first PR from this branch.
