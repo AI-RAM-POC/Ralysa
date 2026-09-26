@@ -38,7 +38,7 @@ RUN pnpm --filter "@ralysa/control-plane..." run build
 RUN pnpm --filter @ralysa/control-plane deploy --prod /out
 # Third-party packages publish their own tests; none is needed at run time, and their fixtures
 # (zod's include sample JWTs) would be shipped content. Remove them, then prove the service's
-# module graphs still load: serve.js and app.js, then main.js, which statically imports every
+# module graphs still load: serve.js and app.js, then main.js, which statically imports (through commands.js) every
 # entry point (serve, bootstrap-org, migrate, sealer, audit-verify) and prints its usage for an
 # unknown command. A load failure prints a stack trace instead of the usage line.
 RUN find /out/node_modules/.pnpm -mindepth 4 \
