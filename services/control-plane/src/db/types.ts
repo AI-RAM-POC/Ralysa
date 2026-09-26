@@ -36,6 +36,8 @@ export interface AppUserTable {
   status: Generated<'active' | 'disabled'>;
   revoked_before: Timestamp | null;
   last_sign_in_at: Timestamp | null;
+  /** When the Graph call behind the last membership write-back started (cp/0007, R58-4). */
+  graph_checked_at: Generated<Date | null>;
   created_at: GeneratedTimestamp;
   updated_at: GeneratedTimestamp;
 }

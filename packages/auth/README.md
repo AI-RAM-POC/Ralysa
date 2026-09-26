@@ -174,7 +174,8 @@ returns a resolver whose `resolve(userId, sessionId)` calls
 (`user_id`, `org_id`, `status`, `roles`, `groups`, `as_of`) plus `session_id` and
 `session_roles` (design §3.4.2 and §6.1, revision 10; #47, SEC-F002-42).
 
-**Which roles to authorize on.** Every PEP authorizes on `session_roles`, never on `roles`:
+**Which roles to authorize on.** PEPs **must** use `session_roles` for any privileged decision,
+and for every other authorization decision; `roles` never authorize anything on their own:
 
 | Field | What it is | Use it for |
 |---|---|---|
@@ -185,8 +186,10 @@ returns a resolver whose `resolve(userId, sessionId)` calls
 the user's last sign-in or refresh (RTS writes Graph's answer back at both). A removal from a
 group therefore reaches `Principal` at the user's next refresh, and a client holding an access
 token refreshes at least every access-token TTL (15 min). The cache below adds up to 30 s.
-`resolve(userId)` without a session id still works and returns no `session_roles`; use it only
-where no user session is involved.
+`resolve(userId)` without a session id is **deprecated** (SEC-F002-54): it returns no
+`session_roles`, and `@typescript-eslint/no-deprecated` (on in `@ralysa/eslint-config`) flags every
+call. It stays only for diagnostics where no user session is involved, and no PEP may authorize on
+its answer.
 
 - Cached for 30 s (`ttlMs`) per (user, session), at most 10,000 entries (`maxEntries`); one
   session's answer never serves another. Concurrent lookups for one key share one request.

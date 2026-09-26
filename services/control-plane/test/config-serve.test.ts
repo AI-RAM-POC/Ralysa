@@ -73,6 +73,18 @@ describe('serve config (TC-F-002-36; SEC-F002-02)', () => {
     expect(() => parseConfig(ServeConfig, serveConfigInput(change))).toThrow(ConfigError);
   });
 
+  it('the access group and the admin group must differ, in any letter case (SEC-F002-55)', () => {
+    const access = serveConfigInput().access as { access_group_id: string };
+    for (const admin of [access.access_group_id, access.access_group_id.toUpperCase()]) {
+      expect(() =>
+        parseConfig(
+          ServeConfig,
+          serveConfigInput({ access: { ...access, admin_group_id: admin } }),
+        ),
+      ).toThrow(/access_group_id and admin_group_id must be different groups/);
+    }
+  });
+
   it('every KV path must sit under vault.kv_mount (OI-2)', () => {
     const input = serveConfigInput();
     expect(() =>

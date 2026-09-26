@@ -87,6 +87,15 @@ describe.skipIf(stack === undefined)('IdP sign-in, flow A (F-002-T10)', () => {
   let directory: GraphDirectory;
   let metrics: MemoryMetrics;
   let signingKeys: Awaited<ReturnType<typeof fakeKeys>>['keys'];
+  /** Warnings the RTS logged (R58-3: group_role_config_skew). */
+  const warnings: { msg: string; fields?: Record<string, unknown> }[] = [];
+  const logger = {
+    info: () => undefined,
+    error: () => undefined,
+    warn: (msg: string, fields?: Readonly<Record<string, unknown>>) => {
+      warnings.push({ msg, ...(fields === undefined ? {} : { fields: { ...fields } }) });
+    },
+  };
   const graphClock = { offset: 0 };
   const t = (): TestDatabase => {
     if (db === undefined) throw new Error('beforeAll did not create the database');
@@ -259,6 +268,7 @@ describe.skipIf(stack === undefined)('IdP sign-in, flow A (F-002-T10)', () => {
     metrics = createMemoryMetrics();
     signingKeys = (await fakeKeys()).keys;
     const rts = {
+      logger,
       db: cpDb,
       custody: createInMemoryKeyCustody(),
       directory,
@@ -865,6 +875,47 @@ describe.skipIf(stack === undefined)('IdP sign-in, flow A (F-002-T10)', () => {
     const tokens = await signInAs('alice');
     const view = (await me(tokens.access_token)).json<{ groups: { idp_group_id: string }[] }>();
     expect(view.groups.map((g) => g.idp_group_id)).toEqual([idp.accessGroupId]);
+  });
+
+  // --- R58-3, SEC-F002-52 --------------------------------------------------------------------
+  it('R58-3: a sign-in under a config that differs from the stored roles changes no role and writes nothing', async () => {
+    const roleOf = async (idpGroupId: string) =>
+      (
+        await t().superuser.query<{ role: string | null }>(
+          'SELECT role FROM cp.idp_group WHERE idp_group_id = $1',
+          [idpGroupId],
+        )
+      ).rows[0]?.role;
+    const roleEvents = async () =>
+      (await events({ action: 'directory.group_role.changed' })).length;
+    // Another replica's start reconciled to a config without this admin group: the stored role
+    // is gone, while this replica's config still names the group.
+    expect(await roleOf(idp.adminGroupId)).toBe('platform_admin');
+    await t().superuser.query('UPDATE cp.idp_group SET role = NULL WHERE idp_group_id = $1', [
+      idp.adminGroupId,
+    ]);
+    const eventsBefore = await roleEvents();
+    warnings.length = 0;
+    try {
+      const tokens = await signInAs('erin');
+      // Nothing rewrote the role, and no role change was written anywhere.
+      expect(await roleOf(idp.adminGroupId)).toBeNull();
+      expect(await roleOf(idp.accessGroupId)).toBe('access');
+      expect(await roleEvents()).toBe(eventsBefore);
+      // So erin's admin membership backs no role here, whatever her strong sign-in holds.
+      expect((await principalFor(tokens.access_token)).session_roles).toEqual(['user']);
+      expect(warnings).toContainEqual({
+        msg: 'group_role_config_skew',
+        fields: {
+          groups: [{ idp_group_id: idp.adminGroupId, stored: null, configured: 'platform_admin' }],
+        },
+      });
+    } finally {
+      await t().superuser.query(
+        "UPDATE cp.idp_group SET role = 'platform_admin' WHERE idp_group_id = $1",
+        [idp.adminGroupId],
+      );
+    }
   });
 
   // --- TC-F-002-31 -----------------------------------------------------------------------------

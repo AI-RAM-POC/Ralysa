@@ -26,7 +26,7 @@ import {
 import { uuidv7 } from '@ralysa/protocol/common';
 import { sql } from 'kysely';
 import { withOrg } from '../../db/kysely.js';
-import { recordGraphMembership } from '../../directory/membership.js';
+import { graphCheckTime, recordGraphMembership } from '../../directory/membership.js';
 import { OAuthProblem } from '../../http/errors.js';
 import { authEvent } from '../audit-events.js';
 import type { DirectoryCheck } from '../directory-port.js';
@@ -73,6 +73,7 @@ async function recordRefreshMembership(
   deps: RtsDeps,
   view: RefreshTokenView,
   check: Extract<DirectoryCheck, { kind: 'ok' }>,
+  checkedAt: Date,
   ctx: GrantContext,
 ): Promise<void> {
   const orgId = deps.config.org.id;
@@ -81,8 +82,16 @@ async function recordRefreshMembership(
     admin: deps.config.access.admin_group_id,
   };
   const change = await withOrg(deps.db, orgId, (trx) =>
-    recordGraphMembership(trx, orgId, view.userId, configured, check),
+    recordGraphMembership(
+      trx,
+      orgId,
+      { id: view.userId, idpSubject: view.idpSubject },
+      configured,
+      check,
+      checkedAt,
+    ),
   );
+  // An older answer than the one stored (a slower concurrent refresh) writes and audits nothing.
   if (change.added.length === 0 && change.removed.length === 0) return;
   await deps.writer.writeOrSpool(orgId, [
     authEvent({
@@ -234,7 +243,9 @@ export async function refreshGrant(
     throw denied('user_disabled');
   }
 
-  // 2. Re-check the user at the IdP (never inside a transaction).
+  // 2. Re-check the user at the IdP (never inside a transaction). The database clock just before
+  //    the call orders this answer against concurrent ones (R58-4).
+  const graphCheckedAt = await graphCheckTime(deps.db, orgId);
   const check = await deps.directory.check({
     idpSubject: view.idpSubject,
     tenantId: view.idpTenantId,
@@ -259,7 +270,7 @@ export async function refreshGrant(
   // memberships on every refresh, so `Principal` (directory roles and `session_roles`) follows a
   // removal in Entra from the user's next refresh, not their next full sign-in (#47,
   // SEC-F002-42). A change is audited; an admin-group change is privileged (TM-49).
-  await recordRefreshMembership(deps, view, check, ctx);
+  await recordRefreshMembership(deps, view, check, graphCheckedAt, ctx);
   if (check.sessionsValidFrom !== null && check.sessionsValidFrom > view.sessionCreatedAt) {
     const n = await withOrg(deps.db, orgId, (trx) =>
       revokeUser(trx, view.userId, 'idp_sessions_revoked'),

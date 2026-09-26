@@ -60,6 +60,7 @@ describe.skipIf(stack === undefined)('database (F-002-T05)', () => {
       '0004_usage_credential_governance',
       '0005_governance_epoch',
       '0006_authorization_code_sign_in',
+      '0007_app_user_graph_checked_at',
     ]);
     // Two organizations, inserted by the app role inside each org's scope.
     const app = await db.pool('cp_app');

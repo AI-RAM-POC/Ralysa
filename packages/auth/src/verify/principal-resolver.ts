@@ -45,6 +45,11 @@ export interface PrincipalResolver {
    * roles to authorize on. Without it, only directory roles (never enough for `platform_admin`).
    */
   resolve(userId: string, sessionId: string): Promise<SessionPrincipal>;
+  /**
+   * @deprecated Use `resolve(userId, sessionId)` and authorize on `session_roles`. Without a
+   * session id the answer holds only directory roles, which may show `platform_admin` for a
+   * session that doesn't hold it (SEC-F002-42, -54). No PEP may authorize on this answer.
+   */
   resolve(userId: string): Promise<Principal>;
 }
 

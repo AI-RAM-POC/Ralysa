@@ -75,10 +75,13 @@ describe.skipIf(stack === undefined)('sessions and grants (F-002-T08)', () => {
   let directoryAnswer: DirectoryCheck;
   // The fake directory can hold callers at a gate, so tests can line up concurrent requests.
   let directoryGate: { arrive: () => Promise<void> } | undefined;
+  // The answer is taken when Graph is called, so a call held at the gate returns what Graph said
+  // then, even if a later call sees another answer (R58-4).
   const directory: IdpDirectory = {
     check: async () => {
+      const answer = directoryAnswer;
       await directoryGate?.arrive();
-      return directoryAnswer;
+      return answer;
     },
   };
   /** Opens once `parties` callers have arrived. */
@@ -960,8 +963,15 @@ describe.skipIf(stack === undefined)('sessions and grants (F-002-T08)', () => {
       (await events({ action: 'directory.group_role.changed' })).map((e) => e.details);
     const before = (await reconcileEvents()).length;
     try {
-      // What `serve` does at start with the changed config; no sign-in or refresh needed.
-      const changes = await reconcileGroupRoles(cpDb, moved, auditWriter);
+      // What `serve` does at start with the changed config; no sign-in or refresh needed. Two
+      // replicas start together: the changes are made and reported once, and the second replica
+      // reports no false `null → platform_admin` (R58-1).
+      const [first, second] = await Promise.all([
+        reconcileGroupRoles(cpDb, moved, auditWriter),
+        reconcileGroupRoles(cpDb, moved, auditWriter),
+      ]);
+      const changes = first.length > 0 ? first : second;
+      expect([first.length, second.length].sort()).toEqual([0, 2]);
       expect(changes).toEqual(
         [
           { idpGroupId: ADMIN, from: 'platform_admin', to: null },
@@ -1003,6 +1013,148 @@ describe.skipIf(stack === undefined)('sessions and grants (F-002-T08)', () => {
     } finally {
       await reconcileGroupRoles(cpDb, config, auditWriter);
     }
+  });
+
+  it('R58-1: replicas starting together on a new org write each group_role change exactly once', async () => {
+    // Two groups never seen before: the "first start" case, where FOR UPDATE locks no row.
+    const fresh = serveConfig({
+      ...(JSON.parse(JSON.stringify(config)) as Record<string, unknown>),
+      access: { ...config.access, access_group_id: uuidv7(), admin_group_id: uuidv7() },
+    });
+    const count = async () => (await events({ action: 'directory.group_role.changed' })).length;
+    const before = await count();
+    try {
+      const results = await Promise.all(
+        [1, 2, 3].map(() => reconcileGroupRoles(cpDb, fresh, auditWriter)),
+      );
+      // 4 changes in all (the two old groups lose their roles, the two new ones get theirs), each
+      // reported by exactly one replica.
+      const all = results.flat();
+      expect(all).toHaveLength(4);
+      expect(new Set(all.map((c) => c.idpGroupId)).size).toBe(4);
+      expect(await count()).toBe(before + 4);
+    } finally {
+      await reconcileGroupRoles(cpDb, config, auditWriter);
+    }
+  });
+
+  it('R58-4: an older Graph answer never overwrites a newer one', async () => {
+    const user = await seedUser('Two refreshes in flight');
+    const slow = await seedSession(user.id, { roles: ['user', 'platform_admin'] });
+    const fast = await seedSession(user.id, { roles: ['user', 'platform_admin'] });
+    directoryAnswer = {
+      kind: 'ok',
+      inAccessGroup: true,
+      inAdminGroup: true,
+      sessionsValidFrom: null,
+    };
+    const warm = await refresh(slow.token);
+    expect(warm.statusCode).toBe(200);
+    const changesOf = async () =>
+      (await events({ user: user.id, action: 'directory.group_membership.changed' })).map(
+        (e) => e.details,
+      );
+    expect(await changesOf()).toHaveLength(1);
+
+    // The slow refresh asks Graph first (still an admin) and is held there.
+    const gate = latch();
+    directoryGate = gate;
+    const held = refresh(warm.json<{ refresh_token: string }>().refresh_token);
+    await gate.arrived;
+    // Meanwhile the user is removed from the admin group; a later refresh sees it and completes.
+    directoryGate = undefined;
+    directoryAnswer = { ...directoryAnswer, inAdminGroup: false };
+    expect((await refresh(fast.token)).statusCode).toBe(200);
+    // The slow refresh now finishes with its older answer: it is not written back.
+    gate.open();
+    expect((await held).statusCode).toBe(200);
+
+    expect((await principalOf(user.id, fast.sid)).body).toMatchObject({
+      roles: ['user'],
+      groups: [{ idp_group_id: ACCESS, role: 'access' }],
+      session_roles: ['user'],
+    });
+    expect((await principalOf(user.id, slow.sid)).body).toMatchObject({ session_roles: ['user'] });
+    expect(await changesOf()).toEqual([
+      { added: [ACCESS, ADMIN].sort(), removed: [], privileged: true },
+      { added: [], removed: [ADMIN], privileged: true },
+    ]);
+  });
+
+  it("F47-4: a refresh denied not_in_access_group or idp_session_revoked still writes Graph's answer back, audited", async () => {
+    const changesOf = async (userId: string) =>
+      (await events({ user: userId, action: 'directory.group_membership.changed' })).map(
+        (e) => e.details,
+      );
+    const both = {
+      kind: 'ok',
+      inAccessGroup: true,
+      inAdminGroup: true,
+      sessionsValidFrom: null,
+    } as const;
+
+    // Removed from both groups: the refresh is denied and the memberships go with it.
+    const gone = await seedUser('Removed from both groups');
+    const goneSession = await seedSession(gone.id, { roles: ['user', 'platform_admin'] });
+    directoryAnswer = both;
+    const warm = await refresh(goneSession.token);
+    expect(warm.statusCode).toBe(200);
+    directoryAnswer = { ...both, inAccessGroup: false, inAdminGroup: false };
+    const denied = await refresh(warm.json<{ refresh_token: string }>().refresh_token);
+    expect(denied.json()).toMatchObject({ ralysa_error: { code: 'not_in_access_group' } });
+    expect((await principalOf(gone.id)).body).toMatchObject({ roles: [], groups: [] });
+    expect((await changesOf(gone.id)).at(-1)).toEqual({
+      added: [],
+      removed: [ACCESS, ADMIN].sort(),
+      privileged: true,
+    });
+
+    // Entra sessions revoked, and removed from the admin group in the same answer.
+    const revoked = await seedUser('Entra sessions revoked');
+    const revokedSession = await seedSession(revoked.id, { roles: ['user', 'platform_admin'] });
+    directoryAnswer = both;
+    const warm2 = await refresh(revokedSession.token);
+    expect(warm2.statusCode).toBe(200);
+    directoryAnswer = {
+      ...both,
+      inAdminGroup: false,
+      sessionsValidFrom: new Date(Date.now() + 60_000),
+    };
+    const denied2 = await refresh(warm2.json<{ refresh_token: string }>().refresh_token);
+    expect(denied2.json()).toMatchObject({ ralysa_error: { code: 'idp_session_revoked' } });
+    expect((await principalOf(revoked.id)).body).toMatchObject({
+      roles: ['user'],
+      groups: [{ idp_group_id: ACCESS, role: 'access' }],
+    });
+    expect((await changesOf(revoked.id)).at(-1)).toEqual({
+      added: [],
+      removed: [ADMIN],
+      privileged: true,
+    });
+  });
+
+  it('F47-3: an active session of a disabled user answers 200 with no session roles', async () => {
+    const user = await seedUser('Disabled, session not yet revoked');
+    const { sid, token } = await seedSession(user.id, { roles: ['user', 'platform_admin'] });
+    directoryAnswer = {
+      kind: 'ok',
+      inAccessGroup: true,
+      inAdminGroup: true,
+      sessionsValidFrom: null,
+    };
+    expect((await refresh(token)).statusCode).toBe(200);
+    // Disabled between the revocation's two steps (a race): the session is still active.
+    await t().superuser.query(`UPDATE cp.app_user SET status = 'disabled' WHERE id = $1`, [
+      user.id,
+    ]);
+    const answer = await principalOf(user.id, sid);
+    expect(answer.status).toBe(200);
+    expect(answer.body).toMatchObject({
+      status: 'disabled',
+      roles: [],
+      session_id: sid,
+      session_roles: [],
+    });
   });
 
   // --- review of #26 -------------------------------------------------------------------------

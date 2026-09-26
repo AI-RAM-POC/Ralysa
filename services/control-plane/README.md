@@ -180,7 +180,7 @@ Command-line options are under [Entry points](#entry-points).
 | `idp.graph_timeout_ms` | 100–3000 | `3000` | One deadline per Graph check. |
 | `idp.require_mfa_claim` | boolean | unset: `true` in production, `false` otherwise | MFA evidence: `amr` contains `mfa` or `acrs` is non-empty, else `failure mfa_claim_missing`. `false` in production needs `access.mfa_claim_exception_ref` (Q5). Can't be overridden. |
 | `access.access_group_id` | UUID | required | Object id of the group that may use Ralysa (role `user`). |
-| `access.admin_group_id` | UUID | required | Object id of the admin group (role `platform_admin`, strong sign-in only). |
+| `access.admin_group_id` | UUID | required | Object id of the admin group (role `platform_admin`, strong sign-in only). Must differ from `access.access_group_id` (SEC-F002-55). |
 | `access.device_code_enabled` | boolean | `true` | Flow A. `false` revokes every live flow-A session at start. The config is authoritative in Phase 0 (D-30). |
 | `access.loopback_ip_mismatch` | `deny` or `alert` | `deny` | Flow B: redemption IP differs from the callback IP. |
 | `access.admin_auth_context` | up to 64 characters | unset | An Entra authentication context id (for example `c1`); `acrs` containing it makes a flow-A sign-in strong. |
@@ -443,7 +443,10 @@ Microsoft references (accessed 2026-09-25, design §6.7):
   - **Memberships follow Graph at every refresh**: the refresh grant writes Graph's answer for
     the two configured groups back to `cp.group_membership` (`source = graph_check`), and a
     change writes `directory.group_membership.changed` (`privileged: true` when the admin
-    group changed). A removal in Entra reaches `Principal` at the user's next refresh.
+    group changed). A removal in Entra reaches `Principal` at the user's next refresh. Answers
+    are ordered by when their Graph call started (`cp.app_user.graph_checked_at`, under a
+    per-user advisory lock), so a slower refresh with an older answer writes and audits
+    nothing (SEC-F002-53).
   - **Group roles follow config at start**: `serve` reconciles `cp.idp_group.role` with
     `access.access_group_id` and `access.admin_group_id` before it serves, so after changing
     either id the old group loses its role at the restart, not at someone's next sign-in. Each
@@ -451,6 +454,12 @@ Microsoft references (accessed 2026-09-25, design §6.7):
     `cause: config`, `privileged` when `platform_admin` is involved) through the spool-backed
     path, and `group_roles_reconciled` is logged. Changing either id is a reviewed deployment
     change (design §6.2); expect two privileged events on the first start of a new org.
+    Replicas that start together are serialized by a per-org advisory lock, and only the rows
+    actually changed are reported, so each change is audited once. **Only this start changes
+    roles:** a sign-in on a replica whose config differs from the stored roles (a rolling
+    change) creates a missing configured group row at most, rewrites no role, and logs
+    `group_role_config_skew` (warn, group ids and role names) for the alert rule
+    (SEC-F002-52). Restart the remaining replicas to finish the change.
   - **Audit:** every attempt writes exactly one `auth.sign_in` with the `policy_version`. A
     success is written fail-closed after the session is committed: if the write fails, the
     session is revoked (`audit_unavailable`), the events are spooled, and the answer is 503. A
@@ -674,6 +683,7 @@ transaction-locally; outside it every query on a `cp` or `audit` table fails (FO
 | [Rotating the IdP client secret](#runbook-rotating-the-idp-client-secret-sec-f002-10), with the expiry register | At least 30 days before the secret expires (≤ 180-day lifetime) |
 | [Break-glass `migrate --audit`](#runbook-break-glass-migrate---audit) | A release ships audit-set migrations |
 | [Checkpoint key custody violation](#runbook-checkpoint-key-custody-violation) | `secret.custody_violation` for `ralysa-audit-checkpoint`, or `audit-verify` refusing the key |
+| [Urgent removal of an admin](#runbook-urgent-removal-of-an-admin-sec-f002-42) | An admin must lose `platform_admin` now (compromise, departure), not at their next refresh |
 
 ## Runbook: rotating the RTS signing key (AC-10)
 
@@ -828,6 +838,32 @@ Never for an ad hoc change.
 
 Any `audit.schema_changed` outside such a window, or by another `session_user`, is a security
 incident.
+
+## Runbook: urgent removal of an admin (SEC-F002-42)
+
+**Why waiting isn't enough.** A removal from the admin group in Entra reaches Ralysa at the
+user's next refresh (#47): `session_roles` lose `platform_admin` within `tokens.access_ttl_s`
+(15 min by default, up to 60 min) plus the PEPs' 30 s principal cache. For an urgent removal,
+**revoke the user's Ralysa sessions (G-1)** rather than wait for the Entra removal to take
+effect: a revocation reaches every PEP through the governance feed within 60 s, and the control
+plane's own routes at once.
+
+1. In Entra ID, remove the user from the admin group (and from the access group, or disable the
+   account, if the user must lose all access). Then use **Revoke sessions** on the user, so no
+   IdP token issued before now can start a new Ralysa session.
+2. Revoke the user's Ralysa sessions. **Phase 0 has no operator command or API for this:**
+   admin-initiated session revocation is F-006 (REQ-017, the admin session revocation UI, out of
+   F-002's scope). Until it ships, the fastest Ralysa-side paths are:
+   - the user's own sign-out (`POST /oauth2/revoke`), which revokes that session through the
+     feed;
+   - otherwise the Entra step above: the user's next refresh is refused (`user_disabled` or
+     `idp_session_revoked`), which revokes every session of the user and sets `revoked_before`,
+     so the feed stops their access tokens at every PEP within 60 s of that refresh. The window
+     is still up to one access-token TTL.
+
+   Don't edit `cp.auth_session` or `cp.app_user` by hand: such a write isn't audited.
+3. Confirm in `GET /v1/audit/events`: `directory.group_membership.changed` with the admin group
+   in `removed` and `privileged: true`, or `auth.session.revoked` for the user.
 
 ## Runbook: checkpoint key custody violation
 

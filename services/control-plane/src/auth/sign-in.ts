@@ -364,6 +364,18 @@ export async function authorizeAndProvision(
   });
 
   const user = { id: provisioned.userId, idpSubject: identity.oid };
+  // Stored group roles differ from this replica's config (a rolling config change, or a replica
+  // not yet restarted): sign-in changes no role; the next `serve` start reconciles and audits it.
+  // Group object ids and role names only (R58-3, SEC-F002-52).
+  if (provisioned.roleSkew.length > 0) {
+    env.logger.warn('group_role_config_skew', {
+      groups: provisioned.roleSkew.map((g) => ({
+        idp_group_id: g.idpGroupId,
+        stored: g.from,
+        configured: g.to,
+      })),
+    });
+  }
   const directoryEvents: StoredEventInput[] = [];
   if (provisioned.created || provisioned.changedAttributes.length > 0) {
     directoryEvents.push(

@@ -19,6 +19,7 @@ describe('migration sets', () => {
       '0004_usage_credential_governance',
       '0005_governance_epoch',
       '0006_authorization_code_sign_in',
+      '0007_app_user_graph_checked_at',
     ]);
     for (const set of Object.values(MIGRATION_SETS)) {
       expect(set.schema).toMatch(/^ralysa_meta(_audit)?$/);

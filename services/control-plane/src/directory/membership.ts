@@ -1,20 +1,27 @@
 // The configured groups, the memberships Graph confirms, and the roles a session holds now
-// (F-002 design §4.4, §6.1, §6.3; rev 10, #47, SEC-F002-42).
+// (F-002 design §4.4, §6.1, §6.3; rev 10, #47, SEC-F002-42; review round 2, R58-1..4).
 //
-// - ensureConfiguredGroups: `cp.idp_group.role` follows config only. The two configured object
-//   ids carry `access` and `platform_admin`; every other group carries none. Used at sign-in and
-//   at `serve` start (reconcileGroupRoles), which audits what it changed.
+// - reconcileConfiguredGroups: `cp.idp_group.role` follows config, and only the `serve` start
+//   changes it (reconcileGroupRoles audits each change). The two configured object ids carry
+//   `access` and `platform_admin`; every other group carries none. Replicas starting together are
+//   serialized by a per-org advisory lock, and only rows an UPDATE or INSERT actually changed are
+//   reported, so each change is audited once (R58-1).
+// - ensureConfiguredGroupRows: what sign-in may do. It creates a missing configured row and
+//   changes no role. It returns the skew between stored roles and this replica's config, which
+//   sign-in logs as `group_role_config_skew` (R58-3, SEC-F002-52).
 // - recordGraphMembership: the Graph answer for the two configured groups replaces the user's
-//   memberships of those two groups (`source = graph_check`). Sign-in writes it through
-//   provision(); every refresh writes it here, so a removal in Entra reaches `Principal` at the
-//   user's next refresh, not their next full sign-in.
+//   memberships of those two groups (`source = graph_check`). Every refresh writes it, so a
+//   removal in Entra reaches `Principal` at the user's next refresh. Answers are ordered by when
+//   their Graph call started (`app_user.graph_checked_at`), under a per-user advisory lock: an
+//   older answer never overwrites a newer one (R58-4, SEC-F002-53).
 // - sessionRoles: a session's roles ∩ the user's current memberships. The one rule for
 //   privileged decisions: `GET /v1/internal/principals/{id}?sid=` (`session_roles`) and the audit
 //   query use it. Directory roles alone never grant `platform_admin`: an admin who signed in by
 //   device code has a session without it (SEC-F002-06).
 import { uuidv7 } from '@ralysa/protocol/common';
-import { type Transaction, sql } from 'kysely';
+import { type Kysely, type Transaction, sql } from 'kysely';
 import type { SessionRole } from '../auth/sessions.js';
+import { withOrg } from '../db/kysely.js';
 import type { Database } from '../db/types.js';
 
 type Trx = Transaction<Database>;
@@ -31,33 +38,63 @@ export interface GroupRoleChange {
   to: GroupRole | null;
 }
 
-/** Sets `role` from config on every group; returns what changed (sorted by group id). */
-export async function ensureConfiguredGroups(
+const desiredRoles = (configured: ConfiguredGroups) =>
+  new Map<string, GroupRole>([
+    [configured.access, 'access'],
+    [configured.admin, 'platform_admin'],
+  ]);
+
+const byGroupId = (a: GroupRoleChange, b: GroupRoleChange) =>
+  a.idpGroupId.localeCompare(b.idpGroupId);
+
+/** The stored roles of every role-bearing or configured group. */
+async function storedRoles(trx: Trx, configured: ConfiguredGroups) {
+  const rows = await trx
+    .selectFrom('cp.idp_group')
+    .select(['idp_group_id', 'role'])
+    .where((eb) =>
+      eb.or([
+        eb('role', 'is not', null),
+        eb('idp_group_id', 'in', [configured.access, configured.admin]),
+      ]),
+    )
+    .execute();
+  return new Map(rows.map((row) => [row.idp_group_id, row.role]));
+}
+
+/**
+ * `serve` start only: sets `role` from config on every group and returns the rows it actually
+ * changed (sorted by group id). Serialized per org, so concurrent starts report each change once.
+ */
+export async function reconcileConfiguredGroups(
   trx: Trx,
   orgId: string,
   configured: ConfiguredGroups,
 ): Promise<GroupRoleChange[]> {
-  const { access, admin } = configured;
-  const before = await trx
-    .selectFrom('cp.idp_group')
-    .select(['idp_group_id', 'role'])
-    .where((eb) => eb.or([eb('role', 'is not', null), eb('idp_group_id', 'in', [access, admin])]))
-    .forUpdate()
-    .execute();
-  const was = new Map(before.map((row) => [row.idp_group_id, row.role]));
-  const desired = new Map<string, GroupRole>([
-    [access, 'access'],
-    [admin, 'platform_admin'],
-  ]);
+  await sql`select pg_advisory_xact_lock(hashtextextended(${`idp-group-roles|${orgId}`}, 0))`.execute(
+    trx,
+  );
+  const was = await storedRoles(trx, configured);
+  const desired = desiredRoles(configured);
+  const changes: GroupRoleChange[] = [];
 
-  await trx
+  const cleared = await trx
     .updateTable('cp.idp_group')
     .set({ role: null })
     .where('role', 'is not', null)
-    .where('idp_group_id', 'not in', [access, admin])
+    .where('idp_group_id', 'not in', [...desired.keys()])
+    .returning('idp_group_id')
     .execute();
+  for (const row of cleared) {
+    changes.push({
+      idpGroupId: row.idp_group_id,
+      from: was.get(row.idp_group_id) ?? null,
+      to: null,
+    });
+  }
   for (const [idpGroupId, role] of desired) {
-    await trx
+    // Only a row that is inserted, or whose role differs, comes back.
+    const changed = await trx
       .insertInto('cp.idp_group')
       .values({
         id: uuidv7(),
@@ -67,45 +104,35 @@ export async function ensureConfiguredGroups(
         role,
         name_refreshed_at: null,
       })
-      .onConflict((oc) => oc.columns(['org_id', 'idp_group_id']).doUpdateSet({ role }))
-      .execute();
+      .onConflict((oc) =>
+        oc
+          .columns(['org_id', 'idp_group_id'])
+          .doUpdateSet({ role })
+          .where(sql<boolean>`idp_group.role is distinct from excluded.role`),
+      )
+      .returning('idp_group_id')
+      .executeTakeFirst();
+    if (changed !== undefined) {
+      changes.push({ idpGroupId, from: was.get(idpGroupId) ?? null, to: role });
+    }
   }
-
-  const changes: GroupRoleChange[] = [];
-  for (const [idpGroupId, from] of was) {
-    const to = desired.get(idpGroupId) ?? null;
-    if (from !== to) changes.push({ idpGroupId, from, to });
-  }
-  for (const [idpGroupId, to] of desired) {
-    if (!was.has(idpGroupId)) changes.push({ idpGroupId, from: null, to });
-  }
-  return changes.sort((a, b) => a.idpGroupId.localeCompare(b.idpGroupId));
+  return changes.sort(byGroupId);
 }
 
 /**
- * Writes Graph's answer for the two configured groups back to `cp.group_membership`
- * (`graph_check`): a group the user is in is upserted, one they left is deleted. Other groups
- * (token claims) are untouched. Returns the IdP object ids added and removed.
+ * Sign-in: creates a missing configured group row (with its configured role) and changes no
+ * existing role. Returns how the stored roles differ from this config (empty when they agree).
  */
-export async function recordGraphMembership(
+export async function ensureConfiguredGroupRows(
   trx: Trx,
   orgId: string,
-  userId: string,
   configured: ConfiguredGroups,
-  graph: { inAccessGroup: boolean; inAdminGroup: boolean },
-): Promise<{ added: string[]; removed: string[] }> {
-  const ids = [configured.access, configured.admin];
-  // Normally present since `serve` start, which also owns existing rows' roles
-  // (ensureConfiguredGroups); a missing row is created with its configured role.
+): Promise<GroupRoleChange[]> {
+  const desired = desiredRoles(configured);
   await trx
     .insertInto('cp.idp_group')
     .values(
-      (
-        [
-          [configured.access, 'access'],
-          [configured.admin, 'platform_admin'],
-        ] as const
-      ).map(([idpGroupId, role]) => ({
+      [...desired].map(([idpGroupId, role]) => ({
         id: uuidv7(),
         org_id: orgId,
         idp_group_id: idpGroupId,
@@ -116,6 +143,68 @@ export async function recordGraphMembership(
     )
     .onConflict((oc) => oc.columns(['org_id', 'idp_group_id']).doNothing())
     .execute();
+  const skew: GroupRoleChange[] = [];
+  for (const [idpGroupId, from] of await storedRoles(trx, configured)) {
+    const to = desired.get(idpGroupId) ?? null;
+    if (from !== to) skew.push({ idpGroupId, from, to });
+  }
+  return skew.sort(byGroupId);
+}
+
+/**
+ * One writer of a user's Graph answers at a time (refresh write-back, sign-in provisioning),
+ * keyed by the IdP subject, which both know before touching the user's row.
+ */
+export async function lockGraphMembership(
+  trx: Trx,
+  orgId: string,
+  idpSubject: string,
+): Promise<void> {
+  await sql`select pg_advisory_xact_lock(hashtextextended(${`graph-membership|${orgId}|${idpSubject}`}, 0))`.execute(
+    trx,
+  );
+}
+
+/** The database clock, read just before a Graph call: the answer's place in the order. */
+export async function graphCheckTime(db: Kysely<Database>, orgId: string): Promise<Date> {
+  const row = await withOrg(
+    db,
+    orgId,
+    async (trx) => (await sql<{ now: Date }>`select clock_timestamp() as now`.execute(trx)).rows[0],
+    { readOnly: true },
+  );
+  if (row === undefined) throw new Error('clock_timestamp() returned no row');
+  return row.now;
+}
+
+/**
+ * Writes Graph's answer for the two configured groups back to `cp.group_membership`
+ * (`graph_check`): a group the user is in is upserted, one they left is deleted. Other groups
+ * (token claims) are untouched. `checkedAt` is when this answer's Graph call started; an answer
+ * older than the stored `graph_checked_at` is skipped (`stale: true`, nothing written).
+ */
+export async function recordGraphMembership(
+  trx: Trx,
+  orgId: string,
+  user: { id: string; idpSubject: string },
+  configured: ConfiguredGroups,
+  graph: { inAccessGroup: boolean; inAdminGroup: boolean },
+  checkedAt: Date,
+): Promise<{ added: string[]; removed: string[]; stale: boolean }> {
+  await lockGraphMembership(trx, orgId, user.idpSubject);
+  const stored = await trx
+    .selectFrom('cp.app_user')
+    .select('graph_checked_at')
+    .where('id', '=', user.id)
+    .executeTakeFirst();
+  const storedAt = stored?.graph_checked_at ?? null;
+  if (storedAt !== null && storedAt > checkedAt) {
+    return { added: [], removed: [], stale: true };
+  }
+  const ids = [configured.access, configured.admin];
+  // Normally present since `serve` start, which owns existing rows' roles; a missing row is
+  // created with its configured role (as at sign-in).
+  await ensureConfiguredGroupRows(trx, orgId, configured);
   const groups = await trx
     .selectFrom('cp.idp_group')
     .select(['id', 'idp_group_id'])
@@ -128,7 +217,7 @@ export async function recordGraphMembership(
         .selectFrom('cp.group_membership as m')
         .innerJoin('cp.idp_group as g', 'g.id', 'm.group_id')
         .select('g.idp_group_id')
-        .where('m.user_id', '=', userId)
+        .where('m.user_id', '=', user.id)
         .where('g.idp_group_id', 'in', ids)
         .execute()
     ).map((row) => row.idp_group_id),
@@ -145,25 +234,35 @@ export async function recordGraphMembership(
     if (member) {
       await trx
         .insertInto('cp.group_membership')
-        .values({ org_id: orgId, user_id: userId, group_id: groupId, source: 'graph_check' })
+        .values({
+          org_id: orgId,
+          user_id: user.id,
+          group_id: groupId,
+          source: 'graph_check',
+          observed_at: checkedAt,
+        })
         .onConflict((oc) =>
-          oc.columns(['org_id', 'user_id', 'group_id']).doUpdateSet({
-            source: 'graph_check',
-            observed_at: sql<Date>`clock_timestamp()`,
-          }),
+          oc
+            .columns(['org_id', 'user_id', 'group_id'])
+            .doUpdateSet({ source: 'graph_check', observed_at: checkedAt }),
         )
         .execute();
       if (!held.has(idpGroupId)) added.push(idpGroupId);
     } else if (held.has(idpGroupId)) {
       await trx
         .deleteFrom('cp.group_membership')
-        .where('user_id', '=', userId)
+        .where('user_id', '=', user.id)
         .where('group_id', '=', groupId)
         .execute();
       removed.push(idpGroupId);
     }
   }
-  return { added: [...new Set(added)].sort(), removed: [...new Set(removed)].sort() };
+  await trx
+    .updateTable('cp.app_user')
+    .set({ graph_checked_at: checkedAt })
+    .where('id', '=', user.id)
+    .execute();
+  return { added: [...new Set(added)].sort(), removed: [...new Set(removed)].sort(), stale: false };
 }
 
 /** The directory roles the group roles give (`access` → `user`). */

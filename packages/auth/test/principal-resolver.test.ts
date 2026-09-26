@@ -1,13 +1,23 @@
 // PrincipalResolver (§3.4.2, §5.5; AC-7 "yields groups"): service token, 30 s cache, one request
 // per user in flight, fail closed.
+//
+// The one-argument resolve(userId) is deprecated for PEPs (SEC-F002-54). These tests still cover
+// it on purpose, through `plain()`, the one place that names the deprecated overload.
 import { describe, expect, it } from 'vitest';
 import {
   PrincipalNotFoundError,
   PrincipalSessionRefusedError,
+  type PrincipalResolver,
   PrincipalUnavailableError,
   createPrincipalResolver,
 } from '../src/index.js';
+import type { Principal } from '@ralysa/protocol/control-plane';
 import { ORG, USER, clock, fakeFetch } from './support.js';
+
+/** The deprecated one-argument lookup, called on purpose (no `?sid=`). */
+type PlainLookup = (userId: string) => Promise<Principal>;
+const plain = (resolver: PrincipalResolver, userId: string): Promise<Principal> =>
+  (Reflect.get(resolver, 'resolve') as PlainLookup).call(resolver, userId);
 
 const BASE = 'https://cp.internal';
 const URL_USER = `${BASE}/v1/internal/principals/${USER}`;
@@ -35,23 +45,23 @@ describe('createPrincipalResolver', () => {
 
   it('returns groups and roles with the service token, cached for 30 s, one request in flight', async () => {
     const { c, fetch, resolver } = setup(() => ({ status: 200, body: principal }));
-    const [a, b] = await Promise.all([resolver.resolve(USER), resolver.resolve(USER)]);
+    const [a, b] = await Promise.all([plain(resolver, USER), plain(resolver, USER)]);
     expect(a).toEqual(principal);
     expect(b).toEqual(principal);
     expect(fetch.requests).toHaveLength(1);
     expect(fetch.requests[0]?.headers.authorization).toBe('Bearer svc');
     c.advance(30_000);
-    await resolver.resolve(USER);
+    await plain(resolver, USER);
     expect(fetch.requests).toHaveLength(1);
     c.advance(1);
-    await resolver.resolve(USER);
+    await plain(resolver, USER);
     expect(fetch.requests).toHaveLength(2);
   });
 
   it('404 → PrincipalNotFoundError; a non-UUID id is never sent', async () => {
     const { fetch, resolver } = setup(() => ({ status: 404, body: {} }));
-    await expect(resolver.resolve(USER)).rejects.toBeInstanceOf(PrincipalNotFoundError);
-    await expect(resolver.resolve('../../v1/me')).rejects.toBeInstanceOf(PrincipalNotFoundError);
+    await expect(plain(resolver, USER)).rejects.toBeInstanceOf(PrincipalNotFoundError);
+    await expect(plain(resolver, '../../v1/me')).rejects.toBeInstanceOf(PrincipalNotFoundError);
     expect(fetch.requests).toHaveLength(1);
   });
 
@@ -94,8 +104,8 @@ describe('createPrincipalResolver', () => {
       expect(weak.roles).toContain('platform_admin'); // directory roles: never enough on their own
       const strong = await resolver.resolve(USER, OTHER_SID.toUpperCase());
       expect(strong.session_roles).toEqual(['user', 'platform_admin']);
-      const plain = await resolver.resolve(USER);
-      expect(plain.session_roles).toBeUndefined();
+      const noSession = await plain(resolver, USER);
+      expect(noSession.session_roles).toBeUndefined();
       expect(fetch.requests.map((r) => r.url)).toEqual([urlFor(SID), urlFor(OTHER_SID), URL_USER]);
       c.advance(30_000);
       await resolver.resolve(USER, SID);
@@ -133,7 +143,7 @@ describe('createPrincipalResolver', () => {
       const { resolver } = setupSessions({
         [`GET ${URL_USER}`]: () => ({ status: 200, body: forSession(SID, ['user']) }),
       });
-      await expect(resolver.resolve(USER)).rejects.toBeInstanceOf(PrincipalUnavailableError);
+      await expect(plain(resolver, USER)).rejects.toBeInstanceOf(PrincipalUnavailableError);
     });
   });
 
@@ -144,7 +154,7 @@ describe('createPrincipalResolver', () => {
       { status: 200, body: { ...principal, user_id: ORG } },
     ]) {
       const { resolver } = setup(() => reply);
-      await expect(resolver.resolve(USER)).rejects.toBeInstanceOf(PrincipalUnavailableError);
+      await expect(plain(resolver, USER)).rejects.toBeInstanceOf(PrincipalUnavailableError);
     }
   });
 });

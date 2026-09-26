@@ -16,7 +16,7 @@ import type { AuditWriter } from '../audit/writer.js';
 import type { ServeConfig } from '../config/schema.js';
 import { withOrg } from '../db/kysely.js';
 import type { Database } from '../db/types.js';
-import { type GroupRoleChange, ensureConfiguredGroups } from '../directory/membership.js';
+import { type GroupRoleChange, reconcileConfiguredGroups } from '../directory/membership.js';
 
 export class OrganizationMismatchError extends Error {
   constructor(field: string) {
@@ -87,7 +87,7 @@ export async function reconcileGroupRoles(
 ): Promise<GroupRoleChange[]> {
   const orgId = config.org.id;
   const changes = await withOrg(db, orgId, (trx) =>
-    ensureConfiguredGroups(trx, orgId, {
+    reconcileConfiguredGroups(trx, orgId, {
       access: config.access.access_group_id,
       admin: config.access.admin_group_id,
     }),

@@ -12,7 +12,11 @@ import { uuidv7 } from '@ralysa/protocol/common';
 import { type Kysely, type Transaction, sql } from 'kysely';
 import { withOrg } from '../db/kysely.js';
 import type { Database } from '../db/types.js';
-import { ensureConfiguredGroups } from '../directory/membership.js';
+import {
+  type GroupRoleChange,
+  ensureConfiguredGroupRows,
+  lockGraphMembership,
+} from '../directory/membership.js';
 import type { SignInFlow } from './identity-mapping.js';
 import {
   type CodeBinding,
@@ -72,6 +76,11 @@ export interface ProvisionResult {
   /** IdP group object ids added to / removed from the user's memberships. */
   added: string[];
   removed: string[];
+  /**
+   * How the stored group roles differ from this replica's config (empty when they agree). Sign-in
+   * never changes a role; the caller logs `group_role_config_skew` (R58-3, SEC-F002-52).
+   */
+  roleSkew: GroupRoleChange[];
   sessionId: string;
   refreshToken?: string;
 }
@@ -192,11 +201,11 @@ async function syncGroups(
   orgId: string,
   userId: string,
   input: ProvisionInput,
-): Promise<{ added: string[]; removed: string[] }> {
+): Promise<{ added: string[]; removed: string[]; roleSkew: GroupRoleChange[] }> {
   const { access, admin } = input.configured;
-  // Roles come from config only; a group that is no longer configured loses its role (the
-  // `serve` start reconciles and audits the same, so this is normally a no-op; #47).
-  await ensureConfiguredGroups(trx, orgId, input.configured);
+  // Roles come from config, and only the audited `serve` start changes them: sign-in creates a
+  // missing configured row and reports any skew, never rewriting a role (R58-3, SEC-F002-52).
+  const roleSkew = await ensureConfiguredGroupRows(trx, orgId, input.configured);
   const others = [...new Set(input.membership.map((m) => m.idpGroupId))].filter(
     (id) => id !== access && id !== admin,
   );
@@ -270,9 +279,17 @@ async function syncGroups(
       )
       .execute();
   }
+  // This sign-in's Graph answer is the newest at its write: a refresh whose Graph call started
+  // earlier is skipped by recordGraphMembership (R58-4).
+  await trx
+    .updateTable('cp.app_user')
+    .set({ graph_checked_at: sql<Date>`greatest(graph_checked_at, clock_timestamp())` })
+    .where('id', '=', userId)
+    .execute();
   return {
     added: [...desired.keys()].filter((id) => !held.has(id)).sort(),
     removed: removed.map((r) => r.idpGroupId).sort(),
+    roleSkew,
   };
 }
 
@@ -420,6 +437,8 @@ export function createSignInStore(db: Kysely<Database>, orgId: string): SignInSt
 
     provision: (input) =>
       withOrg(db, orgId, async (trx) => {
+        // Before the user's row is touched, as the refresh write-back does (no lock-order cycle).
+        await lockGraphMembership(trx, orgId, input.oid);
         const user = await upsertUser(trx, orgId, input);
         const groups = await syncGroups(trx, orgId, user.id, input);
         const sessionId = await createSession(trx, {
@@ -448,6 +467,7 @@ export function createSignInStore(db: Kysely<Database>, orgId: string): SignInSt
           changedAttributes: user.changed,
           added: groups.added,
           removed: groups.removed,
+          roleSkew: groups.roleSkew,
           sessionId,
           ...(refresh === undefined ? {} : { refreshToken: refresh.token }),
         };
