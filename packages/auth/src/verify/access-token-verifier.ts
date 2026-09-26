@@ -95,7 +95,7 @@ export interface CommonVerifierOptions {
   issuer: string;
   /** RTS `/.well-known/jwks.json`. */
   jwksUrl: string;
-  /** Config `vault.signing_key`; the `kid` must be `<kidPrefix>.v<n>` [SEC-F002-19]. */
+  /** The control plane's `signing_key`; the `kid` must be `<kidPrefix>.v<n>` [SEC-F002-19]. */
   kidPrefix: string;
   /** When set, a token of another org is refused (single-org deployments, ADR-0003). */
   orgId?: string;
