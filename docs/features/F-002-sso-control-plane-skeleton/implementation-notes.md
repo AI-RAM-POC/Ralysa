@@ -1700,3 +1700,43 @@ Items marked **self-decided** were open questions decided under the standing aut
 
 
 Tests after the review: `@ralysa/repo-scripts` 28 files, 735 tests; `pnpm lint`, `typecheck`, `test`, `build` and `repo:check` pass; control-plane `test:integration` 11 files, 161 tests; the real image scans clean (image checks, filesystem, config and history: 0 findings).
+
+## T15: close-out
+
+Branch `feat/F-002-closeout`, based on `main` at `9124033` (T01–T14, T16 and #37 merged). Documentation and the G6 input only: no behaviour change. The one source edit is a doc comment in `@ralysa/auth`: `kidPrefix` named a config key that doesn't exist (`vault.signing_key`); the key is the control plane's top-level `signing_key`.
+
+### What landed
+
+- **`services/control-plane/README.md` as the operator reference.** An index at the top, then:
+  - **Entry points**: every command in `src/main.ts` (`serve`, `bootstrap-org`, `migrate`, `migrate --audit`, `sealer`, `audit-verify`) with its database role, its OpenBao policy (from `tooling/dev-stack/src/bootstrap-vault.ts` and design §6.5), what it reads from OpenBao, the `audit-verify` options, and the exit codes (`0`, `1`, `2`, as `main()` returns them).
+  - **Ports**: `serve` on `listen.*` (the image exposes 4100; no separate admin or metrics port); every other entry point listens on nothing; the outbound dependencies; the dev-stack ports (4100, 55432, 58200, 59400).
+  - **Configuration reference**: one table per entry point, each key with its rule and default, taken from `src/config/schema.ts` (no key added or invented); the KV path rule; the production guards split into "every entry point", "`serve` and `bootstrap-org`" and "`serve` only", as `config/guards.ts`, `main.ts` and `serve.ts` apply them; the environment variables.
+  - **Entra ID configuration checklist** from design §6.7, with the config key each item feeds and the claims still to confirm at TC-F-002-28.
+  - **Runbooks** index: signing key (rotation and the rollback pin), IdP client secret with the expiry register, break-glass `migrate --audit`, checkpoint key custody violation. The runbooks themselves (T13, #37) are unchanged, apart from pointing the SEC-F002-10 tenant controls at the checklist.
+  - Consolidation: the production guards were listed twice (start-up and configuration) and are now in one place; the paragraph that summarised the serve keys is replaced by the full table.
+  - Corrections found while checking against the code: override names are logged in the `config_loaded` line's `overrides` field, not as `config_overrides`; the audit-core note said T07 bound metrics to the service's exporter, but `serve` has no exporter yet (R29-n5), so counters go to a no-op sink; the Scripts table lacked `start:sealer`, `audit-verify` and their `:dev` variants.
+- **`packages/auth/README.md` as the integrator guide** for F-003 (Agent Host), F-004 (model gateway) and F-005 (CLI): who uses what; service wiring and a per-request example; the verifier's checks, failure modes and JWKS cache timings; the revocation feed (G-1, poll outcomes, `status()`, kill switches carried only); the principal resolver; the service-token source with its renewal and backoff; the Transit assertion signer (with `createOpenBao(...).keys` from `@ralysa/secrets` as the custody); the rejection reporter; flows A and B; the token manager; the error table; and the one-refresher contract, including the lost-response and failed-save cases.
+  - Every example was type-checked against the package's real exports. A scratch file in `packages/auth/test` holding the README's code verbatim (inputs `declare`d) compiled with `tsc -p packages/auth/tsconfig.json`; a planted type error was reported, so the file was really checked. The file was then deleted. It is not committed: a copy would drift from the README as easily as the README from the code.
+- **`test-report.md`**: the template kept, with one filled section, "Development close-out input (F-002-T15)": TC-F-002-16 linked as the met G6 condition; **TC-F-002-28 marked BLOCKED on E-1**, with the steps and records the test engineer needs once the tenant exists; Q4 and Q5 kept open; exception EXC-F002-01 (T15-1). Every other section is marked for the test engineer (`/test F-002`); nothing in it is a G6 decision.
+- `status.md`: T15 in review, phase 5 complete once it merges, next `/test F-002`; open items for TC-28 and E-1, EXC-F002-01 and T15-2.
+
+### Recorded decisions and deviations
+
+Items marked **self-decided** were decided under the standing authorization (CLAUDE.md), taking the recommended option: standing authorization, recorded by Claude.
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T15-1 | Q5, exception filed (**self-decided**) | The production default of `idp.require_mfa_claim` can't be confirmed, because TC-F-002-28 is blocked on E-1. Exception **EXC-F002-01** keeps the default the design (§3.2.5, §3.8, SEC-F002-06) and the code already have: `mfaClaimRequired()` returns `idp.require_mfa_claim ?? env === 'production'`, so unset is `true` in production (`false` in `dev` and `test`). No code change. Revisit at TC-28. | T15's definition of done allows "confirmed or an exception filed". The fail-safe value refuses a sign-in without MFA evidence instead of admitting it. Its only downside (every sign-in fails `mfa_claim_missing` if Entra omits `amr`/`acrs`) would show before any production deployment, at TC-28. This is not an `access.mfa_claim_exception_ref`: the check stays on. |
+| T15-2 | Design/code gap, **documented, not fixed** | Design §3.8 says every entry point refuses an OpenBao that reports in-memory storage. In the code only `serve` calls `openBaoStorageRefusals()`. `migrate`, `migrate --audit`, `sealer` and `audit-verify` (`refuseUnsafe()` in `main.ts`) and `bootstrap-org` apply the config guards only. The README describes the actual behaviour and names the gap; status.md carries it as an open item. | T15 is documentation, and changing entry-point start-up here would be a behaviour change in a docs PR. Code review of #40 (R40-1) corrected the rationale: `vault.addr` isn't a protected path (an override can redirect `sealer` or `audit-verify`), and a dev OpenBao can serve TLS, so the config guards alone don't exclude it. The fix is a **G6 entry condition** (TC-F-002-34), tracked in [#41](https://github.com/AI-RAM-POC/Ralysa/issues/41). It will await `openBaoStorageRefusals()` in `refuseUnsafe()` and `bootstrap-org`, with one unit test per entry point. |
+| T15-3 | Scope | TC-F-002-28 is recorded as blocked, not run; Q4 and Q5 stay open with owner "test engineer (TC-28)". | E-1 is an external blocker (tenant, admin consent). CLAUDE.md says to stop and ask for those, not to work around them. |
+| T15-4 | Documentation choice (**self-decided**) | The integrator guide names the `TokenProvider` as the architecture's IPC interface (identity-and-policy §4.3) and says this package doesn't define it. | No `TokenProvider` type exists in the repository; F-003 and F-005 define the IPC. Saying so stops integrators looking for an export. |
+| T15-5 | Documentation choice | The config reference keeps one worked YAML example (the shared keys plus `migrate`) and puts every key in tables. The dev configs in `deploy/docker/dev` stay the complete examples. | A full example per entry point would repeat the tables and drift. |
+
+### Checks (T15 definition of done)
+
+Local runs, Node 24.21.0, pnpm 11.27.1:
+
+- `pnpm lint`: 33/33 tasks. `pnpm test`: 33/33 tasks. `pnpm build`: 23/23 tasks. `@ralysa/auth` `typecheck` and `test` with `--force`: 119 tests pass (the only source change is its doc comment).
+- `pnpm repo:check`: every check passes (`check-no-password` included); the one `i18n/untranslated` warning and the `needs-native-review` counts are pre-existing and outside F-002.
+- Links: every relative link and `#anchor` in the two READMEs, `test-report.md` and `status.md` resolves (checked with a throwaway script; the repository has no docs link check, and `*.md` is outside Prettier).
+- `secret-scan pr` was not run locally: gitleaks isn't installed in this worktree (`pnpm tools:install` downloads it). The CI `secret-scan` job runs it on the PR.
