@@ -1,0 +1,40 @@
+# .github/CODEOWNERS
+# NOT ENFORCED: private repo on GitHub Free (accepted risk SEC-F001-04, product owner, 2026-09-25).
+# Read by the code-reviewer agent and the Claude Code merge guard. Owners confirmed by the founder on 2026-09-26.
+/.github/                    @radduri @umaadduri
+/.claude/                    @radduri @umaadduri
+/.githooks/                  @radduri @umaadduri
+/CLAUDE.md                   @radduri @umaadduri
+/tooling/                    @radduri @umaadduri
+/.gitleaks.toml              @radduri @umaadduri
+/.gitleaks.artefacts.toml    @radduri @umaadduri
+/osv-scanner.toml            @radduri @umaadduri
+/.dependency-cruiser.cjs     @radduri @umaadduri
+/pnpm-workspace.yaml         @radduri @umaadduri
+/pnpm-lock.yaml              @radduri @umaadduri
+/package.json                @radduri @umaadduri
+/turbo.json                  @radduri @umaadduri
+/.nvmrc                      @radduri @umaadduri
+
+# Security review SEC-F001-37: deployment, the model and Agent SDK boundaries, install-time
+# config, ignore files and packs.
+/deploy/                                  @radduri @umaadduri
+/services/model-gateway/                  @radduri @umaadduri
+/services/agent-host/src/engine/claude/   @radduri @umaadduri
+/.npmrc                                   @radduri @umaadduri
+/.pnpmfile.*                              @radduri @umaadduri
+/.gitignore                               @radduri @umaadduri
+/.dockerignore                            @radduri @umaadduri
+/packs/                                   @radduri @umaadduri
+
+# Workspace manifests: dependencies, scripts and the ralysa contract (shipped, kind, ui).
+/apps/*/package.json                      @radduri @umaadduri
+/packages/*/package.json                  @radduri @umaadduri
+/services/*/package.json                  @radduri @umaadduri
+/tooling/*/package.json                   @radduri @umaadduri
+
+# F-002 wire contracts, by folder (F-002 implementation-notes T01-1; AR-18).
+/packages/protocol/src/common/         @radduri @umaadduri
+/packages/protocol/src/audit/          @radduri @umaadduri
+/packages/protocol/src/auth/           @radduri @umaadduri
+/packages/protocol/src/control-plane/  @radduri @umaadduri
