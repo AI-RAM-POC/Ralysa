@@ -10,6 +10,8 @@
 //   - secret.rotated: published and activated once for the new key version, observed once per IdP
 //     secret version across both replicas;
 //   - replica A adopts the new secret within its poll; replica B through invalid_client.
+// TC-F-002-20 (AC-14) for the rotation flow: the same run keeps both replicas' log lines (pino at
+// info, as serve logs) and the next test scans them for token shapes and the run's IdP secrets.
 // The harness is test/soak/rotation-harness.ts (also the 10-minute soak, TC-F-002-16).
 import { devStackOrSkip } from '@ralysa/dev-stack/harness';
 import { describe, expect, it } from 'vitest';
@@ -18,6 +20,9 @@ import { type ScenarioReport, runRotationScenario } from '../soak/rotation-harne
 const stack = await devStackOrSkip();
 const KEY_POLL_S = 2;
 const ACTIVATION_DELAY_S = 6;
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const logLines: string[] = [];
+const secretValues: string[] = [];
 
 const countBy = (events: { version: number; phase: string }[]) => {
   const counts = new Map<string, number>();
@@ -40,6 +45,10 @@ describe.skipIf(stack === undefined)('rotation under load (F-002-T13, TC-F-002-1
       activationDelayS: ACTIVATION_DELAY_S,
       secretPollS: [2, 60],
       removeOldSecretWhen: 'observed',
+      logLines,
+      onSecretValue: (value) => {
+        secretValues.push(value);
+      },
       progress: (line) => {
         console.log(`[TC-15] ${line}`);
       },
@@ -97,4 +106,30 @@ describe.skipIf(stack === undefined)('rotation under load (F-002-T13, TC-F-002-1
     );
     expect(unexpected).toEqual([]);
   }, 180_000);
+
+  it("TC-F-002-20 (rotation logs): the two replicas' logs during TC-15 hold no token or secret; users are UUIDs", () => {
+    // The rotation itself was logged, so the scan below saw it.
+    const text = logLines.join('');
+    for (const msg of ['signing_key_active', 'idp_client_secret_observed', 'idp_invalid_client']) {
+      expect(text).toContain(`"msg":"${msg}"`);
+    }
+    expect(text).not.toMatch(/eyJ[A-Za-z0-9_-]{8,}\.eyJ/);
+    expect(text).not.toMatch(/rly_rt_[A-Za-z0-9_-]{8}/);
+    expect(text).not.toMatch(/rly_ac_[A-Za-z0-9_-]{8}/);
+    expect(text).not.toMatch(/[?&](?:code|state|code_verifier|session_state)=/);
+    expect(text).not.toMatch(/@contoso\.example/);
+    expect(text).not.toMatch(/\b(?:hvs|hvb|hvr|s|b|r)\.[A-Za-z0-9]{24,}\b/);
+    expect(secretValues.length).toBeGreaterThanOrEqual(2);
+    for (const value of secretValues) {
+      expect(text.includes(value), 'an IdP client secret is in the log').toBe(false);
+    }
+    for (const line of logLines) {
+      const record = JSON.parse(line) as Record<string, unknown>;
+      for (const key of ['user_id', 'actor_user_id', 'sub']) {
+        if (record[key] !== undefined) expect(record[key]).toMatch(UUID);
+      }
+      expect(record).not.toHaveProperty('email');
+      expect(record).not.toHaveProperty('display_name');
+    }
+  });
 });
