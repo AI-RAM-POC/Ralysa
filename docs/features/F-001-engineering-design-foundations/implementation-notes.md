@@ -1031,12 +1031,55 @@ Policy (§2.2): the latest patch of a line GA for at least 30 days, and `minimum
 
 No dependency added by T01 to T03 runs a build script: `allowBuilds` is still `{}`, and `strictDepBuilds` would have failed the install otherwise. The only `pnpm peers check` finding is jsx-a11y's ESLint ≤ 9 peer range (covered by the spike).
 
+## T15: Claude Code guard (branch `feat/F-001-claude-guard`, 2026-09-26; **human merge**)
+
+### What landed
+
+- `.claude/hooks/guard-bash.mjs`: the `PreToolUse` hook on Bash (design §6.3.3). Plain Node 24 ESM, no dependencies. A shell lexer (quotes, `$'…'` decoding, `;` `&&` `||` `|` `&`, parentheses, here-documents, redirections, comments) feeds a per-segment evaluator that unwraps `VAR=x`, `env`, `command`, `nice`, `nohup`, `time`, `exec`, `timeout`, `stdbuf`, `caffeinate` and `pnpm exec`, then applies parse, G-1 to G-5, G-7 (the no-verify part), G-8, G-9, H-1 to H-4, P-1 to P-3. The gitleaks calls (G-6, G-7 scans) are T17's. Every block prints its rule id in brackets. `.claude/hooks/README.md` documents it.
+- `.claude/hooks/test/`: `guard-bash.test.mjs` (the runner), `guard-bash.fixtures.json` (171 cases), `gh-scenarios.json` and `stubs/gh`. Each case runs the real hook as Claude Code does, in a temp repo with a local bare `origin`; gh is a stub on `PATH`; user and system git config are isolated.
+- `.claude/settings.json`: design §6.3.1 allow list (plus `node --test .claude/hooks/test/*.test.mjs`), the §6.3.2 deny list plus the review's additions, the hook registration, and the sandbox. The old `Bash(pnpm turbo run *)` is replaced by exact Turbo tasks (SEC-F001-12). The repo's agents and skills are unaffected (they aren't configured in `settings.json`).
+- `.github/workflows/ci.yml`: a "Claude Code guard fixtures" step in `repo-checks`, before any install.
+- `.gitignore`: `.claude/settings.local.json` and `.claude/worktrees/` (SEC-F001-39).
+- `.github/required-checks.json`: **unchanged** (T15-1).
+
+### Recorded decisions and deviations (standing authorization, recorded by Claude)
+
+| # | Decision | Why |
+|---|---|---|
+| T15-1 | `required-checks.json` keeps its current six jobs (`integration`, `pr-traceability`, `quality`, `repo-checks`, `secret-scan`, `ui-e2e`), not the design's initial `["build","pr-traceability"]`. | T03, T05, T13 and F-002 already changed it; the `build` job no longer exists. Keeping it is what T03-2 asked. |
+| T15-2 | The fixture step runs in `repo-checks` (the `build` job is gone), as `node --test '.claude/hooks/test/*.test.mjs'`. | `node --test <directory>` fails on Node 24.21 ("Cannot find module"); the glob form works. |
+| T15-3 | Phase 6 security review fixes, applied in T15 at the coordinator's direction (recommended option): **SEC-F001-28** gh is an allow-list (`pr create/view/list/diff/checks/comment/merge`, `issue list/view/create/comment`, `run list/view/watch`, `api` GET, `auth status`, `repo view`, `release view/list/create`); `release create` needs `--verify-tag`, a release-tag name, no `--target` and no assets, and the tag must already be on origin, match the local tag and pass the G-5 state checks. **SEC-F001-29** H-2 fetches `origin/main` and `refs/pull/<n>/head`, checks the fetched head is `headRefOid`, lists files with `git diff --name-only --no-renames origin/main...<head>` and fails closed when git's count differs from `changedFiles`. **SEC-F001-30** H-2 reads `required-checks.json` and `CODEOWNERS` with `git show origin/main:<path>`; human-merge paths add `.github/required-checks.json`, `.githooks/**`, `tooling/repo-scripts/bin/**` and `.github/workflows/release.yml`. **SEC-F001-31** inline interpreter code mentioning git/gh/push/merge/release is blocked; `npx`, `pnpx`, `pnpm dlx` and `npm exec` are blocked and `pnpm exec` runs only turbo, playwright, vitest, prettier and eslint (new rule id **P-3**); `export`/`declare`/`typeset`/`local`/`readonly` assignments are checked whether or not the command mentions git, `source`/`.` are blocked with git/gh/pnpm; `git push --repo`, `--receive-pack`, `--exec`, `-o`/`--push-option` and `*` refspecs are blocked, and any `refs/tags/` destination goes through G-5. **SEC-F001-39** the two `.gitignore` entries. | Coordinator message, 2026-09-26 (phase 6 security review). Fixtures 176-179, 200-260. |
+| T15-4 | H-2's count check compares `changedFiles` with git's count **with** rename detection (`-M`), while the path check uses the `--no-renames` list. | GitHub counts a rename as one file, `--no-renames` as two, so comparing the `--no-renames` count would push every PR with a rename to a human. The path check still sees both sides of a rename (fixture 220). |
+| T15-5 | `gh pr merge` also accepts `--body-file`/`-F`. | Harmless (reads a local file), and the parse rule blocks `--body "$(…)"`. |
+| T15-6 | Fail-closed parsing beyond the §6.3.3 list: a variable, glob or brace expansion in command position is always blocked; `HOME` and `XDG_CONFIG_HOME` assignments count as guarded (git and gh read user config there); a non-data command given a git/gh/pnpm word as an argument (`find -exec git`, `watch git`) is blocked; shells and interpreters reading inline code or stdin are blocked in a command that mentions git/gh/pnpm; git subcommands that run commands (`submodule foreach`, `rebase --exec`, `bisect run`, …) are blocked when given one; `gh api` with a method-override header; `turbo login/link/unlink` and `--login`; implicit pushes with `push.default` other than simple/current/upstream or with `remote.origin.push` set; `git config --edit` and renaming/removing protected sections; any `CLAUDE.md` and all three CODEOWNERS locations are human-merge paths. A command that mentions none of git, gh, pnpm, npm, npx, turbo, hub or sudo is never blocked by a parse error. | Each closes a rewritten form found while writing the fixtures (100-187). |
+| T15-7 | A release record for `vX.Y.Z-rc.N` is `docs/releases/vX.Y.Z.md`. | `docs/releases/README.md`: one record per version. |
+| T15-8 | Sandbox: `sandbox.enabled: true`, `autoAllowBashIfSandboxed: false`, `network.allowedDomains` = the design's five plus `release-assets.githubusercontent.com`; filesystem left at the default (working directory and per-user temp), which is the design's "repo and temp directories". `allowUnsandboxedCommands` stays at its default, so a command the sandbox stops can be retried outside it only through a permission prompt, still behind the deny list and the guard. | Key names confirmed in the Claude Code settings and sandboxing docs (2026-09-26). `autoAllowBashIfSandboxed` defaults to true, which would let every sandboxed command skip the allow list. GitHub release downloads (`pnpm tools:install`) redirect to `release-assets.githubusercontent.com`. |
+| T15-9 | The hook command is `node "$CLAUDE_PROJECT_DIR/.claude/hooks/guard-bash.mjs" \|\| exit 2`, timeout 60 s. `main()` turns any exception into exit 2. | Claude Code treats exit codes other than 2 as non-blocking, so a missing `node`, a syntax error or a crash would otherwise let the command through. A hook **timeout** still isn't a block (platform behaviour). |
+| T15-10 | The layer-1 deny `git config *hooksPath*` stops fixture 44's command before the guard sees it. Agents enable the hook with `pnpm hooks:install` (T17), which the allow list names. | Layers are independent; fixture 44 tests layer 2. |
+| T15-11 | `git commit -m "$(cat <<'EOF' … )"` (Claude Code's usual commit form) is blocked by the substitution rule; the block message points to `git commit -F - <<'EOF'` or `-F <file>`, and `gh pr create --body-file`. | Design §6.3.3 "Parsing". Fixtures 101, 103 and 138. |
+
+### Local-override behaviour (design §6.3.5)
+
+Recorded from the Claude Code docs (settings, permissions, hooks and sandboxing pages, read 2026-09-26). **Not yet confirmed by a live run; the PR asks the human merger to confirm it.**
+
+- Permission rules merge across managed, CLI (`--settings`), local (`.claude/settings.local.json`), project and user settings, and a deny in any scope wins. A local file **can't remove a project deny rule**.
+- A local file **can** turn the guard off: `"disableAllHooks": true` in `.claude/settings.local.json` (or `--settings`) disables every hook, the project's included. The design assumed a local file couldn't remove project hooks. That assumption is wrong. Only managed settings can prevent it. I haven't redesigned anything: the finding goes to the human merger, and the residual sits under accepted risk SEC-F001-01 (agent-side controls only). `.claude/settings.local.json` is now git-ignored, so such an override can't be committed by mistake.
+- A local file can also add `allow` rules and turn the sandbox off.
+- The sandbox runs on macOS (Seatbelt), Linux (bubblewrap) and WSL2, not on WSL1 or native Windows.
+
+### Settings-layer run (TC-F-001-41, manual part)
+
+Not done by the agent. This session loads its settings from the main checkout, so the worktree's new `settings.json` doesn't apply to it (checked: `git log -1 --output=/dev/null` ran unblocked). The PR body lists the steps for the human: open a Claude Code session on the branch and try fixtures 1 to 35 and 40 to 64, recording for each whether the deny list, the guard or neither stopped it.
+
+### Tests added (T15)
+
+- `.claude/hooks/test/guard-bash.test.mjs`, 175 tests: the 171 fixture cases, a check that the design's ids 1 to 35 and 40 to 64 are all present, and 3 hook-contract tests (other tools pass, unreadable input blocks, a parse error blocks only in a command that mentions git/gh/pnpm). Local run: 175 pass, about 95 s.
+
 ## Left incomplete / follow-ups
 
 - **TC-F-001-02 in CI.** It needs a throw-away PR; see above. Run it on the first PR from this branch.
 - **The first CI run of `repo-checks` and `quality`** is unverified: nothing has been pushed to a PR yet. Things to watch: Corepack's download of pnpm on the runner, `pnpm store path` before the first install, and job time against the §8.3 budget.
-- **Guard fixtures in `repo-checks`** (`node --test .claude/hooks/test/`) arrive with T15 (human merge).
-- **T15 and required-checks.json:** T15 must keep T03's `required-checks.json` content (T03-2).
+- **T15 (human merge):** the settings-layer run and the local-override check above need a human in a live Claude Code session. `disableAllHooks` in a local settings file turns the guard off; closing that needs managed settings (a follow-up for the product owner, not an agent).
 - Bump Turbo, Prettier, Vite and `@eslint-react` to their newest patches once those are outside the 3-day window.
 - **T06 to T08 follow-ups:**
   - Native-speaker review of every `ar` string (OQ-D8, still open externally). After T12: 95 catalog strings open in the three `review.json` files (`ui` 24, `web` 1, `lab` 70), plus the 20 Arabic samples in `apps/ui-lab/src/samples/arabic-samples.json`.
