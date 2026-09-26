@@ -53,6 +53,7 @@ describe.skipIf(stack === undefined)('serve app (F-002-T07)', () => {
   const replacedKey = uniqueName('ralysa-test-t07-rep');
   const multiKey = uniqueName('ralysa-test-t07-multi');
   const pinKey = uniqueName('ralysa-test-t07-pin');
+  const unpinKey = uniqueName('ralysa-test-t07-unpin');
   const t = (): TestDatabase => {
     if (db === undefined) throw new Error('beforeAll did not create the database');
     return db;
@@ -128,7 +129,7 @@ describe.skipIf(stack === undefined)('serve app (F-002-T07)', () => {
   afterAll(async () => {
     await app.close();
     const root = rootBao(stack!);
-    for (const name of [key, backupKey, replacedKey, multiKey, pinKey]) {
+    for (const name of [key, backupKey, replacedKey, multiKey, pinKey, unpinKey]) {
       await root('POST', `transit/keys/${name}/config`, { deletion_allowed: true });
       await root('DELETE', `transit/keys/${name}`);
     }
@@ -349,18 +350,19 @@ describe.skipIf(stack === undefined)('serve app (F-002-T07)', () => {
     ]);
   });
 
-  it('a pinned version keeps signing past the retention, and is superseded again once unpinned (#36)', async () => {
+  /** A key with v1 active, then v2 active (v1 superseded); returns a watcher factory for it. */
+  const rolledKey = async (name: string) => {
     const root = rootBao(stack!);
-    expectOk(await root('POST', `transit/keys/${pinKey}`, { type: 'ecdsa-p256' }), 'key');
-    const org4 = uuidv7();
-    await ensureOrganization(cpDb, { ...config, org: { ...config.org, id: org4 } });
+    expectOk(await root('POST', `transit/keys/${name}`, { type: 'ecdsa-p256' }), 'key');
+    const org = uuidv7();
+    await ensureOrganization(cpDb, { ...config, org: { ...config.org, id: org } });
     const writer = createAuditWriter({ db: createDb<Database>(await t().pool('audit_writer', 1)) });
     const watcher = (pinVersion?: number) =>
       createSigningKeys({
         db: cpDb,
         custody,
-        orgId: org4,
-        key: pinKey,
+        orgId: org,
+        key: name,
         timing: {
           activationDelayMs: 0,
           retentionMs: 1_000,
@@ -372,35 +374,74 @@ describe.skipIf(stack === undefined)('serve app (F-002-T07)', () => {
     const normal = watcher();
     await normal.poll();
     expect(normal.status()).toMatchObject({ activeVersion: 1 });
-    expectOk(await root('POST', `transit/keys/${pinKey}/rotate`), 'rotate');
+    expectOk(await root('POST', `transit/keys/${name}/rotate`), 'rotate');
     await normal.poll();
     expect(normal.status()).toMatchObject({ activeVersion: 2 }); // v1 superseded
-    // Roll back to v1 (a restart with signing_key_pin_version: 1), then wait past the retention.
+    const phases = async () =>
+      (
+        await t().superuser.query<{ version: number; phase: string }>(
+          `SELECT (details->>'version')::int AS version, details->>'phase' AS phase
+             FROM audit.audit_event WHERE action = 'secret.rotated' AND org_id = $1
+            ORDER BY ingest_seq`,
+          [org],
+        )
+      ).rows;
+    return { watcher, phases };
+  };
+  const rolledOut = [
+    { version: 1, phase: 'published' },
+    { version: 1, phase: 'activated' },
+    { version: 2, phase: 'published' },
+    { version: 2, phase: 'activated' },
+  ];
+
+  it('a pinned version keeps signing past the retention, and the bad newer version retires (#36, review of #37)', async () => {
+    const { watcher, phases } = await rolledKey(pinKey);
+    // Roll back to v1 (a restart with signing_key_pin_version: 1): v1 is live again, v2 superseded.
     const pinned = watcher(1);
     await pinned.poll();
+    expect((await pinned.jwks()).keys.map((k) => k.kid)).toEqual([`${pinKey}.v2`, `${pinKey}.v1`]);
     await sleep(1_100);
     await pinned.poll();
     expect(pinned.status()).toMatchObject({ ready: true, activeVersion: 1 });
     const token = await mintAccessToken(pinned, claims());
     expect(decodeProtectedHeader(token).kid).toBe(`${pinKey}.v1`);
-    expect((await pinned.jwks()).keys.map((k) => k.kid)).toContain(`${pinKey}.v1`);
-    // Unpinned: v2 is the newest active version again and v1 retires after the retention.
+    // v2 left JWKS after the retention although the pin still holds.
+    expect((await pinned.jwks()).keys.map((k) => k.kid)).toEqual([`${pinKey}.v1`]);
+    // Unpinned after v2 retired: v1 is the only live version and keeps signing, nothing changes.
     const unpinned = watcher();
     await unpinned.poll();
-    expect(unpinned.status()).toMatchObject({ activeVersion: 2 });
     await sleep(1_100);
     await unpinned.poll();
-    expect((await unpinned.jwks()).keys.map((k) => k.kid)).toEqual([`${pinKey}.v2`]);
-    const { rows } = await t().superuser.query<{ version: number; phase: string }>(
-      `SELECT (details->>'version')::int AS version, details->>'phase' AS phase
-         FROM audit.audit_event WHERE action = 'secret.rotated' AND org_id = $1 ORDER BY ingest_seq`,
-      [org4],
-    );
-    expect(rows).toEqual([
-      { version: 1, phase: 'published' },
-      { version: 1, phase: 'activated' },
-      { version: 2, phase: 'published' },
-      { version: 2, phase: 'activated' },
+    expect(unpinned.status()).toMatchObject({ ready: true, activeVersion: 1 });
+    expect((await unpinned.jwks()).keys.map((k) => k.kid)).toEqual([`${pinKey}.v1`]);
+    expect(await phases()).toEqual([
+      ...rolledOut,
+      { version: 1, phase: 'pinned' },
+      { version: 2, phase: 'retired' },
+    ]);
+  });
+
+  it('unpinned before the newer version retired: it signs again and the former pin retires (review of #37)', async () => {
+    const { watcher, phases } = await rolledKey(unpinKey);
+    const pinned = watcher(1);
+    await pinned.poll();
+    await pinned.poll(); // a second replica's poll: nothing recorded twice
+    expect(pinned.status()).toMatchObject({ activeVersion: 1 });
+    // Unpinned within the retention: v2 is selected again, is not superseded, and v1 is.
+    const unpinned = watcher();
+    await unpinned.poll();
+    expect(unpinned.status()).toMatchObject({ ready: true, activeVersion: 2 });
+    const token = await mintAccessToken(unpinned, claims());
+    expect(decodeProtectedHeader(token).kid).toBe(`${unpinKey}.v2`);
+    await sleep(1_100);
+    await unpinned.poll();
+    expect(unpinned.status()).toMatchObject({ ready: true, activeVersion: 2 });
+    expect((await unpinned.jwks()).keys.map((k) => k.kid)).toEqual([`${unpinKey}.v2`]);
+    expect(await phases()).toEqual([
+      ...rolledOut,
+      { version: 1, phase: 'pinned' },
+      { version: 2, phase: 'reactivated' },
       { version: 1, phase: 'retired' },
     ]);
   });

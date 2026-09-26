@@ -7,6 +7,7 @@ import {
   selectActiveVersion,
   versionsToRetire,
   versionsToSupersede,
+  versionToUnsupersede,
 } from '../src/auth/tokens/signing-keys.js';
 
 const jwk = { kty: 'EC' as const, crv: 'P-256' as const, x: 'x', y: 'y' };
@@ -102,6 +103,87 @@ describe('versionsToSupersede (T07 follow-up, review of #35)', () => {
       row(5),
     ];
     expect(versionsToSupersede(rows, 4)).toEqual([3]);
+  });
+});
+
+describe('versionsToSupersede while pinned (review of #37)', () => {
+  // v1 was active, v2 (bad) took over and superseded it, the operator pins v1.
+  const afterBadV2 = [
+    row(1, { activated_at: at(-3000), superseded_at: at(-600) }),
+    row(2, { activated_at: at(-600) }),
+  ];
+
+  it('supersedes the newer version that was active, so it retires after the retention', () => {
+    expect(versionsToSupersede(afterBadV2, 1, 1)).toEqual([2]);
+    const superseded = [
+      row(1, { activated_at: at(-3000) }),
+      row(2, { activated_at: at(-600), superseded_at: at(0) }),
+    ];
+    const pinned = { ...timing, pinVersion: 1 };
+    expect(jwksRows(superseded, at(1199), pinned).map((r) => r.version)).toEqual([2, 1]);
+    expect(versionsToRetire(superseded, at(1199), pinned, 1)).toEqual([]);
+    expect(versionsToRetire(superseded, at(1200), pinned, 1)).toEqual([2]);
+  });
+
+  it('leaves a newer version that was never active (it activates once the pin is removed)', () => {
+    const rows = [...afterBadV2, row(3, { published_at: at(-10) })];
+    expect(versionsToSupersede(rows, 1, 1)).toEqual([2]);
+  });
+
+  it('does nothing above the selected version when it is not the pin', () => {
+    expect(versionsToSupersede(afterBadV2, 1)).toEqual([]);
+    expect(versionsToSupersede(afterBadV2, 1, 2)).toEqual([]);
+  });
+
+  it('never touches a retired or already superseded newer version', () => {
+    const rows = [
+      row(1, { activated_at: at(-3000) }),
+      row(2, { activated_at: at(-2000), superseded_at: at(-100) }),
+      row(3, { activated_at: at(-1000), retired_at: at(-1) }),
+    ];
+    expect(versionsToSupersede(rows, 1, 1)).toEqual([]);
+  });
+});
+
+describe('versionToUnsupersede (#36, review of #37)', () => {
+  it('a pinned version that had been superseded is live again', () => {
+    const rows = [
+      row(1, { activated_at: at(-3000), superseded_at: at(-600) }),
+      row(2, { activated_at: at(-600) }),
+    ];
+    expect(selectActiveVersion(rows, at(0), { ...timing, pinVersion: 1 })).toBe(1);
+    expect(versionToUnsupersede(rows, 1)).toBe(1);
+  });
+
+  it('unpinned before the newer version retired: it signs again, unsuperseded, and the former pin is superseded', () => {
+    const rows = [
+      row(1, { activated_at: at(-3000) }),
+      row(2, { activated_at: at(-600), superseded_at: at(-100) }),
+    ];
+    expect(selectActiveVersion(rows, at(0), timing)).toBe(2);
+    expect(versionToUnsupersede(rows, 2)).toBe(2);
+    expect(versionsToSupersede(rows, 2)).toEqual([1]);
+    // Past the retention in the same read: the selected version is still never retired.
+    expect(versionsToRetire(rows, at(1_000_000), timing, 2)).toEqual([]);
+  });
+
+  it('unpinned after the newer version retired: the former pin simply keeps signing', () => {
+    const rows = [
+      row(1, { activated_at: at(-3000) }),
+      row(2, { activated_at: at(-3000), superseded_at: at(-2000), retired_at: at(-700) }),
+    ];
+    expect(selectActiveVersion(rows, at(0), timing)).toBe(1);
+    expect(versionToUnsupersede(rows, 1)).toBeUndefined();
+    expect(versionsToSupersede(rows, 1)).toEqual([]);
+    expect(versionsToRetire(rows, at(1_000_000), timing, 1)).toEqual([]);
+  });
+
+  it('nothing for a version that is not superseded, is retired, or when none is selected', () => {
+    expect(versionToUnsupersede([row(1, { activated_at: at(-1) })], 1)).toBeUndefined();
+    expect(
+      versionToUnsupersede([row(1, { superseded_at: at(-9), retired_at: at(-1) })], 1),
+    ).toBeUndefined();
+    expect(versionToUnsupersede([row(1, { superseded_at: at(-9) })], undefined)).toBeUndefined();
   });
 });
 
