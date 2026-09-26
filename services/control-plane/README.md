@@ -7,32 +7,271 @@ OAuth authorization server toward Ralysa clients), users, groups and sessions, t
 with its sealer and signed checkpoints, and the governance feed. Design:
 [docs/features/F-002-sso-control-plane-skeleton/design.md](../../docs/features/F-002-sso-control-plane-skeleton/design.md).
 
+**Operator reference.** Start here:
+
+- [Entry points](#entry-points): the commands, the database role and OpenBao policy each one uses,
+  and exit codes.
+- [Ports](#ports): what listens where, in production and on the dev stack.
+- [Configuration reference](#configuration-reference): every key of every entry point's config, its
+  default, and the production guards.
+- [Entra ID configuration checklist](#entra-id-configuration-checklist): the tenant-side settings
+  (design §6.7) and the config key each one feeds.
+- [Runbooks](#runbooks): signing key (rotation and pin), IdP client secret, break-glass
+  `migrate --audit`, checkpoint key custody violation.
+
+The rest of this file describes what the service does: [the API](#the-api-serve-f-002-t07),
+[audit endpoints](#audit-endpoints-f-002-t12), [audit core](#audit-core) and the
+[database](#database). Services and clients that call the control plane use
+[`@ralysa/auth`](../../packages/auth/README.md).
+
 ## Entry points
 
-`node dist/main.js <command>` (bin `control-plane`). Each entry point loads only its own config
-schema and logs in to OpenBao as its own role (SEC-F002-02). So far:
+`node dist/main.js <command>` (bin `control-plane`; the image's entry point is `node dist/main.js`
+with `serve --config /etc/ralysa/control-plane.yaml` as the default command). Each entry point loads
+only its own config schema and logs in to OpenBao as its own role (SEC-F002-02). The config path is
+`--config <file>`, or `RALYSA_CONFIG` when the flag is absent.
 
-| Command                           | Runs as                                                               | Reads from OpenBao              |
-| --------------------------------- | --------------------------------------------------------------------- | ------------------------------- |
-| `migrate --config <file>`         | `ralysa_migrator`                                                     | `db_credentials.migrator`       |
-| `migrate --audit --config <file>` | `ralysa_audit_migrator` → `SET ROLE ralysa_audit_owner` (break-glass) | `db_credentials.audit_migrator` |
-| `serve --config <file>` | `ralysa_cp_app`, `ralysa_audit_writer`, `ralysa_audit_reader` (the audit query and the client path's duplicate check, T12) | `db_credentials.*`; signs tokens with Transit `ralysa-rts-signing` |
-| `bootstrap-org --config <file>` (serve config) | `ralysa_cp_app` | `db_credentials.cp_app` |
-| `sealer --config <file>` | `ralysa_audit_sealer` (its own process and deployment) | `db_credentials.audit_sealer`; signs with Transit `ralysa-audit-checkpoint` |
-| `audit-verify --config <file> [--org <uuid>] [--shard <s>] [--log-checkpoints <jsonl>]` | `ralysa_audit_reader` (read-only) | `db_credentials.audit_reader`; reads the checkpoint key's public versions |
+| Command | Database role | OpenBao policy (role) | Reads from OpenBao |
+| --- | --- | --- | --- |
+| `migrate` | `ralysa_migrator` | `ralysa-cp-migrate` | `db_credentials.migrator`, `db_credentials.audit_writer` |
+| `migrate --audit` (break-glass) | `ralysa_audit_migrator` → `SET ROLE ralysa_audit_owner` | `ralysa-cp-migrate-audit` | `db_credentials.audit_migrator`, `db_credentials.audit_writer` |
+| `serve` | `ralysa_cp_app`, `ralysa_audit_writer`, `ralysa_audit_reader` (the audit query and the client path's duplicate check) | `ralysa-cp-serve` | `db_credentials.*`, `idp.client_secret_path`, `audit_hmac_path`; signs tokens with Transit `ralysa-rts-signing`; reads `ralysa-svc-*` public keys |
+| `bootstrap-org` (the serve config) | `ralysa_cp_app` | `ralysa-cp-serve` | `db_credentials.cp_app` |
+| `sealer` (its own process and deployment) | `ralysa_audit_sealer` | `ralysa-cp-sealer` | `db_credentials.audit_sealer`; signs with Transit `ralysa-audit-checkpoint` |
+| `audit-verify [--org <uuid>] [--shard <source>] [--log-checkpoints <jsonl>]` | `ralysa_audit_reader` (read-only) | `ralysa-cp-verify` | `db_credentials.audit_reader`; the checkpoint key's public versions |
+
+The OpenBao policies, and the explicit denies every non-operator policy carries, are in design
+§6.5. The dev stack creates them (`tooling/dev-stack/src/bootstrap-vault.ts`).
+
+`audit-verify` options: `--org` checks another org id than `org.id`; `--shard` checks one audit
+source only (`control-plane`, `model-gateway`, `mcp-gateway`, `workspace-runtime`,
+`agent-host-server`, `agent-host-local`); `--log-checkpoints` compares the table with the shipped
+`audit_checkpoint` log lines (JSON Lines).
 
 Both migrate jobs also write one `db.migration.applied` per applied migration (with the
 `migrations.lock.json` checksum) through `db_credentials.audit_writer`. If that write fails the
 job exits non-zero, saying the migrations were applied but not recorded.
 
+**Exit codes.** `0` success; `1` a runtime failure (an unknown option counts as one), or
+`audit-verify` findings (including a checkpoint key custody violation); `2` a usage or config error
+(an unknown command, no config path, an invalid config, a production-guard refusal, a signing key
+that violates custody at `serve` start). Every failure writes one JSON error line naming the
+command.
+
+## Ports
+
+| Process | Listens on | Notes |
+| --- | --- | --- |
+| `serve` | `listen.host`:`listen.port` (HTTP) | The image `EXPOSE`s 4100. TLS terminates in front of it: `public_base_url` must be `https://` in production, and `trust_proxy_cidrs` names the proxies whose `X-Forwarded-For` is believed. `/healthz` and `/readyz` are on the same port; there is no separate admin or metrics port yet. |
+| `sealer`, `migrate`, `migrate --audit`, `audit-verify`, `bootstrap-org` | nothing | Outbound only: Postgres (`db.host`:`db.port`) and OpenBao (`vault.addr`). |
+
+Outbound from `serve`: Postgres, OpenBao, the Entra issuer's origin (discovery, keys, token
+endpoint) and `idp.graph_base_url` (Microsoft Graph), all over HTTPS in production.
+
+Dev stack (`deploy/docker/dev`; every published port is bound to 127.0.0.1): `serve` 4100
+(`control-plane.serve.dev.yaml`), Postgres 55432, OpenBao 58200, the mock IdP and Graph stub 59400.
+
+## Configuration reference
+
+A YAML file per entry point (`--config`, or `RALYSA_CONFIG`), validated by that entry point's
+strict schema in `src/config/schema.ts` (the source of truth for this section). A config holds
+identifiers and OpenBao **paths** only. An unknown key fails validation, and so does a credential
+field whose value isn't a KV path. Validation messages name the field and the rule, never the
+value. Dev configs: `deploy/docker/dev/control-plane.{serve,migrate,migrate-audit,sealer,audit-verify}.dev.yaml`.
+
+**KV path** (every `db_credentials.*`, `idp.client_secret_path`, `audit_hmac_path`): matches
+`<kv mount>/ralysa/control-plane/<path>` (lower-case letters, digits, `_`, `-`, `/`), and the first
+segment must equal `vault.kv_mount`.
+
+```yaml
+# The keys every entry point shares, then the ones for this entry point (here: migrate).
+env: production # dev | test | production; unset → production
+org: { id: <uuid>, name: …, residency: in_country, region: qa-doha, deployment_model: on_prem }
+vault:
+  addr: https://openbao.internal:8200
+  auth: { method: kubernetes, role: ralysa-cp-migrate } # jwt_path defaults to the SA token file
+  # auth: { method: approle, role_id: …, secret_id_path: /run/secrets/secret-id }  # needs allow_approle in production
+  # auth: { method: token, token_env: BAO_DEV_ROOT_TOKEN_ID }                        # dev/test only
+  allow_approle: false
+db: { host: …, port: 5432, database: ralysa, ssl: true }
+db_credentials:
+  migrator: kv/ralysa/control-plane/db/migrator
+  audit_writer: kv/ralysa/control-plane/db/audit_writer
+```
+
+### Keys every entry point shares
+
+| Key | Rule | Default | Notes |
+| --- | --- | --- | --- |
+| `env` | `dev`, `test` or `production` | `production` | Switches the production guards on. Can't be overridden. |
+| `org.id` | UUID | required | The one Organization (ADR-0003). Unauthenticated routes act in it; a request never selects the org. |
+| `org.name` | 1–200 characters | required | |
+| `org.residency` | `in_country` or `in_region` | required | Fixed once the Organization exists (`serve`, `bootstrap-org` refuse a change). |
+| `org.region` | `[a-z0-9-]{2,40}`, e.g. `qa-doha` | required | Fixed once the Organization exists. |
+| `org.deployment_model` | `dedicated`, `on_prem` or `air_gapped` | required | Fixed once the Organization exists. |
+| `vault.addr` | URL | required | `https://` in production. |
+| `vault.auth.method` | `kubernetes`, `approle` or `token` | required | One of the three shapes below. |
+| `vault.auth.role` (kubernetes) | `[a-z0-9-]{1,64}` | required | The entry point's OpenBao role, e.g. `ralysa-cp-serve` (see [Entry points](#entry-points)). |
+| `vault.auth.jwt_path` (kubernetes) | path | `/var/run/secrets/kubernetes.io/serviceaccount/token` | The ServiceAccount token file. |
+| `vault.auth.role_id` (approle) | 1–128 characters | required | Production needs `vault.allow_approle: true`. |
+| `vault.auth.secret_id_path` (approle) | path | required | A file holding the unwrapped `secret_id`, written by the platform, mode 0600. |
+| `vault.auth.token_env` (token) | `[A-Z][A-Z0-9_]{0,63}` | required | The **name** of the environment variable holding the token. Refused in production. |
+| `vault.allow_approle` | boolean | `false` | Can't be overridden. |
+| `vault.transit_mount` | `[a-z0-9_-]{1,64}` | `transit` | |
+| `vault.kv_mount` | `[a-z0-9_-]{1,64}` | `kv` | Every KV path must start with it. |
+| `db.host` | 1–255 characters | required | |
+| `db.port` | 1–65535 | required | |
+| `db.database` | `[a-z_][a-z0-9_]{0,62}` | required | The server must be UTF-8. |
+| `db.ssl` | boolean | required | `true` in production. |
+
+### `migrate` and `migrate --audit`
+
+| Key | Rule | Notes |
+| --- | --- | --- |
+| `db_credentials.migrator` (`migrate`) | KV path | Password of `ralysa_migrator`. |
+| `db_credentials.audit_migrator` (`migrate --audit`) | KV path | Password of `ralysa_audit_migrator` (break-glass). |
+| `db_credentials.audit_writer` (both) | KV path | For the `db.migration.applied` events. |
+
+The two jobs have separate schemas: a `migrate` config can't name `audit_migrator`, and a
+`migrate --audit` config can't name `migrator`.
+
+### `sealer`
+
+| Key | Rule | Default | Notes |
+| --- | --- | --- | --- |
+| `checkpoint_key` | exactly `ralysa-audit-checkpoint` | required | The Transit key that signs checkpoints. |
+| `interval_ms` | 100–60,000 | `1000` | Sealing pass per shard. |
+| `sweep_interval_s` | 60–86,400 | `3600` | The sweep without lookback. |
+| `checkpoint_interval_s` | 1–3600 | `60` | `audit-verify` flags gaps over 120 s. |
+| `custody_poll_s` | 1–300 | `30` | Re-reads the checkpoint key's custody flags. |
+| `db_credentials.audit_sealer` | KV path | required | The sealer's only credential (no writer credential, SEC-F002-34). |
+
+### `audit-verify`
+
+| Key | Rule | Notes |
+| --- | --- | --- |
+| `checkpoint_key` | exactly `ralysa-audit-checkpoint` | Public versions only. |
+| `db_credentials.audit_reader` | KV path | Read-only. |
+
+Command-line options are under [Entry points](#entry-points).
+
+### `serve` and `bootstrap-org`
+
+`bootstrap-org` reads the same file as `serve` and uses only the common keys and
+`db_credentials.cp_app`, but the whole file must validate.
+
+| Key | Rule | Default | Notes |
+| --- | --- | --- | --- |
+| `public_base_url` | URL | required | The token issuer (`iss`) and the base of every RTS URL, including the IdP redirect `<public_base_url>/oauth2/idp/callback`. `https://` in production. |
+| `listen.host` | non-empty | required | |
+| `listen.port` | 0–65535 | required | See [Ports](#ports). |
+| `trust_proxy_cidrs` | list of CIDRs | `[]` | Proxies whose `X-Forwarded-For` is believed. No `0.0.0.0/0` or `::/0` in production. Can't be overridden. |
+| `signing_key` | exactly `ralysa-rts-signing` | required | Tokens carry `kid` `ralysa-rts-signing.v<n>`. |
+| `idp.kind` | `entra` | required | |
+| `idp.tenant_id` | UUID | required | The Entra tenant (directory) id. |
+| `idp.issuer` | URL | required | Exactly `https://login.microsoftonline.com/<tenant_id>/v2.0` in production. Discovery is fetched from here only. Can't be overridden. |
+| `idp.rts_client_id` | UUID | required | The RTS app registration's client id; the Entra token's `aud`. |
+| `idp.allowed_public_client_ids` | list of UUIDs, at least one | required | The CLI app registration's client id; the Entra token's `azp`. |
+| `idp.signin_scope` | 1–200 characters | required | The full scope URI the RTS app exposes, e.g. `api://<app id URI>/Ralysa.SignIn`. RTS checks the part after the last `/` in `scp`, and `/v1/auth/config` hands the full value to the CLI. |
+| `idp.client_secret_path` | KV path | required | The RTS client secret (see the [IdP client-secret runbook](#runbook-rotating-the-idp-client-secret-sec-f002-10)). |
+| `idp.client_secret_poll_s` | 1–300 | `60` | How often each replica re-reads the client secret. |
+| `idp.graph_base_url` | URL | required | Exactly `https://graph.microsoft.com` in production. |
+| `idp.graph_timeout_ms` | 100–3000 | `3000` | One deadline per Graph check. |
+| `idp.require_mfa_claim` | boolean | unset: `true` in production, `false` otherwise | MFA evidence: `amr` contains `mfa` or `acrs` is non-empty, else `failure mfa_claim_missing`. `false` in production needs `access.mfa_claim_exception_ref` (Q5). Can't be overridden. |
+| `access.access_group_id` | UUID | required | Object id of the group that may use Ralysa (role `user`). |
+| `access.admin_group_id` | UUID | required | Object id of the admin group (role `platform_admin`, strong sign-in only). |
+| `access.device_code_enabled` | boolean | `true` | Flow A. `false` revokes every live flow-A session at start. The config is authoritative in Phase 0 (D-30). |
+| `access.loopback_ip_mismatch` | `deny` or `alert` | `deny` | Flow B: redemption IP differs from the callback IP. |
+| `access.admin_auth_context` | up to 64 characters | unset | An Entra authentication context id (for example `c1`); `acrs` containing it makes a flow-A sign-in strong. |
+| `access.phishing_resistant_amr` | list of strings | `['fido', 'wia']` | `amr` values that make a flow-A sign-in strong. To confirm against the real tenant (TC-F-002-28). |
+| `access.mfa_claim_exception_ref` | 1–100 characters | unset | A documented exception id; required to run production with `idp.require_mfa_claim: false`. Can't be overridden. |
+| `tokens.access_ttl_s` | 60–3600 | `900` | User access-token lifetime. |
+| `tokens.service_ttl_s` | 60–900 | `300` | Service-token lifetime. |
+| `tokens.refresh_idle_s` | integer | `43200` (12 h) | Refresh-token idle expiry. |
+| `tokens.refresh_absolute_s` | integer | `604800` (7 d) | Session absolute expiry. |
+| `tokens.key_poll_s` | 1–300 | `30` | Signing-key poll. |
+| `tokens.activation_delay_s` | 0–3600 | `120` | Publish-to-activate delay for a new signing-key version. |
+| `tokens.signing_key_pin_version` | integer ≥ 1 | unset | Rollback pin (see the [signing-key runbook](#runbook-rotating-the-rts-signing-key-ac-10)). |
+| `rate_limits.per_ip_per_minute` | integer ≥ 1 | `60` | On `/oauth2/*`, `/v1/auth/*`, `/.well-known/*`, per client IP (IPv6 per /64). |
+| `rate_limits.global_per_minute` | integer ≥ 1 | `1200` | The same routes, per instance. |
+| `audit.spool_dir` | non-empty | `/var/lib/ralysa/audit-spool` | A dedicated `0700` directory on a persistent volume. |
+| `audit.spool_persistent` | boolean | `true` | `false`: no persistent volume, loss on restart accepted (SEC-F002-24). |
+| `audit_hmac_path` | KV path | required | The HMAC key for `attempted_identifier_hmac`. |
+| `db_credentials.cp_app`, `.audit_writer`, `.audit_reader` | KV paths | required | A migrator or sealer path fails validation. |
+| `services[].name` | `[a-z][a-z0-9-]{1,40}`, unique | `[]` | A service allowed to get service tokens. Only `model-gateway`, `mcp-gateway`, `workspace-runtime` and `agent-host` have an audit source; another name can call the internal routes but write no audit (`service_without_audit_source` at start). |
+| `services[].client_id` | exactly `svc:<name>` | | |
+| `services[].transit_key` | exactly `ralysa-svc-<name>` | | The key the service signs its client assertion with. |
+| `services[].audit_actions` | at least one `a.b[.c[.d]]` | | Actions it may write through `POST /v1/audit/events`. Reserved namespaces are refused except `auth.token_rejected` and `secret.rotated`. |
+
+### Production guards
+
+With `env: production` an entry point refuses to start (exit 2) and names each setting, never a
+value:
+
+- **Every entry point:** `vault.auth.method: token`; `approle` without `vault.allow_approle`; a
+  `vault.addr` that isn't `https://`; `db.ssl: false`.
+- **`serve` and `bootstrap-org` also:** a `public_base_url` that isn't `https://`; an `idp.issuer`
+  other than `https://login.microsoftonline.com/<tenant_id>/v2.0`; an `idp.graph_base_url` other
+  than `https://graph.microsoft.com`; `0.0.0.0/0` or `::/0` in `trust_proxy_cidrs`;
+  `idp.require_mfa_claim: false` without `access.mfa_claim_exception_ref`.
+- **`serve` only:** OpenBao `sys/seal-status` reporting in-memory storage (a dev server), sealed,
+  or unreachable (checked with a 3 s timeout); and, in every environment, a Transit
+  `ralysa-rts-signing` key that is `exportable` or allows plaintext backup.
+
+Design §3.8 lists the OpenBao storage check for every entry point; the code runs it in `serve`
+only (implementation notes T15-2).
+
+### Environment variables
+
+| Environment variable | Read by | Effect |
+| --- | --- | --- |
+| `RALYSA_CONFIG` | every entry point | Config file path when `--config` is absent. **Production pins it** (SEC-F002-12): pass a fixed `--config` in the container command, or mount the file read-only at a path the pod spec sets. Nothing that can change at runtime may choose which file is read. |
+| `RALYSA_CFG__<PATH>` | every entry point | Overrides one config value; `__` separates segments (`RALYSA_CFG__DB__HOST=db`). Scalar values only: numbers and `true`/`false` are JSON-parsed, anything else is a string, and a JSON object, array or `null` is **refused**. Validated like the file, so it can't carry a credential. **Refused** for `env`, `vault.auth.*`, `vault.allow_approle`, `trust_proxy_cidrs`, `idp.issuer`, `idp.require_mfa_claim` and `access.mfa_claim_exception_ref`, and for any path above one of them (`RALYSA_CFG__VAULT`, `RALYSA_CFG__IDP`, `RALYSA_CFG__ACCESS`). The production guards still apply to overridable values. |
+| the one named by `vault.auth.token_env` | token auth (dev/test only) | The OpenBao token. |
+| `RALYSA_SOAK_REPORT`, `RALYSA_SOAK_DURATION_MS` | `test:soak` only | See [Scripts](#scripts). |
+
+Every entry point writes one `config_loaded` line at start with the resolved config file path and,
+in `overrides`, the names (never the values) of the `RALYSA_CFG__*` overrides it applied.
+
+## Entra ID configuration checklist
+
+What the Entra tenant needs before `serve` can sign anyone in (design §6.7; external blocker E-1
+for the test tenant). The development stack and CI use the mock IdP instead
+(`tooling/dev-stack`); the real tenant is exercised by TC-F-002-28.
+
+| Item | Setting in Entra | Feeds config |
+| --- | --- | --- |
+| **RTS app registration** (web, confidential) | Redirect URI `<public_base_url>/oauth2/idp/callback`. A client secret with a lifetime of **at most 180 days**, its expiry recorded in the [register](#runbook-rotating-the-idp-client-secret-sec-f002-10) (SEC-F002-10). Expose the scope `Ralysa.SignIn`. Manifest `requestedAccessTokenVersion: 2`. Groups claim "Groups assigned to the application" for ID and access tokens. Optional claims `email` and `ipaddr` (SEC-F002-05). | `idp.tenant_id`, `idp.issuer`, `idp.rts_client_id`, `idp.signin_scope`, `idp.client_secret_path` (the value goes to KV, never to config) |
+| **Graph application permissions** | `User.Read.All` and `GroupMember.Read.All` with **admin consent** (Q3). Where licensed: Conditional Access for workload identities or a named-location restriction on the service principal; Graph activity logs enabled (SEC-F002-10). A separate app registration for the Graph reads is recommended but not supported by the config yet (implementation notes T13-5). | `idp.graph_base_url`, `idp.graph_timeout_ms` |
+| **CLI app registration** (public client) | "Allow public client flows" on (device code). Delegated permission to the RTS app's `Ralysa.SignIn`. | `idp.allowed_public_client_ids` |
+| **Groups** | The access group and the admin group, referenced by **object id** (SEC-F002-08). | `access.access_group_id`, `access.admin_group_id` |
+| **Conditional Access** | MFA required for both apps. For the admin group: a phishing-resistant authentication strength and an authentication context (TM-49, SEC-F002-06). Device code allowed only from named locations or compliant devices, or blocked (CQ-02, SEC-F002-05). | `idp.require_mfa_claim`, `access.admin_auth_context`, `access.phishing_resistant_amr`, `access.device_code_enabled` |
+| **Test users** (test tenant) | In-group, not-in-group, disabled, deleted, admin, and an Arabic-named user in an Arabic-named group. | none (TC-F-002-28) |
+
+Microsoft references (accessed 2026-09-25, design §6.7):
+[app manifest](https://learn.microsoft.com/en-us/entra/identity-platform/reference-microsoft-graph-app-manifest),
+[optional claims](https://learn.microsoft.com/en-us/entra/identity-platform/optional-claims-reference),
+[credentials](https://learn.microsoft.com/en-us/entra/identity-platform/how-to-add-credentials),
+[Graph permissions](https://learn.microsoft.com/en-us/graph/permissions-reference),
+[device authorization grant](https://learn.microsoft.com/en-us/entra/identity-platform/v2-oauth2-device-code),
+[Conditional Access authentication flows](https://learn.microsoft.com/en-us/entra/identity/conditional-access/concept-authentication-flows).
+
+**Still to confirm against a real tenant** (TC-F-002-28, blocked on E-1):
+
+- Q4: whether `ipaddr` in a device-flow access token is the approving browser's address or the
+  polling client's. Until then a flow-A mismatch only alerts (`auth_device_ip_mismatch`).
+- Q5: whether `amr` and `acrs` are reliably present in v2 access and ID tokens. Until then
+  `idp.require_mfa_claim` stays on by default in production (the fail-safe choice): if the claims
+  turn out to be missing, every sign-in fails `mfa_claim_missing` rather than admitting users
+  without MFA evidence. The test report records this as an exception to revisit at TC-28.
+- The `amr` values Entra sends for phishing-resistant methods (`access.phishing_resistant_amr`),
+  and whether Conditional Access blocks device code in the test and pilot tenants (E-2).
+
 ## The API (`serve`, F-002-T07)
 
 - **Start-up.** The entry point:
-  - applies the production guards: the common ones, plus `https` for `public_base_url`, an issuer
-    exactly `https://login.microsoftonline.com/<tenant_id>/v2.0`, `graph_base_url`
-    `https://graph.microsoft.com`, no `0.0.0.0/0` or `::/0` in `trust_proxy_cidrs`, the MFA claim
-    required unless `access.mfa_claim_exception_ref` is set, and an OpenBao `sys/seal-status`
-    that is neither in-memory (a dev server) nor sealed;
+  - applies the production guards (common and serve-only, see
+    [Production guards](#production-guards)), including the OpenBao `sys/seal-status` check;
   - refuses a signing key that is `exportable` or allows plaintext backup;
   - creates or checks the Organization (region, residency and deployment model can't change;
     `access.device_code_enabled` is copied into its settings);
@@ -43,9 +282,9 @@ job exits non-zero, saying the migrations were applied but not recorded.
   - polls the signing key, starts the IdP client-secret watcher, replays the audit spool every
     30 s, runs the session cleanup and the client-session sweep every minute, and listens;
   - logs `service_without_audit_source` for a registered service whose name has no audit source
-    (see "Audit endpoints"): such a service can use the internal routes but write no audit.
-  - writes one `config_loaded` line with the resolved config file path and the names (never the
-    values) of `RALYSA_CFG__*` overrides. Every entry point writes this line.
+    (see "Audit endpoints"): such a service can use the internal routes but write no audit;
+  - writes the `config_loaded` line, like every entry point (see
+    [Environment variables](#environment-variables)).
 - **Routes:**
 
   | Route | What it returns |
@@ -365,8 +604,10 @@ job exits non-zero, saying the migrations were applied but not recorded.
   - cadence (≤ 120 s between checkpoints with seals between them, and no seal older than
     120 s left uncovered: `checkpoint_gap`);
   - with `--log-checkpoints`, that every logged checkpoint is still in the table unchanged.
-  - Metrics and logs go through small ports (`src/observability/`) that T07 binds to the
-    service's exporter and pino.
+- **Metrics and logs** go through small interfaces in `src/observability/`. Logs are JSON lines
+  (pino in `serve`). No metrics exporter is wired yet: the counters and gauges named in this file
+  go to a no-op sink (status.md open item, R29-n5), so alert rules key on the log lines named
+  next to them.
 
 ## Database
 
@@ -387,52 +628,6 @@ repo check enforce it (add a migration, then `pnpm migrations:lock`). Applicatio
 org data only through `withOrg()` (`src/db/kysely.ts`), which sets `app.org_id`
 transaction-locally; outside it every query on a `cp` or `audit` table fails (FORCE RLS).
 
-## Configuration
-
-A YAML file per entry point (`--config`, or `RALYSA_CONFIG`), validated by that entry point's
-strict schema in `src/config/schema.ts`. It holds identifiers and OpenBao **paths** only; a value
-that isn't a `<kv mount>/ralysa/control-plane/…` path fails validation, and so does any unknown
-key.
-
-```yaml
-env: production # dev | test | production; unset → production
-org: { id: <uuid>, name: …, residency: in_country, region: qa-doha, deployment_model: on_prem }
-vault:
-  addr: https://openbao.internal:8200
-  auth: { method: kubernetes, role: ralysa-cp-migrate } # jwt_path defaults to the SA token file
-  # auth: { method: approle, role_id: …, secret_id_path: /run/secrets/secret-id }  # needs allow_approle in production
-  # auth: { method: token, token_env: BAO_DEV_ROOT_TOKEN_ID }                        # dev/test only
-  allow_approle: false
-db: { host: …, port: 5432, database: ralysa, ssl: true }
-db_credentials: # migrate: migrator + audit_writer; migrate --audit: audit_migrator + audit_writer;
-  # sealer: audit_sealer; audit-verify: audit_reader; serve: cp_app + audit_writer + audit_reader
-  migrator: kv/ralysa/control-plane/db/migrator
-  audit_writer: kv/ralysa/control-plane/db/audit_writer
-```
-
-The **serve** config adds `public_base_url`, `listen`, `trust_proxy_cidrs`,
-`signing_key: ralysa-rts-signing`, `idp` (Entra tenant, issuer, client ids, scope,
-`client_secret_path`, `client_secret_poll_s` (default 60), `graph_base_url`,
-`require_mfa_claim`), `access` (group object ids,
-`device_code_enabled`, `loopback_ip_mismatch`, `mfa_claim_exception_ref`), `tokens` (TTLs,
-`key_poll_s`, `activation_delay_s`, `signing_key_pin_version`), `rate_limits`, `audit`
-(`spool_dir`, `spool_persistent`), `audit_hmac_path` and `services[]` (name, `svc:` client id,
-`ralysa-svc-<name>` key, allow-listed audit actions). See `src/config/schema.ts`.
-
-After parsing, cross-field checks apply to every entry point: every KV path must start with
-`vault.kv_mount`, and a service may not be allow-listed for reserved audit actions other than
-`auth.token_rejected` and `secret.rotated`.
-
-In production every entry point refuses to start with token auth, AppRole without
-`allow_approle`, a non-`https` vault address or `db.ssl: false`, plus the serve guards above.
-Dev configs: `deploy/docker/dev/control-plane.{serve,migrate,migrate-audit,sealer,audit-verify}.dev.yaml`.
-
-| Environment variable                    | Read by                    | Effect                                      |
-| --------------------------------------- | -------------------------- | ------------------------------------------- |
-| `RALYSA_CONFIG`                         | every entry point          | Config file path when `--config` is absent. The resolved path is logged at start (`config_loaded`). **Production pins it** (SEC-F002-12): pass a fixed `--config` in the container command, or mount the file read-only at a path the pod spec sets. Nothing that can change at runtime may choose which file is read. |
-| `RALYSA_CFG__<PATH>`                    | every entry point          | Overrides one config value; `__` separates segments (`RALYSA_CFG__DB__HOST=db`). Scalar values only: numbers and `true`/`false` are JSON-parsed, anything else is a string, and a JSON object, array or `null` is **refused**. Validated like the file, so it can't carry a credential. **Refused** for `env`, `vault.auth.*`, `vault.allow_approle`, `trust_proxy_cidrs`, `idp.issuer`, `idp.require_mfa_claim` and `access.mfa_claim_exception_ref`, and for any path above one of them (`RALYSA_CFG__VAULT`, `RALYSA_CFG__IDP`, `RALYSA_CFG__ACCESS`). The names of applied overrides (never the values) are logged at start as `config_overrides`. |
-| the one named by `vault.auth.token_env` | token auth (dev/test only) | The OpenBao token.                          |
-
 ## Scripts
 
 | Script                             | What it runs                                                                                                                                   |
@@ -442,8 +637,20 @@ Dev configs: `deploy/docker/dev/control-plane.{serve,migrate,migrate-audit,seale
 | `migrate`, `migrate:audit`         | The migrate entry points (pass `--config`).                                                                                                    |
 | `migrate:dev`, `migrate:audit:dev` | The same against the dev stack, loading `deploy/docker/dev/.env`.                                                                              |
 | `start`, `start:dev` | The API (`serve`); the dev variant uses `deploy/docker/dev/control-plane.serve.dev.yaml`. |
+| `start:sealer`, `start:sealer:dev` | The `sealer`; the dev variant uses `control-plane.sealer.dev.yaml`. |
+| `audit-verify`, `audit-verify:dev` | `audit-verify`; the dev variant uses `control-plane.audit-verify.dev.yaml`. |
+| `build`, `typecheck`, `lint` | `tsc` build to `dist`, type check including tests, ESLint. |
 | `check:generated` | Builds and rewrites `openapi/control-plane.v1.json`. |
 | `test:soak` | `test/soak/**/*.soak.ts` against the dev stack: the 10-minute AC-10 rotation soak (TC-F-002-16); also the `soak` workflow (`workflow_dispatch`). `RALYSA_SOAK_REPORT` names the report file (default `test-results/rotation-soak.json`); `RALYSA_SOAK_DURATION_MS` shortens a local run. |
+
+## Runbooks
+
+| Runbook | When |
+| --- | --- |
+| [Rotating the RTS signing key](#runbook-rotating-the-rts-signing-key-ac-10), including the rollback pin | Scheduled rotation; rolling back to an earlier key version |
+| [Rotating the IdP client secret](#runbook-rotating-the-idp-client-secret-sec-f002-10), with the expiry register | At least 30 days before the secret expires (≤ 180-day lifetime) |
+| [Break-glass `migrate --audit`](#runbook-break-glass-migrate---audit) | A release ships audit-set migrations |
+| [Checkpoint key custody violation](#runbook-checkpoint-key-custody-violation) | `secret.custody_violation` for `ralysa-audit-checkpoint`, or `audit-verify` refusing the key |
 
 ## Runbook: rotating the RTS signing key (AC-10)
 
@@ -558,11 +765,11 @@ value and **restart every `serve` replica** so each reads the entry afresh.
 | ------------------------------------------------------ | ---------------------------- | ------ | ------- | ----------------- | ---------- | ---------- |
 | (none yet: the E-1 test tenant is an external blocker) |                              |        |         |                   |            |            |
 
-**Also for SEC-F002-10** (design §6.7 checklist): Conditional Access for workload identities or a
-named-location restriction on the service principal where licensed, and Graph activity logs
-enabled. A separate app registration for the Graph reads (so the OIDC secret carries no directory
-permission) is recommended and not built yet: the config has one `rts_client_id` and one secret
-path (F-002 implementation notes, T13-5).
+**Also for SEC-F002-10**: the tenant-side controls on the service principal (Conditional Access
+for workload identities or a named location, Graph activity logs) are in the
+[Entra ID configuration checklist](#entra-id-configuration-checklist). A separate app registration
+for the Graph reads is not supported by the config yet (one `rts_client_id`, one secret path;
+implementation notes T13-5).
 
 ## Runbook: break-glass `migrate --audit`
 
