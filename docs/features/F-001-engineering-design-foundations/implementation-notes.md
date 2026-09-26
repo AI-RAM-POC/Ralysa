@@ -1031,6 +1031,41 @@ Policy (§2.2): the latest patch of a line GA for at least 30 days, and `minimum
 
 No dependency added by T01 to T03 runs a build script: `allowBuilds` is still `{}`, and `strictDepBuilds` would have failed the install otherwise. The only `pnpm peers check` finding is jsx-a11y's ESLint ≤ 9 peer range (covered by the spike).
 
+## T18: CODEOWNERS, frontend docs, `ci-duration`, reviewer checklist (2026-09-26)
+
+T18 is split into three PRs, so the agent-mergeable part doesn't wait for the human merges:
+
+| PR | Branch | Contents | Merge |
+|---|---|---|---|
+| #61 | `feat/F-001-codeowners-docs` | `.github/CODEOWNERS` | **Human merge required** (touches `.github/CODEOWNERS`) |
+| #62 | `feat/F-001-reviewer-checklist` | `.claude/agents/code-reviewer.md`: new-dependency review; `protected-paths-reviewed` marker | **Human merge required** (touches `.claude/**`) |
+| this PR | `feat/F-001-frontend-docs` | `docs/engineering/frontend-foundations.md`; `tooling/repo-scripts/src/ci-duration.ts` with its test; these notes and status.md | Agent merge after review (`tooling/` is a CODEOWNERS path, so the approval needs `protected-paths-reviewed`) |
+
+### What landed
+
+- **`.github/CODEOWNERS` (#61).** The 14 paths of design §6.6, in the same order, plus the four F-002 wire-contract folders from F-002 implementation-notes T01-1 (`packages/protocol/src/{common,audit,auth,control-plane}/`). Every entry names `@radduri` and `@umaadduri`. GitHub's validator (`repos/…/codeowners/errors?ref=feat/F-001-codeowners-docs`) reports no errors. Not enforced on Free (SEC-F001-04, accepted risk).
+- **`docs/engineering/frontend-foundations.md`.** Tokens (source, generator outputs, Tailwind names, contrast gate, what the lint rejects), RTL and logical CSS (class and property mapping, the ESLint and Stylelint rules, the `--ralysa-dir-sign` and `ltr:`/`rtl:` patterns, mirroring, bidi islands, typography), i18n keys (runtime, namespaces, grammar, plurals, the four steps to add a string, what fails), icons (the registry, directional flags, labels), components, dependencies (the UI set, what is banned, how to add one) and the visual and shaping snapshots with `e2e:update`. Everything was taken from the code in `packages/ui`, `apps/ui-lab`, `apps/web` and `tooling/`, and it links to the package READMEs for file-level detail.
+- **`ci-duration`** (`tooling/repo-scripts/src/ci-duration.ts`; `ralysa-repo ci-duration`, `pnpm --filter @ralysa/repo-scripts ci-duration`). It prints p50 and p95 of the wall-clock time of the last 30 completed PR runs of `ci.yml` through `gh run list`, against the §8.3 budget (p50 ≤ 10 min, p95 ≤ 15 min). It exits 0 within budget, 1 over budget and 2 on a usage or gh error. It is documented in the repo-scripts README. First real run (2026-09-26): **p50 3m 05s, p95 4m 29s**, within budget.
+- **Code-reviewer checklist (#62).** Two new review areas: *New dependencies* (the maintainer, advisories, licence, install scripts and `allowBuilds`, and version policy; a missing review is a Major finding) and *Protected paths* (match the changed files against CODEOWNERS and review each change for a loosened gate). It also sets the approval marker `code-reviewer: APPROVED head=<headRefOid>`, with ` protected-paths-reviewed` appended when a CODEOWNERS path is touched (H-2), and says to state "Human merge required" for `.claude/**`, `CLAUDE.md` and `.github/CODEOWNERS`.
+
+### Recorded decisions and deviations
+
+| # | Type | What | Why |
+|---|---|---|---|
+| T18-1 | **Founder decision (2026-09-26)** | CODEOWNERS owners are **`@radduri` and `@umaadduri` on every entry**, including the F-002 protocol folders. The header comment says the owners were confirmed by the founder on 2026-09-26. This replaces the design's placeholder (§6.6 shows `@umaadduri` alone). The paths are exactly §6.6. | The founder confirmed the owners, which T18 needed before merge. Both logins exist (`gh api users/<login>`) and both are repo admins. Design §6.6's code block still shows the placeholder; the next design revision should copy the file. |
+| T18-2 | Scope | The proposed `/packages/protocol/src/agent/` entry (F-003 owner, F-002 T01-1) is not added. | The folder doesn't exist yet. F-003 adds it with its owner. |
+| T18-3 | Implementation choice (standing authorization, recorded by Claude) | `ci-duration` counts only runs whose conclusion is `success` or `failure`, and fetches up to 200 completed runs so that 30 remain after the filter. | The PR concurrency group (`cancel-in-progress` on pull_request) cancels superseded pushes. Those partial runs would pull the percentiles down and hide a slow pipeline. A failed run still ran its jobs, so it counts. |
+| T18-4 | Implementation choice (standing authorization, recorded by Claude) | Wall clock = `updatedAt − startedAt` from `gh run list`. Percentiles are nearest-rank, so each is the duration of a real run. | These are the fields `gh run list --json` offers. For a re-run, `startedAt` is the latest attempt, which measures the attempt that produced the result. Nearest-rank needs no interpolation and gives a clear meaning for 30 samples (p95 is the 29th fastest). |
+| T18-5 | Implementation choice (standing authorization, recorded by Claude) | `ci-duration` exits 1 over budget, and is not part of `repo-check`. | A scheduled workflow can fail on a breach with no parsing. It needs the network and a GitHub login, which `repo-check` must never need. |
+| T18-6 | Implementation choice (standing authorization, recorded by Claude) | The script entry is in `@ralysa/repo-scripts` (`ci-duration`), not the root `package.json`. | The root `package.json` is a CODEOWNERS path; a root alias adds nothing over `pnpm --filter @ralysa/repo-scripts ci-duration`. |
+| T18-7 | Scope | T18 is split into three PRs: #61 (CODEOWNERS) and #62 (reviewer checklist) are human merges, and the docs and script PR is agent-mergeable. | As the coordinator instructed, so the docs don't wait on the human merges. The implementation notes and status are in the agent-mergeable PR only, which avoids merge conflicts between the three. |
+| T18-8 | Not done (out of the given scope) | The release-manager checklist item from design "Accepted risks" (at every `/release`, check the accepted-risk list and stop and ask if a customer-operated artefact would ship while any entry is open). | The task scope named the code-reviewer items only. It is another human-merge edit, to `.claude/agents/release-manager.md`, and is listed under follow-ups. |
+
+### Tests added (T18)
+
+- `tooling/repo-scripts/test/ci-duration.test.ts` (16 tests, no network, gh never started). It uses a synthetic `gh run list` fixture (`test/fixtures/ci-duration-runs.json`: 30 counted runs of 20 s × k in shuffled order, one a failure; 3 cancelled runs in between; 2 older 60-minute runs outside the window), which gives p50 5m 00s and p95 9m 40s. Also: nearest-rank edge cases (even count, single value, empty list, bad p), `--limit`, over-budget detection on p95 alone and on p50, exactly-on-budget, fewer runs than the limit, a run that ends before it starts, zod rejection of malformed gh output, flag validation (no free text reaches gh's argv), the exact gh argv, and exit codes through a fake gh.
+- T18's acceptance criteria: "`ci-duration` prints p50 and p95 for the last 30 PR runs" is covered by the tests above and the real run. "CODEOWNERS paths match §6.6" was checked against the design and by GitHub's validator (#61). "The docs cover tokens, RTL, i18n keys, icons, dependencies and snapshots" is met by the sections of `frontend-foundations.md`.
+
 ## Left incomplete / follow-ups
 
 - **TC-F-001-02 in CI.** It needs a throw-away PR; see above. Run it on the first PR from this branch.
@@ -1049,3 +1084,8 @@ No dependency added by T01 to T03 runs a build script: `allowBuilds` is still `{
   - Space on a checkbox and Select typeahead are left to the keyboard walker (T11-4); the components view nests landmarks (T10-5, T12-8).
   - TC-F-001-15/16 (per-engine shaping snapshots, browser matrix) use the 20 samples and their `data-sample-id` hooks (T14).
   - `lucide-react`: move to a newer minor once one is 30 days old (T09-1).
+- **T18 follow-ups:**
+  - Human merges of #61 (CODEOWNERS) and #62 (code-reviewer checklist).
+  - The release-manager checklist item for the accepted-risk list (T18-8), a human-merge edit to `.claude/agents/release-manager.md`.
+  - Copy the final CODEOWNERS (both owners) into design §6.6 at the next design revision (T18-1).
+  - Optionally, a scheduled workflow that runs `ci-duration` weekly (design §8.3). It needs `actions: read` only.
