@@ -7,6 +7,7 @@ import { type ServiceRejections, createServiceRejections } from '../audit/servic
 import type { AuditWriter } from '../audit/writer.js';
 import type { ServeConfig } from '../config/schema.js';
 import type { Database } from '../db/types.js';
+import type { IdpClientSecret } from '../secrets/runtime.js';
 import { type Logger, silentLogger } from '../observability/logger.js';
 import { type Metrics, noopMetrics } from '../observability/metrics.js';
 import { type ClientRegistry, createClientRegistry } from './clients.js';
@@ -46,8 +47,13 @@ export interface RtsServices {
   auditReader?: Kysely<Database>;
   /** auth.token_rejected reports from services, aggregated per service (serve flushes it). */
   serviceRejections?: ServiceRejections;
-  /** KV: the audit HMAC key (and, through the Graph directory, the IdP client secret). */
+  /** KV: the audit HMAC key (and, without `idpClientSecret`, the IdP client secret). */
   secrets?: SecretStore;
+  /**
+   * The IdP client-secret watcher (src/secrets/runtime.ts). serve shares one between the Graph
+   * directory and the OIDC client; without it the OIDC client reads `secrets` on demand.
+   */
+  idpClientSecret?: IdpClientSecret;
   /** The pinned IdP's discovery document and keys (default: fetched from `idp.issuer`). */
   idpMetadata?: IdpMetadataSource;
   /** Client-reported sign-in failures, aggregated (serve flushes it on a timer). */
@@ -137,7 +143,12 @@ export function assembleRtsDeps(
       }),
     oidc:
       services.oidc ??
-      createOidcClient({ config, secrets: services.secrets ?? createInMemorySecretStore() }),
+      createOidcClient({
+        config,
+        ...(services.idpClientSecret === undefined
+          ? { secrets: services.secrets ?? createInMemorySecretStore() }
+          : { clientSecret: services.idpClientSecret }),
+      }),
     metrics: services.metrics ?? noopMetrics,
     logger,
   };

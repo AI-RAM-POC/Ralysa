@@ -40,8 +40,8 @@ job exits non-zero, saying the migrations were applied but not recorded.
     idp_device`) with `auth.session.revoked cause=device_code_disabled` and logs
     `device_code_disabled` with the count. This runs on every start, so a switch turned off while
     the service was down takes effect too (SEC-F002-32, D-30);
-  - polls the signing key, replays the audit spool every 30 s, runs the session cleanup and the
-    client-session sweep every minute, and listens;
+  - polls the signing key, starts the IdP client-secret watcher, replays the audit spool every
+    30 s, runs the session cleanup and the client-session sweep every minute, and listens;
   - logs `service_without_audit_source` for a registered service whose name has no audit source
     (see "Audit endpoints"): such a service can use the internal routes but write no audit.
   - writes one `config_loaded` line with the resolved config file path and the names (never the
@@ -182,7 +182,7 @@ job exits non-zero, saying the migrations were applied but not recorded.
     deleted user (denied, and a known user is disabled and revoked). Every call is bounded by
     `idp.graph_timeout_ms` (≤ 3 s). After 5 consecutive failures the circuit opens for 30 s.
     Graph is called with an app-only token from the tenant's token endpoint, using the client
-    secret at `idp.client_secret_path` (re-read once on `invalid_client`). Group display names
+    secret from the secret watcher (see the IdP client-secret runbook). Group display names
     are read for display only (2 s, 20 per sign-in, refreshed daily).
   - **Roles** (`identity-mapping.ts`): `user` for the access group; `platform_admin` for the
     admin group only on a strong sign-in (flow B, `acrs` with `access.admin_auth_context`, or
@@ -221,7 +221,8 @@ job exits non-zero, saying the migrations were applied but not recorded.
     PKCE (scope `openid profile email`).
   - `/oauth2/idp/callback` consumes the request with one `DELETE … RETURNING` and requires the
     cookie (else `auth.sign_in failure browser_binding_failed` and a plain-text 400: this browser
-    didn't start the flow). It redeems the IdP code with the client secret from KV (openid-client
+    didn't start the flow). It redeems the IdP code with the client secret from the secret
+    watcher (openid-client
     checks state, nonce, PKCE and the ID token), applies the pinned ID-token rules, MFA
     evidence, Graph and the access decision, and creates a **pending** session and a 60-second
     `rly_ac_` code bound to the client, the exact redirect URI, the CLI's PKCE challenge and the
@@ -250,7 +251,10 @@ job exits non-zero, saying the migrations were applied but not recorded.
   or an unregistered service is 403 (recorded as `auth.token_rejected wrong_token_use`).
   - 1–100 events and 256 KB per body; each event must pass the envelope schema, I-JSON `details`
     and the `failure`-on-`auth.*`-only rule (else 422), and a user `actor.user_id` must exist in
-    the org (422).
+    the org (422). Every `event_id` must be a lower-case **version 7** UUID, here and on the client
+    path (else 422): the server derives version 8 ids for its own idempotent events
+    (`secret.rotated observed`, sign-in failure reports, client-session events), and no external
+    writer may claim one first (R35-1).
   - **Allow-list** (SEC-F002-03): every action must be in the service's `services[].audit_actions`
     and outside the reserved namespaces (`auth.`, `audit.`, `secret.`, `directory.`, `db.`,
     `policy.`, `kill_switch.`; only `auth.token_rejected` and `secret.rotated` may be listed).
@@ -311,7 +315,10 @@ job exits non-zero, saying the migrations were applied but not recorded.
   result is read; if it can't be, the answer is 503. A non-admin gets 403 after
   `audit.query denied not_platform_admin`. Reads use `ralysa_audit_reader` in a read-only
   transaction; each event carries its seal (`shard`, `seq`) once sealed. `Cache-Control:
-  no-store`.
+  no-store`. Paging is not a snapshot: `ts` is set at insert and a row becomes visible at commit,
+  so an event whose write commits late with a `ts` before the last key of a page already read is
+  not on the next page; re-running the query over the same range returns every committed event
+  (R33-9; exports page on `ingest_seq` in F-011).
 - No `PUT`, `PATCH` or `DELETE` exists under `/v1/audit`. The per-instance limits (the client
   rate limit, the rejection caps, the report de-duplication) multiply with replicas; a shared
   limiter needs Redis (F-012). No new configuration or environment variables.
@@ -405,7 +412,8 @@ db_credentials: # migrate: migrator + audit_writer; migrate --audit: audit_migra
 
 The **serve** config adds `public_base_url`, `listen`, `trust_proxy_cidrs`,
 `signing_key: ralysa-rts-signing`, `idp` (Entra tenant, issuer, client ids, scope,
-`client_secret_path`, `graph_base_url`, `require_mfa_claim`), `access` (group object ids,
+`client_secret_path`, `client_secret_poll_s` (default 60), `graph_base_url`,
+`require_mfa_claim`), `access` (group object ids,
 `device_code_enabled`, `loopback_ip_mismatch`, `mfa_claim_exception_ref`), `tokens` (TTLs,
 `key_poll_s`, `activation_delay_s`, `signing_key_pin_version`), `rate_limits`, `audit`
 (`spool_dir`, `spool_persistent`), `audit_hmac_path` and `services[]` (name, `svc:` client id,
@@ -435,6 +443,142 @@ Dev configs: `deploy/docker/dev/control-plane.{serve,migrate,migrate-audit,seale
 | `migrate:dev`, `migrate:audit:dev` | The same against the dev stack, loading `deploy/docker/dev/.env`.                                                                              |
 | `start`, `start:dev` | The API (`serve`); the dev variant uses `deploy/docker/dev/control-plane.serve.dev.yaml`. |
 | `check:generated` | Builds and rewrites `openapi/control-plane.v1.json`. |
+| `test:soak` | `test/soak/**/*.soak.ts` against the dev stack: the 10-minute AC-10 rotation soak (TC-F-002-16); also the `soak` workflow (`workflow_dispatch`). `RALYSA_SOAK_REPORT` names the report file (default `test-results/rotation-soak.json`); `RALYSA_SOAK_DURATION_MS` shortens a local run. |
+
+## Runbook: rotating the RTS signing key (AC-10)
+
+**Who.** An operator identity with the `ralysa-operator` OpenBao policy. It is the only policy that
+may call `transit/keys/+/rotate`; every service and entry-point policy denies it (SEC-F002-11). The
+operator can't export, back up or reconfigure the key.
+
+**Steps.**
+
+1. Rotate: `bao write -f transit/keys/ralysa-rts-signing/rotate`. Nothing else changes: no config,
+   no restart.
+2. Within `tokens.key_poll_s` (30 s) the first replica to poll stores the new version with its
+   public key: `secret.rotated kind=signing_key phase=published version=<n>` (once, whichever
+   replica wins). JWKS lists it at once, next to the key in use.
+3. RTS keeps signing with the previous version until `published_at + tokens.activation_delay_s`
+   (120 s) on the database clock. Verifiers refresh JWKS every 60 s or on an unknown `kid` (at most
+   every 5 s), so each holds the new key before the first token signed with it exists. Then
+   `phase=activated` is recorded once, and each replica logs `signing_key_active version=<n>` at
+   its next poll. New tokens carry `kid ralysa-rts-signing.v<n>` within 2 × `key_poll_s` +
+   `activation_delay_s` (≤ 180 s at the defaults; AC-10 allows 5 minutes).
+4. The previous version stays in JWKS until its last token has expired (superseded +
+   `access_ttl_s` + 5 min), then `phase=retired` is recorded and it leaves JWKS.
+5. Check: `GET /v1/audit/events?action=secret.rotated&from=…&to=…` shows `published`, `activated`
+   and, later, `retired` once each; `GET /.well-known/jwks.json` lists both kids during the overlap.
+
+**Don't.** Don't raise `min_decryption_version` or `min_available_version` before the previous
+version is retired: verifiers treat those versions as gone and in-flight tokens fail. Don't delete
+and recreate the key: RTS detects the changed public key (`key_replaced`), stops signing and makes
+`/readyz` unready. To go back to a version (a rollback, design §9) set
+`tokens.signing_key_pin_version` and restart. Rotation is not revocation: tokens signed with the old
+version stay valid until they expire, so a suspected key compromise is an incident, not a rotation.
+
+Evidence: TC-F-002-15 (CI, compressed timings under load) and TC-F-002-16 (the 10-minute soak at
+these timings, `test:soak`).
+
+## Runbook: rotating the IdP client secret (SEC-F002-10)
+
+RTS authenticates to Entra with the client secret of its app registration, kept in OpenBao KV v2 at
+`idp.client_secret_path`. Graph (app-only token) and flow B (code redemption) use it. Each `serve`
+process holds it in the secret watcher (`src/secrets/runtime.ts`):
+
+- it re-reads the KV entry every `idp.client_secret_poll_s` (60 s) and adopts a newer version only;
+  an OpenBao outage keeps the value in hand (`idp_client_secret_read_failed` once per failure
+  streak);
+- each replica logs `idp_client_secret_observed version=<n>` when it adopts a version (the gauge
+  `idp_client_secret_version` is emitted too, but `serve` has no metrics exporter yet, R29-n5, so
+  the log line is what to watch); `secret.rotated kind=idp_client_secret phase=observed` is
+  recorded **once per version** across replicas (the event id is derived from the org, the path and
+  the version);
+- when Entra answers `invalid_client`, the replica re-reads KV at once and retries the request
+  once, only with a newer version (`idp_invalid_client retry=true`). `retry=false` means KV holds
+  no newer value: the stored secret is wrong or expired, and sign-in (flow B) and Graph (every
+  sign-in and refresh) fail closed until it is fixed;
+- if KV answers an **older** version than the one a replica holds (the entry's metadata was
+  deleted and the path rewritten, so versions restarted at 1, or a store was restored), the
+  replica keeps its value and logs `idp_client_secret_version_regressed` with `held_version` and
+  `store_version` once per streak. It adopts nothing until the store passes the held version.
+
+**Lifetime.** Every client secret is created with an expiry of **at most 180 days**, and its expiry
+is recorded in the register below. Rotate at least 30 days before it expires. The preferred end
+state is a certificate credential signed through Transit, which removes the static secret
+(SEC-F002-10; not built in Phase 0).
+
+**Steps** (the operator identity: KV create/update only, it can't read a value back).
+
+1. In Entra, add a **second** client secret to the RTS app registration with an end date at most
+   180 days out, keeping the current one. Capture the password into a shell variable so it is
+   never printed:
+   `NEW_SECRET=$(az ad app credential reset --id <rts_client_id> --append --display-name rts-<yyyymmdd> --end-date <yyyy-mm-dd> --query password -o tsv)`.
+   Read its key id for the register (never the value):
+   `az ad app credential list --id <rts_client_id> --query "[?displayName=='rts-<yyyymmdd>'].{keyId:keyId, end:endDateTime}" -o table`.
+   Allow a few minutes for Entra to propagate the new credential before step 2 (a replica that
+   adopts it too early gets `invalid_client` with no newer version to retry).
+2. Write it to KV from stdin, never as a command-line argument, then drop the variable:
+   `printf '%s' "$NEW_SECRET" | bao kv put kv/ralysa/control-plane/idp-client-secret value=- && unset NEW_SECRET`.
+   `bao kv metadata get …` shows the new version number.
+3. Wait until every replica reports it: `idp_client_secret_observed version=<n>` from each `serve`
+   instance (at most one poll, 60 s), and the one `secret.rotated … phase=observed version=<n>`
+   in `GET /v1/audit/events?action=secret.rotated`.
+4. Remove the **old** secret in Entra:
+   `az ad app credential delete --id <rts_client_id> --key-id <old key id>`. A replica that hadn't
+   polled yet recovers on its next `invalid_client` without failing the request.
+5. Update the register: the old key id removed, the new one in use.
+
+**Don't** delete the KV entry's metadata (`bao kv metadata delete`) or recreate the path: KV
+versions restart at 1, and every running replica ignores the "older" versions and keeps the old
+secret (`idp_client_secret_version_regressed`). If a version ever goes backwards, write the correct
+value and **restart every `serve` replica** so each reads the entry afresh.
+
+**Register** (one per environment, kept with the deployment's operations records):
+
+| Environment                                            | App registration (client id) | Key id | Created | Expires (≤ 180 d) | KV version | Rotated by |
+| ------------------------------------------------------ | ---------------------------- | ------ | ------- | ----------------- | ---------- | ---------- |
+| (none yet: the E-1 test tenant is an external blocker) |                              |        |         |                   |            |            |
+
+**Also for SEC-F002-10** (design §6.7 checklist): Conditional Access for workload identities or a
+named-location restriction on the service principal where licensed, and Graph activity logs
+enabled. A separate app registration for the Graph reads (so the OIDC secret carries no directory
+permission) is recommended and not built yet: the config has one `rts_client_id` and one secret
+path (F-002 implementation notes, T13-5).
+
+## Runbook: break-glass `migrate --audit`
+
+The audit schema (`audit`, `ralysa_meta_audit`) is owned by the NOLOGIN role `ralysa_audit_owner`.
+Only the `migrate --audit` job reaches it: it logs in as `ralysa_audit_migrator` and runs
+`SET ROLE ralysa_audit_owner` on its one connection. The credential is readable only by the
+`ralysa-cp-migrate-audit` OpenBao role (bound to that job's ServiceAccount). The owner could
+disable the audit triggers, so this is a break-glass path (SEC-F002-01, D-37).
+
+**When.** Only to apply audit-set migrations shipped in a release (they are listed in
+`migrations.lock.json` under `audit/…` and in the release notes), before `migrate` (design §9).
+Never for an ad hoc change.
+
+**Steps.**
+
+1. Open a change record naming the operator, the release and the audit migrations it adds.
+2. Run the job once with its own config and role:
+   `control-plane migrate --audit --config <migrate-audit config>`. It reads only
+   `db/audit_migrator` and `db/audit_writer`. Running it again is a no-op.
+3. Check the evidence in the audit store (`GET /v1/audit/events`, as a platform admin):
+   - one `db.migration.applied` per applied migration with `set: audit` and the lock-file
+     checksum;
+   - `audit.schema_changed` per changed object from the DDL event trigger
+     (`actor.service = dba-event-trigger`, `session_user = ralysa_audit_migrator`,
+     `current_user = ralysa_audit_owner`).
+
+   If the job reports "applied but not recorded", the migrations are in: record the gap in the
+   change record and check that `audit.schema_changed` covers the DDL.
+
+4. Run `audit-verify --config <audit-verify config> --log-checkpoints <shipped checkpoint log>`
+   afterwards; it must pass.
+5. Remove the job. Rotating the `db/audit_migrator` password afterwards is recommended.
+
+Any `audit.schema_changed` outside such a window, or by another `session_user`, is a security
+incident.
 
 ## Runbook: checkpoint key custody violation
 
@@ -452,7 +596,7 @@ have been exported.
 **Recovery (manual until SEC-F002-35 b–d land).**
 1. Treat it as a security incident. Find who flipped the flag in the OpenBao audit device log
    (SEC-F002-11), and preserve the sealer's `audit_checkpoint` log lines (the off-host copy).
-2. Run `audit-verify --log-checkpoints <shipped log>` against a restored copy of the key's
+2. Run `audit-verify --config <audit-verify config> --log-checkpoints <shipped log>` against a restored copy of the key's
    public versions, taken from the log or an earlier `describe`, so history up to the flip can
    still be checked against the logged checkpoints.
 3. Recovery by key epoch (a new key name, pinned thumbprints, a checkpoint payload that names

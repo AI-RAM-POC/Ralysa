@@ -9,6 +9,7 @@ import {
   CIRCUIT_OPEN_MS,
   createGraphDirectory,
 } from '../src/auth/idp/graph-directory.js';
+import { createIdpClientSecret } from '../src/secrets/runtime.js';
 import { serveConfig } from './fixtures/serve-config.js';
 
 const config = serveConfig({ env: 'test', idp: { ...serveConfig().idp, graph_timeout_ms: 200 } });
@@ -141,6 +142,35 @@ describe('Graph directory', () => {
     });
     expect((await dir.check(user)).kind).toBe('ok');
     expect(calls.filter((c) => c.url === TOKEN_URL)).toHaveLength(2);
+  });
+
+  it('does not retry invalid_client when the store has no newer secret (F-002-T13)', async () => {
+    const { dir, calls } = directory((url, init) =>
+      url === TOKEN_URL
+        ? json(401, { error: 'invalid_client' })
+        : graphHandler({ groups: [ACCESS] })(url, init),
+    );
+    expect(await dir.check(user)).toEqual({ kind: 'unavailable', reason: 'token invalid_client' });
+    // One token request: a retry with the same secret would fail the same way.
+    expect(calls.filter((c) => c.url === TOKEN_URL)).toHaveLength(1);
+  });
+
+  it('uses the shared secret watcher when one is given (F-002-T13)', async () => {
+    const secrets = createInMemorySecretStore({ [config.idp.client_secret_path]: 'secret-v1' });
+    const clientSecret = createIdpClientSecret({ secrets, path: config.idp.client_secret_path });
+    await clientSecret.current();
+    secrets.put(config.idp.client_secret_path, 'secret-v2');
+    const fake = fakeGraph(graphHandler({ groups: [ACCESS] }));
+    const dir = createGraphDirectory({
+      config,
+      clientSecret,
+      tokenEndpoint: () => Promise.resolve(TOKEN_URL),
+      fetch: fake.doFetch,
+    });
+    await dir.check(user);
+    // The watcher still holds v1 (no poll yet), and the directory reads nothing itself.
+    const tokenCall = fake.calls.find((c) => c.url === TOKEN_URL);
+    expect(new URLSearchParams(bodyOf(tokenCall?.init)).get('client_secret')).toBe('secret-v1');
   });
 
   it('maps accountEnabled=false to disabled and 404 to deleted (SEC-F002-09)', async () => {

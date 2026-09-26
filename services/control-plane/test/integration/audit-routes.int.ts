@@ -31,6 +31,7 @@ import { createRateLimiter } from '../../src/http/rate-limits.js';
 import { ensureOrganization } from '../../src/org/bootstrap.js';
 import { fakeKeys } from '../fixtures/fake-keys.js';
 import { TENANT, serveConfig } from '../fixtures/serve-config.js';
+import { idpSecretObservedEvent } from '../../src/secrets/runtime.js';
 import { type TestDatabase, createTestDatabase } from './support/db.js';
 
 const stack = await devStackOrSkip();
@@ -244,15 +245,25 @@ describe.skipIf(stack === undefined)('audit endpoints (F-002-T12)', () => {
       return await fn();
     } finally {
       await settled();
-      const waiting = async () =>
+      // Before the lock is released, every refused insert must have ended: a writer transaction
+      // still between statements (not yet queued on the lock) would otherwise commit after the
+      // ROLLBACK. So wait until no writer backend in this database is running or inside a
+      // transaction, and no insert waits on the table (R33 nit 1). The writer's statement_timeout
+      // ends each lock wait within 250 ms.
+      const busy = async () =>
         (
-          await t().superuser.query<{ n: number }>(
-            `select count(*)::int as n from pg_locks
-              where relation = 'audit.audit_event'::regclass and not granted`,
+          await t().superuser.query<{ writers: number; waiters: number }>(
+            `select
+               (select count(*)::int from pg_stat_activity
+                 where datname = current_database() and usename = 'ralysa_audit_writer'
+                   and state <> 'idle') as writers,
+               (select count(*)::int from pg_locks
+                 where relation = 'audit.audit_event'::regclass and not granted) as waiters`,
           )
-        ).rows[0]?.n ?? 0;
-      for (let i = 0; i < 10_000 && (await waiting()) > 0; i++) {
-        // Polls the lock table; the writer's statement_timeout ends each wait within 250 ms.
+        ).rows[0] ?? { writers: 0, waiters: 0 };
+      for (let i = 0; i < 10_000; i++) {
+        const { writers, waiters } = await busy();
+        if (writers === 0 && waiters === 0) break;
       }
       await su.query('ROLLBACK');
     }
@@ -485,6 +496,17 @@ describe.skipIf(stack === undefined)('audit endpoints (F-002-T12)', () => {
           .statusCode,
       ).toBe(422);
       expect(await rows('event_id = $2', [event.event_id])).toEqual([]);
+    });
+
+    it('R35-1: a server-derived (v8) event_id is 422 and never stored, so secret.rotated cannot be pre-empted', async () => {
+      const token = await serviceToken('model-gateway');
+      // The id the control plane will derive for `secret.rotated observed` of the next version.
+      const preempt = idpSecretObservedEvent(ORG, config.idp.client_secret_path, 2).event_id;
+      const reply = await inject('POST', '/v1/audit/events', token, {
+        events: [{ ...svcEvent(null), event_id: preempt }],
+      });
+      expect(reply.statusCode).toBe(422);
+      expect(await rows('event_id = $2', [preempt])).toEqual([]);
     });
 
     it('413 over 256 KB', async () => {
@@ -797,6 +819,16 @@ describe.skipIf(stack === undefined)('audit endpoints (F-002-T12)', () => {
         client_seq: '2',
         details: { client: { user_id: mallory, attestation: 'server', note: 'ab' } },
       });
+    });
+
+    it('R35-1: a client event with a server-derived (v8) event_id is 422 and never stored', async () => {
+      const alice = await seedUser();
+      const token = await userToken(alice);
+      const sessionId = await open(token);
+      const preempt = idpSecretObservedEvent(ORG, config.idp.client_secret_path, 3).event_id;
+      const reply = await send(token, sessionId, [{ ...cev(2), event_id: preempt }]);
+      expect(reply.statusCode).toBe(422);
+      expect(await rows('event_id = $2', [preempt])).toEqual([]);
     });
 
     it('422 for a non-allow-listed action or a reserved details key; 413 for an event over 4 KB', async () => {

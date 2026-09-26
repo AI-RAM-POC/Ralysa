@@ -29,6 +29,7 @@ import type { Database } from './db/types.js';
 import type { Logger } from './observability/logger.js';
 import { createPinoLogger, loggerFromPino } from './observability/pino.js';
 import { ensureOrganization } from './org/bootstrap.js';
+import { createIdpClientSecret } from './secrets/runtime.js';
 import { openVault } from './secrets/vault.js';
 
 export const SPOOL_REPLAY_MS = 30_000;
@@ -144,11 +145,22 @@ export async function serveCommand(args: string[]): Promise<number> {
       logger.warn('service_without_audit_source', { service: service.name });
     }
   }
+  // The IdP client secret: one watcher per process, shared by Graph and the flow-B relying party.
+  // It polls KV every client_secret_poll_s, re-reads at once on invalid_client, and records
+  // secret.rotated phase=observed once per version (F-002-T13, §5.7).
+  const idpClientSecret = createIdpClientSecret({
+    secrets,
+    path: config.idp.client_secret_path,
+    audit: { writer, orgId: config.org.id },
+    pollMs: config.idp.client_secret_poll_s * 1000,
+    logger,
+  });
+  const stopSecretWatch = idpClientSecret.start();
   // The pinned tenant (discovery, keys) and Microsoft Graph for sign-in and every refresh (§6.3).
   const idpMetadata = createIdpMetadataSource({ issuer: config.idp.issuer });
   const directory = createGraphDirectory({
     config,
-    secrets,
+    clientSecret: idpClientSecret,
     tokenEndpoint: async () => (await idpMetadata.get()).tokenEndpoint,
   });
   const signInFailures = createSignInFailureAggregator({
@@ -173,6 +185,7 @@ export async function serveCommand(args: string[]): Promise<number> {
       auditReader: createDb<Database>(readerPool),
       serviceRejections,
       secrets,
+      idpClientSecret,
       idpMetadata,
       signInFailures,
       logger,
@@ -229,6 +242,7 @@ export async function serveCommand(args: string[]): Promise<number> {
     }
   });
   for (const timer of timers) clearInterval(timer);
+  stopSecretWatch();
   rejections.flush(true);
   serviceRejections.flush(true);
   signInFailures.flush(true);

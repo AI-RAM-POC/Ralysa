@@ -411,7 +411,7 @@ export const ROUTES = {
     method: 'GET',
     url: '/v1/audit/events',
     summary:
-      'Audit query (AC-12): session role platform_admin and a current admin-group membership; audit.query is committed before any result is read; keyset paging on (ts, event_id)',
+      'Audit query (AC-12): session role platform_admin and a current admin-group membership; audit.query is committed before any result is read; keyset paging on (ts, event_id), not a snapshot: an event committed late with a ts before the last key already read is not on the next page, and re-running the query over the same range returns it',
     tags: ['audit'],
     auth: 'user',
     parameters: [

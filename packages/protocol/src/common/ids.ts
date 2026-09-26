@@ -10,11 +10,20 @@ export const SpanId = z.string().regex(/^[0-9a-f]{16}$/);
 export const Sha256Hex = z.string().regex(/^[0-9a-f]{64}$/);
 /** Deployment or processing region, for example `qa-doha-1` (data residency, SR-04). */
 export const Region = z.string().regex(/^[a-z0-9-]{2,40}$/);
+/**
+ * A version 7 UUID, lower case. Every `event_id` a client or a service submits must be one: the
+ * server derives version 8 ids for its own idempotent events (the org, a path, a version…), and
+ * an external writer that could submit a v8 id could pre-empt one of them (review of #35, R35-1).
+ */
+export const UuidV7 = z
+  .string()
+  .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 
 export type TraceId = z.infer<typeof TraceId>;
 export type SpanId = z.infer<typeof SpanId>;
 export type Sha256Hex = z.infer<typeof Sha256Hex>;
 export type Region = z.infer<typeof Region>;
+export type UuidV7 = z.infer<typeof UuidV7>;
 
 /**
  * A UUIDv7 (RFC 9562 §5.7): 48-bit Unix milliseconds, version 7, 74 random bits, variant 10.
