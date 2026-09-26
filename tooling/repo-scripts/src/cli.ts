@@ -23,8 +23,11 @@
 //   ralysa-repo placeholder-guard        run inside a placeholder package (its four scripts)
 //   ralysa-repo scaffold <path> --kind <kind>
 //   ralysa-repo summary [--file <run.json>] [--out <file>]
+//   ralysa-repo ci-duration [--limit <n>] [--workflow <file.yml>] [--repo <owner/name>]
+//                                        p50/p95 of the last 30 PR CI runs, through gh (T18)
 import { appendFileSync } from 'node:fs';
 import { checkBannedDeps } from './check-banned-deps.ts';
+import { ciDuration } from './ci-duration.ts';
 import { checkCiInvariantsFiles } from './check-ci-invariants.ts';
 import { checkGitleaksConfigFiles } from './check-gitleaks-config.ts';
 import { checkI18n } from './check-i18n.ts';
@@ -156,6 +159,15 @@ async function main(argv: string[]): Promise<number> {
     }
   }
 
+  if (command === 'ci-duration') {
+    try {
+      return ciDuration(args);
+    } catch (error) {
+      console.error(`ci-duration: ${error instanceof Error ? error.message : String(error)}`);
+      return 2;
+    }
+  }
+
   if (command === 'summary') {
     const file = flag(args, '--file') ?? latestSummaryFile(root);
     const { markdown, findings } = summaryFromFile(file, REQUIRED_SCRIPTS);
@@ -166,7 +178,7 @@ async function main(argv: string[]): Promise<number> {
   }
 
   console.error(
-    `usage: ralysa-repo <${['repo-check', ...Object.keys(REPO_CHECKS), 'check-no-demo', 'placeholder-guard', 'scaffold', 'summary'].join('|')}>`,
+    `usage: ralysa-repo <${['repo-check', ...Object.keys(REPO_CHECKS), 'check-no-demo', 'placeholder-guard', 'scaffold', 'summary', 'ci-duration'].join('|')}>`,
   );
   return command === 'help' ? 0 : 2;
 }
