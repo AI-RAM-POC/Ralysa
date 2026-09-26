@@ -5,6 +5,7 @@ import {
   type KeyRow,
   jwksRows,
   selectActiveVersion,
+  versionsToRetire,
   versionsToSupersede,
 } from '../src/auth/tokens/signing-keys.js';
 
@@ -101,5 +102,29 @@ describe('versionsToSupersede (T07 follow-up, review of #35)', () => {
       row(5),
     ];
     expect(versionsToSupersede(rows, 4)).toEqual([3]);
+  });
+});
+
+describe('versionsToRetire (#36)', () => {
+  const superseded = [
+    row(1, { activated_at: at(-3000), superseded_at: at(-1300) }),
+    row(2, { activated_at: at(-1300), superseded_at: at(-100) }),
+    row(3, { activated_at: at(-100) }),
+  ];
+
+  it('retires a version superseded for longer than the retention, and only that one', () => {
+    expect(versionsToRetire(superseded, at(0), timing)).toEqual([1]);
+    expect(versionsToRetire(superseded, at(1100), timing)).toEqual([1, 2]);
+  });
+
+  it('never retires the pinned version (a rollback keeps signing)', () => {
+    const pinned = { ...timing, pinVersion: 1 };
+    expect(versionsToRetire(superseded, at(1_000_000), pinned)).toEqual([2]);
+    expect(selectActiveVersion(superseded, at(1_000_000), pinned)).toBe(1);
+  });
+
+  it('skips retired and never-superseded rows', () => {
+    const rows = [row(1, { superseded_at: at(-5000), retired_at: at(-100) }), row(2)];
+    expect(versionsToRetire(rows, at(1_000_000), timing)).toEqual([]);
   });
 });

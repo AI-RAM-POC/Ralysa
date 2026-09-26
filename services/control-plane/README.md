@@ -473,7 +473,10 @@ operator can't export, back up or reconfigure the key.
 version is retired: verifiers treat those versions as gone and in-flight tokens fail. Don't delete
 and recreate the key: RTS detects the changed public key (`key_replaced`), stops signing and makes
 `/readyz` unready. To go back to a version (a rollback, design §9) set
-`tokens.signing_key_pin_version` and restart. Rotation is not revocation: tokens signed with the old
+`tokens.signing_key_pin_version` and restart: the pinned version is never retired while pinned
+(it stays in JWKS and keeps signing; #36), and the newer version stays in JWKS too. Removing the pin
+(and restarting) makes the newest active version sign again and supersedes the former pin, which
+then retires after the retention. A version already retired can't be pinned. Rotation is not revocation: tokens signed with the old
 version stay valid until they expire, so a suspected key compromise is an incident, not a rotation.
 
 Evidence: TC-F-002-15 (CI, compressed timings under load) and TC-F-002-16 (the 10-minute soak at
@@ -518,7 +521,8 @@ state is a certificate credential signed through Transit, which removes the stat
    Allow a few minutes for Entra to propagate the new credential before step 2 (a replica that
    adopts it too early gets `invalid_client` with no newer version to retry).
 2. Write it to KV from stdin, never as a command-line argument, then drop the variable:
-   `printf '%s' "$NEW_SECRET" | bao kv put kv/ralysa/control-plane/idp-client-secret value=- && unset NEW_SECRET`.
+   `printf '%s' "$NEW_SECRET" | bao kv put kv/ralysa/control-plane/idp-client-secret value=-; unset NEW_SECRET`
+   (`;`, so the variable is dropped even if the write fails).
    `bao kv metadata get …` shows the new version number.
 3. Wait until every replica reports it: `idp_client_secret_observed version=<n>` from each `serve`
    instance (at most one poll, 60 s), and the one `secret.rotated … phase=observed version=<n>`
