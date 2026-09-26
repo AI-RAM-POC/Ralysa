@@ -48,7 +48,9 @@ export {
 export {
   type PrincipalResolver,
   type PrincipalResolverOptions,
+  type SessionPrincipal,
   PrincipalNotFoundError,
+  PrincipalSessionRefusedError,
   PrincipalUnavailableError,
   createPrincipalResolver,
 } from './verify/principal-resolver.js';

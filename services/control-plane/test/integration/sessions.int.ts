@@ -35,7 +35,7 @@ import { newAuthorizationCode, tokenHash } from '../../src/auth/tokens/opaque.js
 import { createRateLimiter } from '../../src/http/rate-limits.js';
 import { createDb, withOrg } from '../../src/db/kysely.js';
 import type { Database } from '../../src/db/types.js';
-import { ensureOrganization } from '../../src/org/bootstrap.js';
+import { ensureOrganization, reconcileGroupRoles } from '../../src/org/bootstrap.js';
 import { fakeKeys } from '../fixtures/fake-keys.js';
 import { TENANT, serveConfig } from '../fixtures/serve-config.js';
 import { type TestDatabase, createTestDatabase } from './support/db.js';
@@ -123,6 +123,7 @@ describe.skipIf(stack === undefined)('sessions and grants (F-002-T08)', () => {
     clockOffset += ms;
   };
   let signing: Awaited<ReturnType<typeof fakeKeys>>;
+  let auditWriter: ReturnType<typeof createAuditWriter>;
   const writerDb = async () => createDb<Database>(await t().pool('audit_writer', 2));
   const t = (): TestDatabase => {
     if (db === undefined) throw new Error('beforeAll did not create the database');
@@ -285,6 +286,9 @@ describe.skipIf(stack === undefined)('sessions and grants (F-002-T08)', () => {
     cpDb = createDb<Database>(await db.pool('cp_app', 6));
     await ensureOrganization(cpDb, config);
     const writer = createAuditWriter({ db: await writerDb() });
+    // As `serve` does at start: group roles from config (#47).
+    await reconcileGroupRoles(cpDb, config, writer);
+    auditWriter = writer;
     signing = await fakeKeys();
     app = await buildApp({
       config,
@@ -338,7 +342,10 @@ describe.skipIf(stack === undefined)('sessions and grants (F-002-T08)', () => {
           role: 'access',
           name_refreshed_at: null,
         })
-        .onConflict((oc) => oc.columns(['org_id', 'idp_group_id']).doNothing())
+        // The row exists since the start-up reconcile (#47); only its display name is set here.
+        .onConflict((oc) =>
+          oc.columns(['org_id', 'idp_group_id']).doUpdateSet({ display_name: 'فريق المالية' }),
+        )
         .execute();
       const g = await trx
         .selectFrom('cp.idp_group')
@@ -787,13 +794,15 @@ describe.skipIf(stack === undefined)('sessions and grants (F-002-T08)', () => {
       headers: bearer(svc),
     });
     expect(principal.statusCode).toBe(200);
+    // The refresh wrote Graph's answer (access group only) back to the memberships (#47).
     expect(principal.json()).toMatchObject({
       user_id: user.id,
       org_id: ORG,
       status: 'active',
-      roles: [],
-      groups: [],
+      roles: ['user'],
+      groups: [{ idp_group_id: config.access.access_group_id, role: 'access' }],
     });
+    expect(principal.json()).not.toHaveProperty('session_roles');
     expect(
       (await app.inject({ url: `/v1/internal/principals/${uuidv7()}`, headers: bearer(svc) }))
         .statusCode,
@@ -807,6 +816,193 @@ describe.skipIf(stack === undefined)('sessions and grants (F-002-T08)', () => {
       headers: bearer(svc),
     });
     expect(bad.statusCode).toBe(400);
+  });
+
+  // --- #47, SEC-F002-42: session roles for PEPs, membership write-back, start-up reconcile ----
+  const principalOf = async (userId: string, sid?: string) => {
+    const reply = await app.inject({
+      url: `/v1/internal/principals/${userId}${sid === undefined ? '' : `?sid=${sid}`}`,
+      headers: bearer(await serviceToken()),
+    });
+    return { status: reply.statusCode, body: reply.json<Record<string, unknown>>() };
+  };
+  const ACCESS = config.access.access_group_id;
+  const ADMIN = config.access.admin_group_id;
+
+  it('#47: a device-code session of an admin gets no platform_admin in session_roles for its sid', async () => {
+    const user = await seedUser('Admin by device code');
+    // Sign-in withheld the admin role on the weak flow (SEC-F002-06): session roles [user].
+    const weak = await seedSession(user.id, { roles: ['user'] });
+    const strong = await seedSession(user.id, { roles: ['user', 'platform_admin'] });
+    directoryAnswer = {
+      kind: 'ok',
+      inAccessGroup: true,
+      inAdminGroup: true,
+      sessionsValidFrom: null,
+    };
+    const first = await refresh(weak.token);
+    expect(first.statusCode).toBe(200);
+
+    const forWeak = await principalOf(user.id, weak.sid);
+    expect(forWeak.status).toBe(200);
+    expect(forWeak.body).toMatchObject({
+      roles: ['user', 'platform_admin'], // directory roles: never enough on their own
+      session_id: weak.sid,
+      session_roles: ['user'],
+    });
+    // A refresh never adds a role the session didn't get at sign-in.
+    const second = await refresh(first.json<{ refresh_token: string }>().refresh_token);
+    expect(second.statusCode).toBe(200);
+    expect((await principalOf(user.id, weak.sid)).body).toMatchObject({ session_roles: ['user'] });
+    // The other session of the same user was a strong sign-in and keeps its admin role.
+    expect((await principalOf(user.id, strong.sid)).body).toMatchObject({
+      session_roles: ['user', 'platform_admin'],
+    });
+  });
+
+  it('#47: removal from the admin group reaches Principal after one refresh, audited as privileged', async () => {
+    const user = await seedUser('Admin removed in Entra');
+    const { sid, token } = await seedSession(user.id, { roles: ['user', 'platform_admin'] });
+    directoryAnswer = {
+      kind: 'ok',
+      inAccessGroup: true,
+      inAdminGroup: true,
+      sessionsValidFrom: null,
+    };
+    const first = await refresh(token);
+    expect(first.statusCode).toBe(200);
+    expect((await principalOf(user.id, sid)).body).toMatchObject({
+      roles: ['user', 'platform_admin'],
+      groups: [
+        { idp_group_id: ACCESS, role: 'access' },
+        { idp_group_id: ADMIN, role: 'platform_admin' },
+      ],
+      session_roles: ['user', 'platform_admin'],
+    });
+    const added = await events({ user: user.id, action: 'directory.group_membership.changed' });
+    expect(added.map((e) => e.details)).toEqual([
+      { added: [ACCESS, ADMIN].sort(), removed: [], privileged: true },
+    ]);
+
+    // Removed from the admin group in Entra: one refresh, and every view follows.
+    directoryAnswer = { ...directoryAnswer, inAdminGroup: false };
+    const second = await refresh(first.json<{ refresh_token: string }>().refresh_token);
+    expect(second.statusCode).toBe(200);
+    const after = await principalOf(user.id, sid);
+    expect(after.body).toMatchObject({
+      roles: ['user'],
+      groups: [{ idp_group_id: ACCESS, role: 'access' }],
+      session_roles: ['user'],
+    });
+    const { rows } = await t().superuser.query<{ source: string }>(
+      `SELECT m.source FROM cp.group_membership m JOIN cp.idp_group g ON g.id = m.group_id
+        WHERE m.user_id = $1 ORDER BY g.idp_group_id`,
+      [user.id],
+    );
+    expect(rows).toEqual([{ source: 'graph_check' }]);
+    const changes = await events({ user: user.id, action: 'directory.group_membership.changed' });
+    expect(changes.at(-1)).toMatchObject({
+      outcome: 'success',
+      details: { added: [], removed: [ADMIN], privileged: true },
+    });
+    // An unchanged answer writes no event.
+    await refresh(second.json<{ refresh_token: string }>().refresh_token);
+    expect(
+      await events({ user: user.id, action: 'directory.group_membership.changed' }),
+    ).toHaveLength(2);
+  });
+
+  it('#47: an unknown, foreign, revoked, pending or expired sid is refused, not given roles', async () => {
+    const user = await seedUser('Session owner');
+    const other = await seedUser('Someone else');
+    const own = await seedSession(user.id);
+    const foreign = await seedSession(other.id);
+    const pending = await seedSession(user.id, { status: 'pending' });
+    const expired = await seedSession(user.id);
+    await t().superuser.query(
+      `UPDATE cp.auth_session SET absolute_expires_at = clock_timestamp() - interval '1 minute'
+        WHERE id = $1`,
+      [expired.sid],
+    );
+    expect((await principalOf(user.id, own.sid)).status).toBe(200);
+    for (const sid of [uuidv7(), foreign.sid, pending.sid, expired.sid]) {
+      const refused = await principalOf(user.id, sid);
+      expect(refused.status, sid).toBe(403);
+      expect(refused.body).not.toHaveProperty('session_roles');
+    }
+    expect((await principalOf(user.id, 'not-a-sid')).status).toBe(400);
+    // Signed out: the same sid is refused from then on.
+    expect((await revoke(own.token)).statusCode).toBe(200);
+    expect((await principalOf(user.id, own.sid)).status).toBe(403);
+  });
+
+  it('#47: an admin_group_id change takes effect at start: the old group loses the role, audited', async () => {
+    const user = await seedUser('Admin of the old group');
+    const { sid, token } = await seedSession(user.id, { roles: ['user', 'platform_admin'] });
+    directoryAnswer = {
+      kind: 'ok',
+      inAccessGroup: true,
+      inAdminGroup: true,
+      sessionsValidFrom: null,
+    };
+    expect((await refresh(token)).statusCode).toBe(200);
+    expect((await principalOf(user.id, sid)).body).toMatchObject({
+      roles: ['user', 'platform_admin'],
+      session_roles: ['user', 'platform_admin'],
+    });
+
+    const newAdmin = uuidv7();
+    const moved = serveConfig({
+      ...(JSON.parse(JSON.stringify(config)) as Record<string, unknown>),
+      access: { ...config.access, admin_group_id: newAdmin },
+    });
+    const reconcileEvents = async () =>
+      (await events({ action: 'directory.group_role.changed' })).map((e) => e.details);
+    const before = (await reconcileEvents()).length;
+    try {
+      // What `serve` does at start with the changed config; no sign-in or refresh needed.
+      const changes = await reconcileGroupRoles(cpDb, moved, auditWriter);
+      expect(changes).toEqual(
+        [
+          { idpGroupId: ADMIN, from: 'platform_admin', to: null },
+          { idpGroupId: newAdmin, from: null, to: 'platform_admin' },
+        ].sort((a, b) => a.idpGroupId.localeCompare(b.idpGroupId)),
+      );
+      const after = await principalOf(user.id, sid);
+      expect(after.body).toMatchObject({
+        roles: ['user'],
+        groups: [
+          { idp_group_id: ACCESS, role: 'access' },
+          { idp_group_id: ADMIN, role: null },
+        ],
+        session_roles: ['user'],
+      });
+      const written = (await reconcileEvents()).slice(before);
+      expect(written).toHaveLength(2);
+      expect(written).toEqual(
+        expect.arrayContaining([
+          {
+            idp_group_id: ADMIN,
+            from: 'platform_admin',
+            to: null,
+            cause: 'config',
+            privileged: true,
+          },
+          {
+            idp_group_id: newAdmin,
+            from: null,
+            to: 'platform_admin',
+            cause: 'config',
+            privileged: true,
+          },
+        ]),
+      );
+      // Idempotent: a second start with the same config changes and writes nothing.
+      expect(await reconcileGroupRoles(cpDb, moved, auditWriter)).toEqual([]);
+      expect(await reconcileEvents()).toHaveLength(before + 2);
+    } finally {
+      await reconcileGroupRoles(cpDb, config, auditWriter);
+    }
   });
 
   // --- review of #26 -------------------------------------------------------------------------

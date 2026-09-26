@@ -7,7 +7,9 @@
 // 2. Re-check the user at the IdP directory (outside any transaction). Unavailable →
 //    temporarily_unavailable and the token is NOT consumed. Disabled or deleted, Entra sessions
 //    revoked after this session began, or in no configured group → the session (and for a
-//    disabled user, the user) is revoked and the refresh denied.
+//    disabled user, the user) is revoked and the refresh denied. Otherwise Graph's answer for the
+//    two configured groups is written back to cp.group_membership (graph_check) and a change is
+//    audited as directory.group_membership.changed (#47).
 // 3. Mint the access token for the requested audience (audiences other than control-plane need
 //    the session role `user`, §6.1). Signing goes through OpenBao; if it fails, nothing has been
 //    consumed and the client retries with the same token.
@@ -24,8 +26,10 @@ import {
 import { uuidv7 } from '@ralysa/protocol/common';
 import { sql } from 'kysely';
 import { withOrg } from '../../db/kysely.js';
+import { recordGraphMembership } from '../../directory/membership.js';
 import { OAuthProblem } from '../../http/errors.js';
 import { authEvent } from '../audit-events.js';
+import type { DirectoryCheck } from '../directory-port.js';
 import type { RtsDeps } from '../deps.js';
 import {
   type RefreshTokenView,
@@ -59,6 +63,42 @@ function denied(reason: RefreshReason, description?: string): OAuthProblem {
     },
     reason === 'idp_unavailable' ? 503 : 400,
   );
+}
+
+/**
+ * Writes Graph's answer for the configured groups back to the user's memberships and audits a
+ * change (§3.5 `directory.group_membership.changed`, `privileged` when the admin group changed).
+ */
+async function recordRefreshMembership(
+  deps: RtsDeps,
+  view: RefreshTokenView,
+  check: Extract<DirectoryCheck, { kind: 'ok' }>,
+  ctx: GrantContext,
+): Promise<void> {
+  const orgId = deps.config.org.id;
+  const configured = {
+    access: deps.config.access.access_group_id,
+    admin: deps.config.access.admin_group_id,
+  };
+  const change = await withOrg(deps.db, orgId, (trx) =>
+    recordGraphMembership(trx, orgId, view.userId, configured, check),
+  );
+  if (change.added.length === 0 && change.removed.length === 0) return;
+  await deps.writer.writeOrSpool(orgId, [
+    authEvent({
+      action: 'directory.group_membership.changed',
+      outcome: 'success',
+      traceId: ctx.traceId,
+      user: { id: view.userId, idpSubject: view.idpSubject },
+      sessionId: view.sessionId,
+      details: {
+        added: change.added,
+        removed: change.removed,
+        // TM-49: a change to the admin group's membership is privileged.
+        privileged: [...change.added, ...change.removed].includes(configured.admin),
+      },
+    }),
+  ]);
 }
 
 export async function refreshGrant(
@@ -215,6 +255,11 @@ export async function refreshGrant(
     );
     throw denied('user_disabled');
   }
+  // Graph is authoritative for the two configured groups (§6.3): its answer replaces the stored
+  // memberships on every refresh, so `Principal` (directory roles and `session_roles`) follows a
+  // removal in Entra from the user's next refresh, not their next full sign-in (#47,
+  // SEC-F002-42). A change is audited; an admin-group change is privileged (TM-49).
+  await recordRefreshMembership(deps, view, check, ctx);
   if (check.sessionsValidFrom !== null && check.sessionsValidFrom > view.sessionCreatedAt) {
     const n = await withOrg(deps.db, orgId, (trx) =>
       revokeUser(trx, view.userId, 'idp_sessions_revoked'),

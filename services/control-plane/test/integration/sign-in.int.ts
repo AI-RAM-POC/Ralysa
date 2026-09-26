@@ -38,6 +38,7 @@ import { REPORTS_PER_CLIENT_PER_MINUTE } from '../../src/auth/routes/sign-in-fai
 import { ServeConfig } from '../../src/config/schema.js';
 import { createDb } from '../../src/db/kysely.js';
 import type { Database } from '../../src/db/types.js';
+import { mintAccessToken } from '../../src/auth/tokens/mint.js';
 import { createRateLimiter } from '../../src/http/rate-limits.js';
 import { type MemoryMetrics, createMemoryMetrics } from '../../src/observability/metrics.js';
 import { ensureOrganization } from '../../src/org/bootstrap.js';
@@ -85,6 +86,7 @@ describe.skipIf(stack === undefined)('IdP sign-in, flow A (F-002-T10)', () => {
   let base: string;
   let directory: GraphDirectory;
   let metrics: MemoryMetrics;
+  let signingKeys: Awaited<ReturnType<typeof fakeKeys>>['keys'];
   const graphClock = { offset: 0 };
   const t = (): TestDatabase => {
     if (db === undefined) throw new Error('beforeAll did not create the database');
@@ -124,6 +126,29 @@ describe.skipIf(stack === undefined)('IdP sign-in, flow A (F-002-T10)', () => {
     form(app, { grant_type: 'refresh_token', client_id: CLI_CLIENT_ID, refresh_token: token });
   const me = (accessToken: string) =>
     app.inject({ url: '/v1/me', headers: { authorization: `Bearer ${accessToken}` } });
+  /** GET /v1/internal/principals/{user}?sid= with the PEP's service token (#47). */
+  const principalFor = async (accessToken: string) => {
+    const { sub, sid } = decodeJwt(accessToken);
+    const now = Math.floor(Date.now() / 1000);
+    const service = await mintAccessToken(signingKeys, {
+      iss: base,
+      aud: 'control-plane',
+      sub: 'svc:si-gateway',
+      client_id: 'svc:si-gateway',
+      tid: config.org.id,
+      token_use: 'service',
+      iat: now,
+      nbf: now,
+      exp: now + 300,
+      jti: uuidv7(),
+    });
+    const reply = await app.inject({
+      url: `/v1/internal/principals/${String(sub)}?sid=${String(sid)}`,
+      headers: { authorization: `Bearer ${service}` },
+    });
+    expect(reply.statusCode, reply.body).toBe(200);
+    return reply.json<{ roles: string[]; session_id: string; session_roles: string[] }>();
+  };
 
   const events = async (where: { action?: string; subject?: string; since?: Date } = {}) =>
     (
@@ -202,6 +227,15 @@ describe.skipIf(stack === undefined)('IdP sign-in, flow A (F-002-T10)', () => {
         require_mfa_claim: true,
       },
       access: { access_group_id: idp.accessGroupId, admin_group_id: idp.adminGroupId },
+      // A PEP that resolves principals (#47).
+      services: [
+        {
+          name: 'si-gateway',
+          client_id: 'svc:si-gateway',
+          transit_key: 'ralysa-svc-si-gateway',
+          audit_actions: ['model.call.completed'],
+        },
+      ],
     });
     config = serveConfig(input);
     const secrets = createInMemorySecretStore({
@@ -223,6 +257,7 @@ describe.skipIf(stack === undefined)('IdP sign-in, flow A (F-002-T10)', () => {
       db: createDb<Database>(await db.pool('audit_writer', 3)),
     });
     metrics = createMemoryMetrics();
+    signingKeys = (await fakeKeys()).keys;
     const rts = {
       db: cpDb,
       custody: createInMemoryKeyCustody(),
@@ -235,7 +270,7 @@ describe.skipIf(stack === undefined)('IdP sign-in, flow A (F-002-T10)', () => {
     };
     app = await buildApp({
       config,
-      keys: (await fakeKeys()).keys,
+      keys: signingKeys,
       rts,
       rateLimiter: createRateLimiter({ perIpPerMinute: 10_000, globalPerMinute: 10_000 }),
       pingDatabase: () => Promise.resolve(true),
@@ -844,8 +879,9 @@ describe.skipIf(stack === undefined)('IdP sign-in, flow A (F-002-T10)', () => {
     });
 
     idp.patchUser('erin', { amr: ['pwd', 'mfa'], acrs: null });
+    let weak: Awaited<ReturnType<typeof signInAs>>;
     try {
-      const weak = await signInAs('erin');
+      weak = await signInAs('erin');
       expect((await me(weak.access_token)).json()).toMatchObject({ roles: ['user'] });
       expect((await signIns(idp.user('erin').oid)).at(-1)?.details).toMatchObject({
         roles: ['user'],
@@ -858,6 +894,25 @@ describe.skipIf(stack === undefined)('IdP sign-in, flow A (F-002-T10)', () => {
     expect((await me(strong.access_token)).json()).toMatchObject({
       roles: ['user', 'platform_admin'],
     });
+
+    // #47, SEC-F002-42: what a PEP sees. The device-code session holds no admin role although
+    // erin is in the admin group; only the strong session does.
+    const weakPrincipal = await principalFor(weak.access_token);
+    expect(weakPrincipal).toMatchObject({
+      roles: ['user', 'platform_admin'],
+      session_id: decodeJwt(weak.access_token).sid,
+      session_roles: ['user'],
+    });
+    expect((await principalFor(strong.access_token)).session_roles).toEqual([
+      'user',
+      'platform_admin',
+    ]);
+    // A refresh of the device-code session doesn't add it either.
+    const refreshed = await refresh(weak.refresh_token);
+    expect(refreshed.statusCode).toBe(200);
+    expect(
+      (await principalFor(refreshed.json<{ access_token: string }>().access_token)).session_roles,
+    ).toEqual(['user']);
 
     const noMfa = await exchange(idp.mintAccessToken('alice', { claims: { amr: ['pwd'] } }));
     expect(noMfa.json()).toMatchObject({

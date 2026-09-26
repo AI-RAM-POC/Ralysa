@@ -96,6 +96,21 @@ describe('me and principals', () => {
       }).success,
     ).toBe(false);
   });
+
+  it('session_roles and session_id are optional, and only the two roles parse (rev 10, #47)', () => {
+    const principal = {
+      user_id: uuid(3),
+      org_id: uuid(4),
+      status: 'active',
+      roles: ['user', 'platform_admin'],
+      groups: [{ idp_group_id: uuid(6), role: 'platform_admin' }],
+      as_of: '2026-09-25T10:00:00Z',
+    };
+    const withSession = { ...principal, session_id: uuid(8), session_roles: ['user'] };
+    expect(Principal.parse(withSession)).toEqual(withSession);
+    expect(Principal.safeParse({ ...withSession, session_roles: ['root'] }).success).toBe(false);
+    expect(Principal.safeParse({ ...withSession, session_id: 'sid-1' }).success).toBe(false);
+  });
 });
 
 describe('governance feed', () => {

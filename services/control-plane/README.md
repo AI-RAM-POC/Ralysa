@@ -303,7 +303,7 @@ Microsoft references (accessed 2026-09-25, design §6.7):
   | `POST /v1/auth/sign-in-failures` | 202: the CLI's report of an IdP-side flow-A failure, audited as `auth.sign_in failure` (T10) |
   | `POST /oauth2/revoke` | RFC 7009 sign-out: revokes the refresh token's whole session; always 200 |
   | `GET /v1/me` | The signed-in user, the calling session's roles and the user's groups (user token) |
-  | `GET /v1/internal/principals/:user_id` | A user's status, roles and groups (service token) |
+  | `GET /v1/internal/principals/:user_id[?sid=]` | A user's status, directory roles and groups; with `sid`, also `session_roles` (that session's roles ∩ current memberships), the roles PEPs authorize on. An unknown, foreign, revoked, pending or expired `sid` is 403 (service token; #47) |
   | `GET /v1/internal/governance` | Revocations, kill switches and `epoch` for every PEP (service token) |
   | `POST /v1/audit/events` | 201: service audit ingestion within the service's action allow-list (service token, T12) |
   | `POST /v1/audit/client-events` | 201 (or 423 when a kill-switch halts an intent): client-attested local-tool audit with intent acks (user token, T12) |
@@ -433,6 +433,24 @@ Microsoft references (accessed 2026-09-25, design §6.7):
     `amr` in `access.phishing_resistant_amr`). A user in both groups on a weak sign-in gets
     `user` with `admin_role_withheld`; an admin-only user is denied
     `admin_requires_strong_flow`. Other audiences than `control-plane` need `user`.
+  - **Roles a PEP sees** (design §3.4.2, §6.1, revision 10; #47, SEC-F002-42):
+    `Principal.roles` are directory roles, from the user's current memberships of the two
+    configured groups, and are **never enough on their own for `platform_admin`**.
+    `Principal.session_roles` (with `?sid=`) are the session's roles ∩ those memberships:
+    PEPs authorize on them, and `GET /v1/audit/events` applies the same rule
+    (`src/directory/membership.ts`). A device-code sign-in of an admin therefore has no
+    `platform_admin` for its `sid`, whatever its memberships.
+  - **Memberships follow Graph at every refresh**: the refresh grant writes Graph's answer for
+    the two configured groups back to `cp.group_membership` (`source = graph_check`), and a
+    change writes `directory.group_membership.changed` (`privileged: true` when the admin
+    group changed). A removal in Entra reaches `Principal` at the user's next refresh.
+  - **Group roles follow config at start**: `serve` reconciles `cp.idp_group.role` with
+    `access.access_group_id` and `access.admin_group_id` before it serves, so after changing
+    either id the old group loses its role at the restart, not at someone's next sign-in. Each
+    change writes `directory.group_role.changed` (actor `rts`, `details.from`, `to`,
+    `cause: config`, `privileged` when `platform_admin` is involved) through the spool-backed
+    path, and `group_roles_reconciled` is logged. Changing either id is a reviewed deployment
+    change (design §6.2); expect two privileged events on the first start of a new org.
   - **Audit:** every attempt writes exactly one `auth.sign_in` with the `policy_version`. A
     success is written fail-closed after the session is committed: if the write fails, the
     session is revoked (`audit_unavailable`), the events are spooled, and the answer is 503. A

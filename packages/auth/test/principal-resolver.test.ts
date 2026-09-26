@@ -3,6 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   PrincipalNotFoundError,
+  PrincipalSessionRefusedError,
   PrincipalUnavailableError,
   createPrincipalResolver,
 } from '../src/index.js';
@@ -52,6 +53,88 @@ describe('createPrincipalResolver', () => {
     await expect(resolver.resolve(USER)).rejects.toBeInstanceOf(PrincipalNotFoundError);
     await expect(resolver.resolve('../../v1/me')).rejects.toBeInstanceOf(PrincipalNotFoundError);
     expect(fetch.requests).toHaveLength(1);
+  });
+
+  describe('with a session id (rev 10, #47, SEC-F002-42)', () => {
+    const SID = '0199a1b2-0000-7000-8000-00000000a001';
+    const OTHER_SID = '0199a1b2-0000-7000-8000-00000000a002';
+    const urlFor = (sid: string) => `${URL_USER}?sid=${sid}`;
+    const forSession = (sid: string, sessionRoles: string[]) => ({
+      ...principal,
+      roles: ['user', 'platform_admin'],
+      session_id: sid,
+      session_roles: sessionRoles,
+    });
+    // fakeFetch routes on the path; the answer is chosen by the full URL (with ?sid=).
+    const setupSessions = (routes: Record<string, () => { status: number; body?: unknown }>) => {
+      const c = clock();
+      const fetch = fakeFetch({
+        [`GET ${URL_USER}`]: (r) => routes[`GET ${r.url}`]?.() ?? { status: 404, body: {} },
+      });
+      const resolver = createPrincipalResolver({
+        baseUrl: BASE,
+        serviceTokens: { getToken: () => Promise.resolve('svc') },
+        fetch,
+        now: c.now,
+      });
+      return { c, fetch, resolver };
+    };
+
+    it('asks with ?sid= and caches per (user, session): one session never answers for another', async () => {
+      const { c, fetch, resolver } = setupSessions({
+        [`GET ${urlFor(SID)}`]: () => ({ status: 200, body: forSession(SID, ['user']) }),
+        [`GET ${urlFor(OTHER_SID)}`]: () => ({
+          status: 200,
+          body: forSession(OTHER_SID, ['user', 'platform_admin']),
+        }),
+        [`GET ${URL_USER}`]: () => ({ status: 200, body: principal }),
+      });
+      const weak = await resolver.resolve(USER, SID);
+      expect(weak.session_roles).toEqual(['user']);
+      expect(weak.roles).toContain('platform_admin'); // directory roles: never enough on their own
+      const strong = await resolver.resolve(USER, OTHER_SID.toUpperCase());
+      expect(strong.session_roles).toEqual(['user', 'platform_admin']);
+      const plain = await resolver.resolve(USER);
+      expect(plain.session_roles).toBeUndefined();
+      expect(fetch.requests.map((r) => r.url)).toEqual([urlFor(SID), urlFor(OTHER_SID), URL_USER]);
+      c.advance(30_000);
+      await resolver.resolve(USER, SID);
+      expect(fetch.requests).toHaveLength(3);
+      c.advance(1);
+      await resolver.resolve(USER, SID);
+      expect(fetch.requests).toHaveLength(4);
+    });
+
+    it('403 → PrincipalSessionRefusedError; a non-UUID sid is never sent', async () => {
+      const { fetch, resolver } = setupSessions({
+        [`GET ${urlFor(SID)}`]: () => ({ status: 403, body: {} }),
+      });
+      await expect(resolver.resolve(USER, SID)).rejects.toBeInstanceOf(
+        PrincipalSessionRefusedError,
+      );
+      await expect(resolver.resolve(USER, '../x')).rejects.toBeInstanceOf(
+        PrincipalSessionRefusedError,
+      );
+      expect(fetch.requests).toHaveLength(1);
+    });
+
+    it('fails closed on an answer without session_roles or for another session', async () => {
+      for (const body of [
+        principal,
+        { ...forSession(SID, ['user']), session_roles: undefined },
+        forSession(OTHER_SID, ['user']),
+      ]) {
+        const { resolver } = setupSessions({
+          [`GET ${urlFor(SID)}`]: () => ({ status: 200, body }),
+        });
+        await expect(resolver.resolve(USER, SID)).rejects.toBeInstanceOf(PrincipalUnavailableError);
+      }
+      // An answer to a plain lookup that carries session roles is not what was asked for either.
+      const { resolver } = setupSessions({
+        [`GET ${URL_USER}`]: () => ({ status: 200, body: forSession(SID, ['user']) }),
+      });
+      await expect(resolver.resolve(USER)).rejects.toBeInstanceOf(PrincipalUnavailableError);
+    });
   });
 
   it('fails closed on errors, bad bodies and an answer for another user', async () => {

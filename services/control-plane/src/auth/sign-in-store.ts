@@ -12,6 +12,7 @@ import { uuidv7 } from '@ralysa/protocol/common';
 import { type Kysely, type Transaction, sql } from 'kysely';
 import { withOrg } from '../db/kysely.js';
 import type { Database } from '../db/types.js';
+import { ensureConfiguredGroups } from '../directory/membership.js';
 import type { SignInFlow } from './identity-mapping.js';
 import {
   type CodeBinding,
@@ -193,30 +194,9 @@ async function syncGroups(
   input: ProvisionInput,
 ): Promise<{ added: string[]; removed: string[] }> {
   const { access, admin } = input.configured;
-  // Roles come from config only; a group that is no longer configured loses its role.
-  await trx
-    .updateTable('cp.idp_group')
-    .set({ role: null })
-    .where('role', 'is not', null)
-    .where('idp_group_id', 'not in', [access, admin])
-    .execute();
-  for (const [idpGroupId, role] of [
-    [access, 'access'],
-    [admin, 'platform_admin'],
-  ] as const) {
-    await trx
-      .insertInto('cp.idp_group')
-      .values({
-        id: uuidv7(),
-        org_id: orgId,
-        idp_group_id: idpGroupId,
-        display_name: null,
-        role,
-        name_refreshed_at: null,
-      })
-      .onConflict((oc) => oc.columns(['org_id', 'idp_group_id']).doUpdateSet({ role }))
-      .execute();
-  }
+  // Roles come from config only; a group that is no longer configured loses its role (the
+  // `serve` start reconciles and audits the same, so this is normally a no-op; #47).
+  await ensureConfiguredGroups(trx, orgId, input.configured);
   const others = [...new Set(input.membership.map((m) => m.idpGroupId))].filter(
     (id) => id !== access && id !== admin,
   );

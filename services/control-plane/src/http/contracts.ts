@@ -312,7 +312,8 @@ export const ROUTES = {
   principal: {
     method: 'GET',
     url: '/v1/internal/principals/:user_id',
-    summary: 'Groups, roles and status of a user (service token)',
+    summary:
+      "Groups, directory roles and status of a user; with sid, that session's roles ∩ current memberships (service token)",
     tags: ['internal'],
     auth: 'service',
     parameters: [
@@ -323,11 +324,20 @@ export const ROUTES = {
         description: 'Ralysa user id',
         schema: z.uuid(),
       },
+      {
+        name: 'sid',
+        in: 'query',
+        required: false,
+        description:
+          "The access token's sid. When given, the answer adds session_roles (the session's roles ∩ the current memberships); PEPs authorize privileged actions on session_roles, never on roles (rev 10, SEC-F002-42)",
+        schema: z.uuid(),
+      },
     ],
     responses: {
       200: { description: 'The principal', schema: Principal },
-      400: problem('Invalid user id'),
+      400: problem('Invalid user id or sid'),
       401: problem('Missing or invalid service token'),
+      403: problem("The sid is unknown, another user's, revoked, pending or expired"),
       404: problem('No such user'),
     },
   },
