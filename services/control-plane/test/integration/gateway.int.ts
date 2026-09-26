@@ -34,7 +34,7 @@ import type { Kysely } from 'kysely';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { buildApp } from '../../src/app.js';
 import { createRejectionAggregator } from '../../src/audit/rejections.js';
-import { type AuditWriter, createAuditWriter } from '../../src/audit/writer.js';
+import { createAuditWriter } from '../../src/audit/writer.js';
 import type { DirectoryCheck, IdpDirectory } from '../../src/auth/directory-port.js';
 import { createSession, issueRefreshToken } from '../../src/auth/sessions.js';
 import { createDb, withOrg } from '../../src/db/kysely.js';
@@ -43,6 +43,7 @@ import { createRateLimiter } from '../../src/http/rate-limits.js';
 import { ensureOrganization } from '../../src/org/bootstrap.js';
 import { fakeKeys } from '../fixtures/fake-keys.js';
 import { TENANT, serveConfig } from '../fixtures/serve-config.js';
+import { type TrackedAuditWriter, trackAuditWriter } from './support/audit-writes.js';
 import { type TestDatabase, createTestDatabase } from './support/db.js';
 
 const stack = await devStackOrSkip();
@@ -93,10 +94,11 @@ describe.skipIf(stack === undefined)('fake gateway on @ralysa/auth (F-002-T11)',
   // --- the fake gateway ----------------------------------------------------------------------
   const rejected: RejectInfo[] = [];
   let reporter: RejectionReporter;
-  // The control plane's fire-and-forget audit writes (the rejection aggregator), awaited in tests.
-  const pending = new Set<Promise<unknown>>();
+  // The control plane's fire-and-forget audit writes (the rejection aggregator), awaited in tests
+  // until their transactions have ended, not only their promises (#43; support/audit-writes.ts).
+  let audit: TrackedAuditWriter | undefined;
   const settled = async () => {
-    while (pending.size > 0) await Promise.allSettled([...pending]);
+    await audit?.settled();
   };
   let gateway: ReturnType<typeof createAccessTokenVerifier>;
   let principals: ReturnType<typeof createPrincipalResolver>;
@@ -233,16 +235,9 @@ describe.skipIf(stack === undefined)('fake gateway on @ralysa/auth (F-002-T11)',
     cpDb = createDb<Database>(await db.pool('cp_app', 6));
     await ensureOrganization(cpDb, config);
     signing = await fakeKeys();
-    const real = createAuditWriter({ db: createDb<Database>(await t().pool('audit_writer', 2)) });
-    const track = <T>(p: Promise<T>): Promise<T> => {
-      pending.add(p);
-      void p.finally(() => pending.delete(p)).catch(() => undefined);
-      return p;
-    };
-    const writer: AuditWriter = {
-      write: (org, events) => track(real.write(org, events)),
-      writeOrSpool: (org, events) => track(real.writeOrSpool(org, events)),
-    };
+    const writerPool = await t().pool('audit_writer', 2);
+    audit = trackAuditWriter(createAuditWriter({ db: createDb<Database>(writerPool) }), writerPool);
+    const { writer } = audit;
     app = await buildApp({
       config,
       keys: signing.keys,

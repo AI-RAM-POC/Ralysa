@@ -26,6 +26,7 @@ import { migrationChecksums } from '../../src/db/migration-checksums.js';
 import type { Database } from '../../src/db/types.js';
 import { createMemoryMetrics } from '../../src/observability/metrics.js';
 import { silentLogger } from '../../src/observability/logger.js';
+import { trackAuditWriter } from './support/audit-writes.js';
 import { type TestDatabase, createTestDatabase, insertAs } from './support/db.js';
 
 const stack = await devStackOrSkip();
@@ -206,6 +207,44 @@ describe.skipIf(stack === undefined)('audit core (F-002-T06)', () => {
         'individual',
         'individual',
       ]);
+    });
+
+    it('#43: a burst that misses the 250 ms budget still commits every row, after its promises settle', async () => {
+      // As on a loaded CI runner: 20 single-event rejection writes queue for a 2-connection
+      // pool that is busy for longer than the budget.
+      const pool = await t().pool('audit_writer', 2);
+      const audit = trackAuditWriter(createAuditWriter({ db: createDb<Database>(pool) }), pool);
+      // (Source control-plane: the sealer tests below count the model-gateway shard.)
+      const events = Array.from({ length: 20 }, (_, n) =>
+        tokenRejectedEvent({
+          orgId: ORG,
+          clientIp: '203.0.113.9',
+          reason: n % 3 === 0 ? 'wrong_audience' : 'expired',
+          audience: 'model-gateway',
+          traceId: 'a'.repeat(32),
+          network: '203.0.113.0/24',
+        }),
+      );
+      const ids = events.map((e) => e.event_id);
+      const stored = () => count(`audit.audit_event WHERE event_id = ANY($1::uuid[])`, [ids]);
+      const held = await Promise.all([pool.connect(), pool.connect()]);
+      const outcomes = events.map((e) =>
+        audit.writer.writeOrSpool(ORG, [e]).then(
+          () => 'stored',
+          (error: unknown) => error,
+        ),
+      );
+      // Every caller is told the write failed (no spool here), and nothing is in yet: waiting
+      // for the promises alone, as the tests did before #43, reads too early.
+      for (const outcome of await Promise.all(outcomes)) {
+        expect(outcome).toBeInstanceOf(AuditUnavailableError);
+      }
+      expect(await stored()).toBe(0);
+      // The store frees up: the transactions still run and commit. Nothing is lost, and
+      // settled() returns only once they have.
+      for (const client of held) client.release();
+      await audit.settled();
+      expect(await stored()).toBe(20);
     });
   });
 

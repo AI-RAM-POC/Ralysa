@@ -1771,3 +1771,70 @@ Local runs, Node 24.21.0, pnpm 11.27.1:
 - `pnpm lint`: 33/33 tasks. `pnpm test`: 33/33 tasks; `@ralysa/control-plane` 410 tests in 27 files, `entry-point-guards.test.ts` 8 of them. `pnpm build`: 23/23 tasks.
 - `pnpm --filter @ralysa/control-plane test:integration` against the dev stack: 167 tests in 12 files pass. (A first run failed the three `scans.int.ts` cases because gitleaks wasn't installed in this worktree, and the `audit-routes.int.ts` 600-a-minute rate case once; after `pnpm tools:install` both files passed, and a full rerun passed.)
 - `pnpm repo:check`: every check passes; the `i18n/untranslated` warning and the `needs-native-review` counts are pre-existing and outside F-002.
+
+## Fix for #43: TC-F-002-10 stored 19 of 20 rejections (a test race, not a lost event)
+
+Branch `fix/F-002-tc10-rejection-flake`, based on `main` at `67738df`. Issue [#43](https://github.com/AI-RAM-POC/Ralysa/issues/43): CI run 36254096461, first attempt, read 19 `auth.token_rejected` rows after `reporter.flush()` and `settled()`.
+
+### Root cause
+
+**A test race.** No event is lost or merged. The test's `settled()` waited for the wrong thing.
+
+- The control plane answers the gateway's batch with 20 `aggregated` results. The model-gateway aggregator then emits 20 individual events (7 `wrong_audience` against a per-key limit of 20, and 20 against a cap of 600, so nothing is summarised), each through its own fire-and-forget `AuditWriter.writeOrSpool`, and each in its own transaction.
+- The test's audit-writer pool has 2 connections, so 18 of the 20 transactions wait for a connection.
+- `AuditWriter.write` races the insert against the 250 ms budget. When the budget runs out first, the caller's promise rejects (`AuditUnavailableError`). The test writer has no spool, so the aggregator logs the failure through the silent logger. The transaction still runs and commits afterwards. This is design §5.8, and the comment in `writer.ts`: "the transaction may still commit afterwards".
+- The test's `settled()` tracked only the caller's promises. A write that was still queued when its 250 ms timer fired had a rejected promise, so `settled()` returned, and the query ran before that row committed. On the CI runner that was the 20th write.
+
+Candidates ruled out:
+
+- **(a) and (b), aggregation, windows and caps.** Each report goes to the per-service aggregator, whose key is (/24, reason, audience). With 7 at most per key and 20 in total, every rejection is written individually whatever the window, and nothing earlier in `gateway.int.ts` reports rejections.
+- **(d) id collisions.** Each stored event gets a fresh v7 id (74 random bits), and the report ids only dedupe reports. A collision would have shown up as a `duplicate`, not a missing row.
+- **(e) the reporter.** The reporter status went from `queued: 20` to `queued: 0` with `dropped: 0`, which happens only on 201 for the whole batch (a refusal drops all 20, not 1).
+
+Evidence:
+
+- **Deterministic reproduction.** Holding the test's two audit-writer connections for 400 ms around `reporter.flush()` made TC-F-002-10 read **0** rows after the old `settled()`, and all **20** a second later.
+- **CI reproduction.** The unchanged `gateway.int.ts`, run 24 times in parallel on one machine, failed TC-F-002-10 in all 24 runs, reading 2 to 14 of 20 rows: the CI failure, amplified.
+- **After the fix.** The same 24-way run passed 24 of 24, and the injected 400 ms hold passes.
+
+**Production is not affected.** `serve` builds the writer with a spool (`serve.ts`). A timed-out event is spooled, and the late commit makes its replay a `duplicate`. A write that fails outright is replayed from the spool. So AC-14 evidence is not lost. The loss existed only in what the test observed.
+
+**The 600-a-minute test.** The `audit-routes.int.ts` "600 events a minute, then 429" test had the same class of problem: an assertion that depends on the 250 ms budget holding on a loaded machine.
+
+- Each 50-event batch is written in one transaction under the budget. On a slow runner a batch answers 503 `audit_unavailable`, and the test expected 201. The unchanged file, run 10 times in parallel, failed this way in 10 of 10 runs (`expected 503 to be 201`).
+- It also relied on the per-user limit's fixed one-minute window, which starts when the app is built, not rolling over between the 600th and the 601st event. Moving the clock 60 s at that point turns the 429 into a 201.
+
+### What changed (tests only; no product code)
+
+- `test/integration/support/audit-writes.ts` (new): `trackAuditWriter(real, pool)` wraps the writer handed to the app. Its `settled()` waits until the tracked promises have settled **and** the writer's pool is idle (no client checked out, none waiting). A late transaction holds or waits for a pool client until its COMMIT or ROLLBACK returns, and it has always reached the pool by the time its 250 ms timer fires. The wait is event-driven (pg-pool `release` and `remove`), with no sleep.
+- `gateway.int.ts`, `audit-routes.int.ts` and `test/soak/rotation-harness.ts` use this `settled()` in place of their own promise-only versions. The soak harness counts `secret.rotated` rows, and `audit-routes` counts rejections and denials.
+- `audit-routes.int.ts`, 600 a minute:
+  - The app gets a `now` the test can pin, and the test pins it while it fills and exceeds the limit.
+  - The filling batches accept 201 or 503. The limiter counts a batch before it is written, so a refused batch counts (T12-17), and the 601st event is still exactly 429.
+- `audit.int.ts`, new regression test "#43: a burst that misses the 250 ms budget still commits every row, after its promises settle". It is deterministic: no timers decide the outcome.
+  1. It holds both connections of a 2-connection writer pool and starts 20 single-event `writeOrSpool` calls.
+  2. It asserts that each call rejects with `AuditUnavailableError` and that 0 rows are stored after the promises settle, which is exactly the old wait.
+  3. It releases the connections and asserts that `settled()` returns only when all 20 are stored.
+
+### Recorded decisions
+
+Items marked **self-decided** were decided under the standing authorization (CLAUDE.md), taking the recommended option: standing authorization, recorded by Claude.
+
+| # | Type | What | Why |
+|---|---|---|---|
+| F43-1 | Classification (**self-decided**) | Test race, not a governance defect: no product change. | An event can't be lost on the production path (spool plus late commit, and replay answers `duplicate`), and every candidate in the product path was ruled out above. Changing the writer or aggregator would redesign §5.8 and §6.4 without a defect to fix. |
+| F43-2 | Test design (**self-decided**) | Wait on the writer pool going idle instead of raising the test writer's `timeoutMs` or adding a spool to the test writer. | A larger budget only moves the race and changes what the fail-closed tests exercise. Pool idleness is the exact condition for "every write has ended", and it is event-driven. |
+| F43-3 | Test design (**self-decided**) | The 600-a-minute test accepts 503 for the batches that fill the limit. | Its subject is the limiter, which counts before the write (T12-17). The 503 path is covered by its own tests ("503 with ack=false …", "R33-3 …"). |
+| F43-4 | Observation (not fixed here) | Under heavy local load, other assertions that expect a 250 ms write to succeed can still fail closed with 503 as designed. For example, TC-F-002-09's refresh of a disabled user answered 503 rather than 400 in 5 of the 24 parallel runs of the unchanged gateway file. | That is the product failing closed (§5.8), not a lost event. This class of transient failure is already tracked in [#39](https://github.com/AI-RAM-POC/Ralysa/issues/39) (R37-r2-3). |
+
+### Checks (fix for #43)
+
+Local runs, Node 24.21.0, pnpm 11.27.1, dev stack up:
+
+- `pnpm lint`: 33/33 tasks. `pnpm test`: 33/33 tasks (`@ralysa/control-plane` 410 tests). `pnpm build`: 23/23 tasks.
+- `pnpm --filter @ralysa/control-plane test:integration`: 168 tests in 12 files (167 plus the new #43 case), 5 of 6 full runs green. The first full run, straight after the build and `tools:install`, failed 2 cases outside this change: `audit.int.ts` "a superuser's rewrite …" and `sign-in-browser.int.ts` TC-F-002-30. The log wasn't kept. The following 5 full runs were 168/168.
+- Looped, one run at a time, 25 times each: `gateway.int.ts` 25/25, `audit-routes.int.ts` 25/25, `audit.int.ts` 25/25.
+- Under parallel load:
+  - `gateway.int.ts` 24-way: 24/24 (unchanged file: 0/24).
+  - `audit-routes.int.ts` 10-way: 10/10 (unchanged file: 0/10).
+  - `audit.int.ts` 4-way: 4/4. At 12-way the dev Postgres ran out of connection slots, which says nothing about the tests.

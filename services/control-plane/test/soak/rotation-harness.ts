@@ -50,7 +50,7 @@ import type { FastifyInstance } from 'fastify';
 import type { Kysely } from 'kysely';
 import { buildApp } from '../../src/app.js';
 import { createRejectionAggregator } from '../../src/audit/rejections.js';
-import { type AuditWriter, createAuditWriter } from '../../src/audit/writer.js';
+import { createAuditWriter } from '../../src/audit/writer.js';
 import type { IdpDirectory } from '../../src/auth/directory-port.js';
 import { type GraphDirectory, createGraphDirectory } from '../../src/auth/idp/graph-directory.js';
 import { createIdpMetadataSource } from '../../src/auth/idp/metadata.js';
@@ -65,6 +65,7 @@ import { createPinoLogger } from '../../src/observability/pino.js';
 import { ensureOrganization } from '../../src/org/bootstrap.js';
 import { type IdpClientSecret, createIdpClientSecret } from '../../src/secrets/runtime.js';
 import { serveConfig, serveConfigInput } from '../fixtures/serve-config.js';
+import { trackAuditWriter } from '../integration/support/audit-writes.js';
 import { type TestDatabase, createTestDatabase } from '../integration/support/db.js';
 
 export const SIGNING_KEY = 'ralysa-rts-signing';
@@ -225,21 +226,15 @@ export async function runRotationScenario(options: ScenarioOptions): Promise<Sce
     await db.migrate(ORG);
     const cpDb: Kysely<Database> = createDb<Database>(await db.pool('cp_app', 12));
     await ensureOrganization(cpDb, config);
-    // Fire-and-forget audit writes are tracked, so the database outlives them.
-    const pending = new Set<Promise<unknown>>();
-    const real = createAuditWriter({ db: createDb<Database>(await db.pool('audit_writer', 6)) });
-    const track = <T>(p: Promise<T>): Promise<T> => {
-      pending.add(p);
-      void p.finally(() => pending.delete(p)).catch(() => undefined);
-      return p;
-    };
-    const writer: AuditWriter = {
-      write: (org, events) => track(real.write(org, events)),
-      writeOrSpool: (org, events) => track(real.writeOrSpool(org, events)),
-    };
-    cleanups.push(async () => {
-      while (pending.size > 0) await Promise.allSettled([...pending]);
-    });
+    // Fire-and-forget audit writes are tracked, so the database outlives them (and a write that
+    // committed after its promise rejected on the 250 ms budget is counted, #43).
+    const writerPool = await db.pool('audit_writer', 6);
+    const audit = trackAuditWriter(
+      createAuditWriter({ db: createDb<Database>(writerPool) }),
+      writerPool,
+    );
+    const { writer } = audit;
+    cleanups.push(() => audit.settled());
 
     const bao = createOpenBao({
       addr: stack.openbao.addr,
@@ -665,7 +660,7 @@ export async function runRotationScenario(options: ScenarioOptions): Promise<Sce
       if ((await gateway.verify(`Bearer ${token}`)).ok) oldOk += 1;
     }
     const jwks = (await a.app.inject('/.well-known/jwks.json')).json<{ keys: { kid: string }[] }>();
-    while (pending.size > 0) await Promise.allSettled([...pending]);
+    await audit.settled();
     const rotatedEvents = (
       await db.superuser.query<{ kind: string; version: number; phase: string }>(
         `select details->>'kind' as kind, (details->>'version')::int as version,
