@@ -11,7 +11,7 @@ RICE columns: **R** reach (0–10), **I** impact (0.25–3), **C** confidence (%
 
 | Feature | Title | REQs | Phase | R | I | C | E | Score | Status | Folder |
 |---|---|---|---|---|---|---|---|---|---|---|
-| F-001 | Engineering and design-system foundations (tokens, RTL-ready layout, a11y lint) | REQ-106, REQ-109 (foundation slice) | 0 | 10 | 1 | 100% | 2 | 5.0 | In development (T01–T14, T16 merged; T15, T17, T18 open; G6 blocked by D-F001-E2E-1) | [../features/F-001-engineering-design-foundations/](../features/F-001-engineering-design-foundations/) |
+| F-001 | Engineering and design-system foundations (tokens, RTL-ready layout, a11y lint) | REQ-106, REQ-109 (foundation slice) | 0 | 10 | 1 | 100% | 2 | 5.0 | In development (T01–T14, T16 merged; T15, T17, T18 not started (need a human merge); G6 blocked by D-F001-E2E-1) | [../features/F-001-engineering-design-foundations/](../features/F-001-engineering-design-foundations/) |
 | F-002 | SSO sign-in (OIDC) and control-plane skeleton | REQ-016, REQ-095 | 0 | 10 | 3 | 100% | 1.5 | 20.0 | Testing: G6 approved with conditions (2026-09-26); next `/release` | [../features/F-002-sso-control-plane-skeleton/](../features/F-002-sso-control-plane-skeleton/) |
 | F-003 | Local Agent Host and Agent Protocol core | REQ-010, REQ-011 | 0 | 10 | 3 | 80% | 3 | 8.0 | Not started | [../features/F-003-agent-host-protocol-core/](../features/F-003-agent-host-protocol-core/) |
 | F-004 | Model Gateway v0 (one provider, vault credentials, per-call audit) | REQ-024, REQ-095 | 0 | 10 | 2 | 80% | 1.5 | 10.7 | Not started | [../features/F-004-model-gateway-v0/](../features/F-004-model-gateway-v0/) |

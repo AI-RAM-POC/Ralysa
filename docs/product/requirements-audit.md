@@ -19,26 +19,26 @@
 | Status | REQ-001–046 | REQ-047–082 | REQ-083–110 | **Total (110)** | NFR rows (12) |
 |---|---|---|---|---|---|
 | Implemented | 1 | 0 | 0 | **1** | 0 |
-| Partial | 3 | 3 | 4 | **10** | 4 |
-| Foundation only | 8 | 8 | 7 | **23** | 3 |
+| Partial | 0 | 1 | 4 | **5** | 4 |
+| Foundation only | 11 | 10 | 7 | **28** | 3 |
 | Not started | 34 | 25 | 17 | **76** | 5 |
 
-This is expected at this point: only Phase 0 features F-001 (partly) and F-002 have code. These folders hold only a README and a placeholder `package.json`, and the `placeholder-guard` check enforces that:
-- `apps/cli`, `apps/desktop`
-- `services/agent-host`, `services/model-gateway`, `services/mcp-gateway`, `services/extraction`, `services/workspace-runtime`
-- `packages/sdk`, `packages/views`, `packages/workbench`
-- every `packs/*`
-- `deploy/helm`, `deploy/terraform`
+This is expected at this point: only Phase 0 features F-001 (partly) and F-002 have code.
+- **Guarded placeholders:** these folders hold only a README and a placeholder `package.json`, and the `placeholder-guard` check enforces that:
+  - `apps/cli`, `apps/desktop`
+  - `services/agent-host`, `services/model-gateway`, `services/mcp-gateway`, `services/extraction`, `services/workspace-runtime`
+  - `packages/sdk`, `packages/views`, `packages/workbench`
+- **README only, not guarded:** every `packs/*`, `deploy/helm` and `deploy/terraform`.
 
 ## Phase 0 requirements
 
 | REQ | Title | Feature | Status | Evidence | Missing |
 |---|---|---|---|---|---|
-| REQ-016 | IdP-only OIDC sign-in, no passwords, MFA from the IdP | F-002 | **Implemented** (Entra, mock IdP) | `tooling/repo-scripts/src/check-no-password.ts`; `services/control-plane/src/auth/sign-in.ts`, `identity-mapping.ts`; tests `sign-in.int.ts` (TC-01, -07, -09, -21, -24, -31), `sessions.int.ts` (AC-3), `openapi.test.ts` | Real-Entra run TC-F-002-28 (blocked on E-1); F-002 G6 conditions |
+| REQ-016 | IdP-only OIDC sign-in, no passwords, MFA from the IdP | F-002 | **Implemented** (Entra, mock IdP) | `tooling/repo-scripts/src/check-no-password.ts`; `services/control-plane/src/auth/sign-in.ts`, `identity-mapping.ts`; tests `sign-in.int.ts` (TC-01, -07, -09, -21, -24, -31), `sessions.int.ts` (AC-3), `openapi.test.ts` | Caveats: real-Entra run TC-F-002-28 (blocked on E-1); F-002 G6 conditions |
 | REQ-095 | Credentials only in a vault, rotation without an outage | F-002, F-004 | Partial | (a) `scans.int.ts` (pg_dump, logs, deploy, `cp.credential`), CI artefact and image scans; (b) `rotation.int.ts` (TC-15, -20), soak 0/1,199 failures | The F-004 slice (provider keys, "never in prompts"); CLI and desktop clients |
 | REQ-106 | English/Arabic UI, RTL, i18n keys, logical CSS | F-001 → F-021 | Partial | `tooling/eslint-config/react-ui.js` (no literal strings), logical-CSS lint tests, `check-i18n.ts`, `apps/ui-lab/e2e/mirroring.spec.ts`, `visual.spec.ts` (68 LTR/RTL snapshots), `locale.spec.ts` | Only the ui-lab gallery and an empty `apps/web` shell; locale not from the profile; native Arabic review (OQ-D8) |
 | REQ-109 | WCAG 2.1 AA in both languages | F-001 → F-021 | Partial | `e2e/a11y.spec.ts` (axe), `keyboard.spec.ts`, `packages/ui/test/contrast.test.ts` | Only ui-lab components; no manual screen-reader audit; D-F001-E2E-1 and TC-F-001-25 open; browser matrix TC-F-001-16 |
-| REQ-001 | CLI: device-code sign-in and streaming chat | F-005 | Partial | `packages/auth/src/client/idp-device.ts`, `exchange.ts`, `token-manager.ts` (no file token store); tests `client-flows.test.ts`, `token-manager.test.ts` | No CLI app, `/login`, chat, streaming, cancel, model-call audit or OS keychain store |
+| REQ-001 | CLI: device-code sign-in and streaming chat | F-005 | Foundation only | `packages/auth/src/client/idp-device.ts`, `exchange.ts`, `token-manager.ts` (no file token store); tests `client-flows.test.ts`, `token-manager.test.ts` | No CLI app, `/login`, chat, streaming, cancel, model-call audit or OS keychain store |
 | REQ-010 | Local Agent Host with no provider keys | F-003 | Foundation only | `check-banned-deps.ts`, `check-provider-hosts.ts`; client-attested audit ingest `client-events.ts` | The Agent Host itself |
 | REQ-024 | Model Gateway v0 | F-004 | Foundation only | `model-gateway` service identity and audience (`gateway.int.ts`), audit envelope model/token/region fields, `packages/secrets` | The gateway, the provider call, per-call audit and usage |
 | REQ-011 | Agent Protocol core | F-003 | Not started | Schema generator only (`packages/protocol/src/schema/generator.ts`) | Every method and event |
@@ -47,13 +47,13 @@ This is expected at this point: only Phase 0 features F-001 (partly) and F-002 h
 
 | REQ | Title | Planned | Status | Evidence / missing |
 |---|---|---|---|---|
-| 001 | CLI sign-in and chat | F-005 / P0 | Partial | See Phase 0 table |
+| 001 | CLI sign-in and chat | F-005 / P0 | Foundation only | See Phase 0 table |
 | 002 | Full CLI command set, non-interactive | F-017 / P1 | Not started | — |
 | 003 | Desktop app with local Agent Host | F-015 / P1 | Not started | The PKCE loopback flow exists for the CLI and could be reused |
 | 004 | Web Chat workspace | F-016 / P1 | Foundation only | `apps/web` shell with ar/en catalogs, `LocaleProvider`, `ThemeProvider`. Missing: web sign-in, chat |
 | 005 | Code workspace | F-015 / F-024 | Not started | — |
 | 006 | Data and Docs workspaces | F-025, F-026 / P2 | Not started | — |
-| 007 | Common UI elements | F-015, F-016 / P1 | Partial | Theme (`packages/ui/src/theme/ThemeProvider.tsx`), RTL `AppShell`, tokens. Missing: palette, tool/approval/blocked cards, usage indicator, branding, default layout |
+| 007 | Common UI elements | F-015, F-016 / P1 | Foundation only | Theme (`packages/ui/src/theme/ThemeProvider.tsx`), RTL `AppShell`, tokens. Missing: palette, tool/approval/blocked cards, usage indicator, branding, default layout |
 | 008 | One account across surfaces | F-015, F-016 / P1 | Not started | — |
 | 009 | Session handoff, responsive 360 px | F-024 / P2 | Not started | — |
 | 010 | Local Agent Host, gateways only | F-003 / P0 | Foundation only | See Phase 0 table |
@@ -63,9 +63,9 @@ This is expected at this point: only Phase 0 features F-001 (partly) and F-002 h
 | 014 | Web Workspace Runtime | F-024 / P2 | Not started | — |
 | 015 | Engine swappability | F-017 / P1 | Not started | — |
 | 016 | IdP-only OIDC sign-in | F-002 / P0 | **Implemented** | See Phase 0 table |
-| 017 | Five IdPs, OIDC and SAML, admin revocation | F-006 / P1 | Partial | Entra device code and PKCE loopback; `access_ttl_s` 60–3600 s; refresh re-checks Graph; self sign-out (TC-13). Missing: Okta, Ping, Keycloak, Google, SAML, desktop/web flows, admin revocation ≤ 60 s. **Gap:** the config allows a 1-minute TTL (spec minimum 5), and a group removal waits for the next refresh |
+| 017 | Five IdPs, OIDC and SAML, admin revocation | F-006 / P1 | Foundation only | Entra device code and PKCE loopback; `access_ttl_s` 60–3600 s; refresh re-checks Graph; self sign-out (TC-13). Missing: Okta, Ping, Keycloak, Google, SAML, desktop/web flows, admin revocation ≤ 60 s. **Gap:** the config allows a 1-minute TTL (spec minimum 5), and a group removal waits for the next refresh |
 | 018 | SCIM 2.0 | F-030 / P2 | Not started | — |
-| 019 | Group → profile mapping | F-006 / P1 | Foundation only | `cp.idp_group.role` (user, platform_admin), audited `directory.group_role.changed`. Missing: profiles, deny-overrides, effective-permission viewer |
+| 019 | Group → profile mapping | F-006 / P1 | Foundation only | `cp.idp_group.role` (access, platform_admin), audited `directory.group_role.changed`. Missing: profiles, deny-overrides, effective-permission viewer |
 | 020 | Declarative versioned policy | F-006 / P1 | Foundation only | Static `p0-static:<hash>` policy version (`auth/policy-version.ts`), immutable org region. Missing: policy language and store |
 | 021 | Server-side authorization, live propagation | F-006 / P1 | Foundation only | PEP toolkit in `packages/auth` (verifier, revocation feed, principal resolver with `session_roles`), governance feed; `gateway.int.ts`. Missing: PDP, policy propagation |
 | 022 | Denied tools hidden from the model | F-006 / P1 | Not started | — |
@@ -115,10 +115,10 @@ This is expected at this point: only Phase 0 features F-001 (partly) and F-002 h
 | 061 | Never-automated classes | F-010 / P1 | Not started | — |
 | 062 | Approval experience | F-010 / P1 | Foundation only | `approval.presented` action, `payload_hash` audit column. Missing: approval service and UI |
 | 063 | Prompt-injection defence | F-010 / P1 | Not started | — |
-| 064 | Kill switch | F-012 / P1 | Partial | `cp.kill_switch` (read-only), `governance/kill-switch.ts`, 423 + `tool.call.denied` in `client-events.ts`, feed every 5 s; tests `audit-ingest.test.ts`, `audit-routes.int.ts`. Missing: activate/deactivate API, gateway enforcement ≤ 30 s, banner, activation audit |
+| 064 | Kill switch | F-012 / P1 | Foundation only | `cp.kill_switch` (read-only), `governance/kill-switch.ts`, 423 + `tool.call.denied` in `client-events.ts`, feed every 5 s; tests `audit-ingest.test.ts`, `audit-routes.int.ts`. Missing: activate/deactivate API, gateway enforcement ≤ 30 s, banner, activation audit |
 | 065 | AI-generated labels | F-012 / P1 | Not started | — |
 | 066 | `/me` console page | F-018 / P1 | Foundation only | `GET /v1/me` API. Missing: the page |
-| 067 | `/admin` v1 | F-018 / P1 | Partial | Admin-gated audit search `GET /v1/audit/events` (`audit/routes/query.ts`, `audit-routes.int.ts`). Missing: all console UI and other admin functions |
+| 067 | `/admin` v1 | F-018 / P1 | Foundation only | Admin-gated audit search `GET /v1/audit/events` (`audit/routes/query.ts`, `audit-routes.int.ts`). Missing: all console UI and other admin functions |
 | 068 | `/dept` console | F-029 / P2 | Not started | — |
 | 069 | Deep links, one-time login code | F-018 / P1 | Not started | — |
 | 070 | AI register, regulator evidence pack | F-012 / P1 | Not started | — |
@@ -184,6 +184,8 @@ This is expected at this point: only Phase 0 features F-001 (partly) and F-002 h
 | Observability | Partial | Fail-closed audit writer, client and service ingest, `inference_region`. Missing: model/tool calls, metrics exporter |
 | Governance latency | Foundation only | Revocation feed stale after 60 s (TC-11); kill switch read-only. No timed propagation measurement |
 | Residency | Foundation only | Immutable org region, region fields. Missing: egress check, residency test |
+
+**Classification note (review of #60, R60-1):** REQ-001, -007, -017, -064 and -067 have real code behind them but meet none of their acceptance criteria, so they are Foundation only rather than Partial.
 
 ## Findings from the audit
 
