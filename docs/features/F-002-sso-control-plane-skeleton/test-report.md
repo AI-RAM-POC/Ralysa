@@ -340,14 +340,15 @@ Observed and expected, so not defects:
 
 ## Recommendation
 
-**Go with conditions** for G6. The two founder decisions that G6 was waiting for are recorded in
-security.md P6-8:
-- **C1:** SEC-F002-35 (b)–(d), -36 and -37 accepted as open risks for dev and CI with synthetic
-  identities only, to be built before F-011 or any non-dev deployment, whichever comes first;
+**Not ready until C1 is confirmed; then go with conditions.** G6 waits for two founder decisions (security.md P6-8):
+- **C1 (pending):** SEC-F002-35 (b)–(d), -36 and -37 accepted as open risks for dev and CI with
+  synthetic identities only, to be built before F-011 or any non-dev deployment, whichever comes
+  first. The session selected this option, but Claude drafted its wording. G6 stays blocked until
+  Ram Mohan Rao Adduri confirms it in his own words (a comment on #46 from his own GitHub account);
 - **C2:** SEC-F002-42 is **fixed before G7**
   ([#47](https://github.com/AI-RAM-POC/Ralysa/issues/47)).
 
-Without those two recorded decisions this report's recommendation would be **Not ready**.
+Once C1 is confirmed, the recommendation is **go with conditions**, as follows.
 
 The quality evidence supports a release candidate for a dev-only Phase 0 skeleton:
 - Every automated TC passes in all of these:
