@@ -1,8 +1,8 @@
 # F-002: SSO sign-in (OIDC) and control-plane skeleton: Status
 
-- **Current phase:** 6 – Testing (`/test F-002`, branch `test/F-002-g6`). Development (T01–T16) is merged. test-plan.md and test-report.md are complete. The test engineer recommends **Not ready** until the founder decides SEC-F002-35 (b)–(d), -36 and -37 in writing; after that, go with conditions (TC-F-002-28 on E-1, and more; see test-report.md). G6 is not recorded.
+- **Current phase:** 6 – Testing (awaiting G6). Development (T01–T16) is merged. test-plan.md and test-report.md are complete ([#46](https://github.com/AI-RAM-POC/Ralysa/pull/46)), and the security reviewer's phase-6 pass is in security.md (pass with conditions). G6 waits for the founder's written decision on SEC-F002-35 (b)–(d), -36 and -37 (C1) and a decision on SEC-F002-42 (C2). After that, the test engineer recommends go with conditions. G6 is not recorded.
 - **GitHub issue:** https://github.com/AI-RAM-POC/Ralysa/issues/5
-- **Branch / PR:** `feat/F-002-closeout`, [#40](https://github.com/AI-RAM-POC/Ralysa/pull/40) (T15: operator and integrator READMEs, test-report input), in review; every earlier task merged (#18–#37)
+- **Branch / PR:** `test/F-002-g6`, [#46](https://github.com/AI-RAM-POC/Ralysa/pull/46) (phase 6: test plan, test report, security review); every development task is merged (#18–#44)
 - **Release:**
 
 ## Open items

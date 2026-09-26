@@ -313,3 +313,194 @@ This is the right remediation. A narrowly scoped SECURITY DEFINER function turns
 Reviewer: security-reviewer agent, 2026-09-25. Agent review only; the G4–G8 approval rows are not changed by this section.
 
 Source: Vault Transit API — `exportable` and `allow_plaintext_backup` "cannot be disabled" once set: https://developer.hashicorp.com/vault/api-docs/secret/transit
+
+## Phase 6 security review (2026-09-26)
+
+> Phase 6 · Owner: security-reviewer · Reviewed: `main` at `f795d6b` (CI run 36256916071, green). Method: read-only review of `services/control-plane`, `packages/auth`, `packages/secrets`, `packages/protocol`, `tooling/dev-stack` (policies, role bootstrap), `deploy/docker/`, `.dockerignore`, `.github/workflows/ci.yml`, `turbo.json`, plus design.md §3 and §6, status.md, implementation-notes.md and test-report.md. Tests are cited from source; they were not re-run for this review (CI on `f795d6b` is the evidence). Nothing was run against a live system. The only external lookup was the GitHub Advisory Database, for the direct runtime dependencies.
+> Labels as in §3: **Confirmed** = shown by the code; **Suspected** = depends on deployment, tenant configuration or behaviour not exercised here.
+> Numbering: SEC-F002-39 to -41 already exist (T16-1 review), so new findings start at **SEC-F002-42**.
+
+### P6-1. Threat-model delta since Phase 4
+
+The Phase 4 assets, trust boundaries and entry points (§1) still hold. Implementation added the following:
+- **Assets:**
+  - the audit spool volume (`/var/lib/ralysa/audit-spool`: denials with `client_ip` and HMACs);
+  - the sealer's `audit_checkpoint` log lines (the off-host anchor);
+  - `cp.idp_group.display_name` and `cp.app_user.display_name`/`email` (IdP- and Graph-supplied text);
+  - the `Principal` contract that F-003 and F-004 policy enforcement points (PEPs) will authorize on.
+- **Entry points:**
+  - `GET /healthz` and `GET /readyz` (unauthenticated, not rate-limited);
+  - `RALYSA_CFG__*` environment overrides (a second configuration channel);
+  - `sys/seal-status` (the unauthenticated OpenBao probe used by the production guards).
+- **Boundary:** node or volume to the `serve` process (spool files are replayed as server-attested events).
+
+### P6-2. Status of SEC-F002-01 to -41
+
+"Verified" means the control is in the code at the cited lines and a test exercises it. All paths are relative to the repository root; `cp/` = `services/control-plane/`.
+
+| ID | Sev. | Status | Evidence (code) | Evidence (test) / note |
+|---|---|---|---|---|
+| -01 (required) | High | **Implemented, verified**: (a) NOLOGIN `ralysa_audit_owner`, migrator not a member; (b) superuser-owned DDL event trigger; (c) Transit-signed chain heads + `audit-verify`; (d) residual stated | `cp/src/db/sql/bootstrap-roles.sql:45-59, 72-157`; `cp/src/db/migrations/audit/0001_audit_store.ts:148-226`; `cp/src/audit/sealer/checkpoint.ts:171-247`; `cp/src/audit/verify/audit-verify.ts:70-212` | `cp/test/integration/db.int.ts:133, 345, 371`; `checkpoint.int.ts:186, 251`. Residual trust anchor: -36, -38 (open) |
+| -02 (required) | High | **Implemented, verified** | per-entry-point strict schemas `cp/src/config/schema.ts:74-107, 172`; policies `tooling/dev-stack/src/bootstrap-vault.ts:89-115` | `cp/test/config.test.ts:66`; `config-serve.test.ts:11`; `tooling/dev-stack/test/integration/policies.int.ts` |
+| -03 (required) | Med | **Implemented, verified** | `cp/src/audit/action-allowlist.ts:29-40`; `routes/service-events.ts:115-122`; `packages/protocol/src/audit/actions.ts:33-54`; config refusal `schema.ts:215-224` | `cp/test/audit-ingest.test.ts:31`; `integration/audit-routes.int.ts:423`; `config-serve.test.ts:86` |
+| -04 (required) | Med | **Implemented, verified** for (a) callback-vs-redemption IP (deny by default), (b) `__Host-` binding cookie, (d) tests. (c) is an F-005 contract | `cp/src/auth/flow-b.ts:145-148, 202-207`; `grants/authorization-code.ts:111-151` | `cp/test/flow-b-routes.test.ts`; `integration/sign-in-browser.int.ts`. Residual: an attacker behind the victim's own egress IP passes the IP check (insider on the same NAT) |
+| -05 (required) | Med | **Partial**: `ipaddr` recorded, mismatch flagged, counted and logged, never denied | `cp/src/auth/sign-in.ts:192-200`; `grants/token-exchange.ts:120-126` | `sign-in-exits.test.ts:451`. Deny waits for Q4 (TC-F-002-28 blocked on E-1). Counters go to `noopMetrics`, so the alert keys on the log line |
+| -06 (required) | Med | **Implemented, verified** for (a) strong-flow admin rule, (c) `audit.query` committed first. (b) defaults to true in production under EXC-F002-01 | `cp/src/auth/identity-mapping.ts:45-85`; `config/schema.ts:238-241`; `config/guards.ts:43-47`; `audit/routes/query.ts:157-165` | `identity-mapping.test.ts`; `audit-routes.int.ts`. **But PEPs never see the session role: see new SEC-F002-42** |
+| -07 (required) | Med | **Implemented, verified** (consume-first, `uti` required, `alg`/`typ`/`ver` pinned, RTS issuer refused) | `cp/src/auth/idp/entra-token-validator.ts:159-169, 194-214`; `sign-in-store.ts:301-315`; `grants/token-exchange.ts:105-108` | `entra-token-validator.test.ts:122, 168` |
+| -08 (required) | Med | **Implemented, verified** | `z.uuid()` group ids `schema.ts:136-137`; GUID-only claim `entra-token-validator.ts:108-118`; Graph always authoritative `graph-directory.ts:209-223`; discovery origin pin `idp/metadata.ts:70-83` | `entra-token-validator.test.ts:207`; `graph-directory.test.ts`; `sign-in.int.ts:792` |
+| -09 | Med | **Implemented, verified** | `graph-directory.ts:187-199, 224-256`; `grants/refresh-token.ts:206-224`; `sign-in.ts:263-291` | `graph-directory.test.ts:176` |
+| -10 | Med | **Open (founder decision, E-1/Q3)**. Interim: ≤ 180-day secret with an expiry register | `cp/README.md:249-250` runbook | Not G6-blocking (the mock IdP is the only IdP). Decide before E-1 consent |
+| -11 (required) | Med | **Partial**. Runtime re-check of both flags on the RTS key and the checkpoint key and the explicit denies are **verified**. **The OpenBao audit device is not in any deploy artefact** | `cp/src/auth/tokens/signing-keys.ts:320-356`; `audit/sealer/checkpoint.ts:104-145`; `packages/secrets/src/openbao/transit.ts:41-57`; `bootstrap-vault.ts:60-71` | `packages/secrets/test/openbao.test.ts:338`; `checkpoint.int.ts`. Audit device required before any non-dev deployment |
+| -12 (required) | Med | **Implemented, verified**, with gaps (new **SEC-F002-45**) | unset env = production `schema.ts:14`; `guards.ts:5-75`; protected overrides `config/load.ts:36-51`; OpenBao storage refusal at every entry point `commands.ts:55-58`, `serve.ts:79-80, 259-260` (#41/#42) | `entry-point-guards.test.ts` (TC-F-002-34); `config.test.ts:40, 135, 147` |
+| -13 (required) | Med | **Implemented, verified** | `pnpm deploy --prod` `deploy/docker/control-plane.Dockerfile:35-48`; image scan `.github/workflows/ci.yml:256-261`; per-run mock keys and loopback bearer (T09) | `tooling/dev-stack/test/mock-idp.test.ts:182, 684`; CI `ci/integration-image-scan` |
+| -14 (required) | Med | **Implemented, verified** | server-issued sessions, 20 open per `sid`, `final_seq`, gaps `cp/src/audit/routes/client-events.ts:176-211, 343-354`; sweep `audit/client-sweep.ts` | `audit-routes.int.ts:865` |
+| -15 (required) | Med | **Implemented, verified** on the client path | `client-events.ts:129, 330-333`; `writer.ts:94-96` | `packages/protocol/test/audit.test.ts:148`. The service path isn't covered: new **SEC-F002-50** |
+| -16 | Med | **Implemented** per design, with gaps (new **SEC-F002-43**, **-48**) | `cp/src/http/rate-limits.ts`; `audit/rejections.ts`; `auth/routes/sign-in-failures.ts` | `audit-rejections.test.ts`; `app.test.ts:133`; `gateway.int.ts:281` |
+| -17 | Low | **Implemented**: the loser of a race is treated as reuse | `grants/refresh-token.ts:266-297`; single-flight in `packages/auth/src/client/token-manager.ts` | `sessions.int.ts:509`; `token-manager.test.ts`. One-refresher contract on F-003/F-005 |
+| -18 | Low | **Implemented, verified** (a)–(e) | `packages/auth/src/verify/revocation-feed.ts:131-156, 177-185`; window `packages/protocol/src/control-plane/governance.ts:37`; DB clock + 30 s `cp/src/auth/sessions.ts:193`; control plane reads DB `auth/verifier.ts:38-76`; future `iat` `access-token-verifier.ts:216-219` | `revocation-feed.test.ts`; `sessions.int.ts:421, 465, 604` |
+| -19 | Low | **Implemented, verified** | `access-token-verifier.ts:191-198`; `protocol/src/auth/claims.ts:20-29` | `access-token-verifier.test.ts`; `protocol/test/auth.test.ts` |
+| -20 | Low | **Implemented, verified** | `sessions.ts:241-291`; `sign-in-store.ts:377-407` | `sessions.int.ts:533` |
+| -21 | Low | **Implemented, verified** | `cp/src/app.ts:47`; `http/logging.ts:12-40, 91-143` | `logging.test.ts`; `app.test.ts:162`; `scans.int.ts:369` |
+| -22 | Low | **Partial**. AppRole production opt-in and non-retired service key versions are verified. Kubernetes role bindings exist only as a template | `packages/secrets/src/openbao/auth.ts:18-30`; `grants/client-credentials.ts:59-90`; `bootstrap-vault.ts:157-197` | `bootstrap.test.ts:203`; `service-key-cache.test.ts`. Rendering and binding is F-023 |
+| -23 | Low | **Closed (N/A)**: OQ-D7 resolved to the service API; no service holds a DB writer role | `service-events.ts:1-3` | — |
+| -24 | Low | **Implemented**, with gaps (new **SEC-F002-46**, which covers #45) | `cp/src/audit/spool.ts`; `schema.ts:164-170` | `audit-spool.test.ts`; `audit.int.ts:144` |
+| -25 | Low | **Implemented, verified** | `0001_audit_store.ts:148-226` (ALWAYS triggers, one event per statement, org restored) | `db.int.ts:162` |
+| -26 | Low | **Implemented, verified** | `pg_try_advisory_xact_lock` in `audit/sealer/sealer.ts:53-57`; sealer is its own process `commands.ts:116-168` | `audit.int.ts:251` |
+| -27 | Low | **Implemented, verified** (`contents: read`, `persist-credentials: false`, no secrets, Postgres-only logs, 3-day retention) | `ci.yml:210-277`; `soak.yml:29-30` | `tooling/repo-scripts/src/check-ci-invariants.ts:152-208` |
+| -28 | Low | **Implemented, verified** | `turbo.json:33-37` (`cache: false`) | `check-ci-invariants.ts:119, 131` |
+| -29 | Low | **Implemented, verified** | Dockerfile (multi-stage, digest-pinned, non-root, npm/corepack removed); `.dockerignore`; SCRAM over stdin | `env.test.ts:50`; `bootstrap.test.ts:51`; image scan |
+| -30 | Low | **Implemented** for client-supplied strings. **IdP/Graph-supplied strings are not covered** (new **SEC-F002-47**) | `cp/src/auth/display-text.ts:10-28`; `client-events.ts:101-113` | `identity-mapping.test.ts:90`; `sign-in-exits.test.ts:487` |
+| -31 | Low | **Implemented, verified** | `cp/src/db/kysely.ts:26-40`; `http/request-context.ts:33-48` | `app.test.ts:222` (X-Org-Id ignored); `lint-config.test.ts:15` |
+| -32 | Low | **Implemented** (at start; there is no config reload) | `cp/src/serve.ts:109-113`; `auth/device-code-switch.ts` | `sign-in.int.ts:498` |
+| -33 | Info | **Verified** | JWKS from DB rows `signing-keys.ts:473-486` | `app.test.ts:77` |
+| -34 | Med | **Remediated, verified** (audit/0002; the sealer holds no writer credential) | `commands.ts:116-143`; `schema.ts:91-99`; `0002_custody_violation_fn.ts:23-24, 71` | `custody-fn.int.ts` T1–T11; `policies.int.ts:64` |
+| -35 (a) | Med | **Implemented, verified** (violation is terminal, flags can't be cleared) | `checkpoint.ts:72-81, 104-115` | `checkpoint.test.ts:88`; `checkpoint.int.ts:326` |
+| **-35 (b)–(d)** | Med | **Open. Blocks G6 unless accepted in writing** (§P6-7) | no key id in `audit_checkpoint` (`0001_audit_store.ts:126-135`); literal key `schema.ts:93, 105`; `audit-verify` stops on a flagged key `commands.ts:186-198`; interim runbook only (`cp/README.md:814-840`) | — |
+| **-36** | Med | **Open. Blocks G6 unless accepted in writing** | `audit-verify` trusts the live key `commands.ts:186-188`; no thumbprint in `sealer_started` or checkpoint lines `commands.ts:144-148`, `checkpoint.ts:242` | — |
+| **-37** | Low | **Partial. Blocks G6 (with -36) unless accepted in writing**. In-process: stays stopped. Across a restart, a checkpoint key recreated under the same name signs again (no stored thumbprint). The RTS key does detect this across restarts through DB rows | `checkpoint.ts:107-115`; RTS: `signing-keys.ts:345-355` | `serve.int.ts:271` (RTS) |
+| **-38** | Low | **Open. Blocks any non-dev deployment** (not G6). Without `--log-checkpoints`, `audit-verify` exits 0 with no `anchor: none` | `commands.ts:212-228`; `audit-verify.ts:185-200` | — |
+| -39 | Low | **Fixed, verified** (retried until the DB confirms) | `checkpoint.ts:89-101` | `checkpoint.test.ts:103` |
+| -40 | Low | **Fixed, verified** (both flags recorded) | `checkpoint.ts:128-142` | `checkpoint.test.ts:72` |
+| -41 | Info | **Closed**: new functions use `pg_catalog, pg_temp` | `0002_custody_violation_fn.ts:23-24` | — |
+
+### P6-3. Fresh pass: areas found sound
+
+- **Token verification (`packages/auth`).**
+  - Checks that are correct: compact-JWS shape; `alg` = ES256 only; `typ` = `at+jwt`; forbidden JOSE headers; `kid` derived from config; single string `aud`; `iss` exact; `tid` pinned to the deployment org; 30 s skew; future `iat` rejected; claim schema; `token_use`.
+  - The JWKS fetch doesn't follow redirects. A key-set fault answers 503; it is never recorded as a token rejection.
+  - Service tokens need a registered `client_id`.
+  - Revocation: the feed counts as confirmed only when fresh and with a non-decreasing epoch; the window (65 min) covers the maximum configurable access TTL; the G-1 60 s bound holds. The control plane reads revocation state from the database and requires `session.user_id = sub`.
+- **Flow A.**
+  - Header, signature (RS256 against the pinned tenant's keys), then `iss`, `tid`, `ver`, `aud`, `azp` and `scp`.
+  - `iat` must be ≤ 10 min old, and `uti` is burned in its own committed transaction before anything else can fail.
+  - The device-code switch is enforced server-side, and the replay key outlives the token.
+- **Flow B.**
+  - RTS→IdP leg: 32-byte `state`/`nonce`/verifier, PKCE S256.
+  - Browser binding: an `HttpOnly`, `SameSite=Lax`, per-flow `__Host-` cookie.
+  - The authorization request is consumed once (`DELETE … RETURNING`).
+  - The code lives 60 s and is bound to client, exact redirect URI and challenge. A wrong verifier doesn't consume it; a tombstone makes reuse revoke the session. The redemption IP must match the callback IP.
+  - **No open redirect:** the redirect URI must be an IP-literal loopback with a valid port range (`protocol/src/auth/oauth.ts:29-43`), and a bad client or redirect gets a plain-text 400 with no redirect.
+  - IPv4-mapped addresses are normalised (`http/ip.ts`). Login CSRF (injecting a code into a victim's CLI) is prevented by PKCE.
+- **Refresh.**
+  - Rotation is one guarded UPDATE, and reuse revokes the family.
+  - Every refresh re-checks the user at Graph, and removal from the admin group drops `platform_admin` from the session.
+  - Signing happens before the old token is consumed, so a signing failure leaves the token retryable.
+- **Tenancy.**
+  - Every query goes through `withOrg` with a transaction-local `app.org_id`, on tables with FORCE RLS.
+  - The org comes from config or the verified token only. Rejection aggregation uses the config org, never the rejected token's `tid`.
+- **Audit.**
+  - The writer can only INSERT, with a column grant. Row and statement triggers on every table are set ALWAYS.
+  - Seals are written under an advisory transaction lock, with the primary key as fork guard. Checkpoints are signed through Transit.
+  - `audit-verify` recomputes the chain from the events, not the stored seals.
+  - Rejection aggregation is bounded (600 events per window per instance plus summaries).
+  - The client path fails closed (503, `ack=false`). The kill-switch refusal is stored as `tool.call.denied`. Only v7 event ids are accepted from outside, so derived ids can't be pre-empted (R35-1).
+- **Secrets.**
+  - The DB holds KV paths only, and config fields are KV paths. Transit keys are non-exportable, and signing uses an explicit version.
+  - Log redaction plus scrubbing on objects, messages and the serialized line. `disableRequestLogging`, and requests are logged by route template only.
+  - The image is scanned: filesystem, `inspect` config and history, and exact values.
+  - **In-memory OpenBao refusal (#41/#42):** every entry point (`serve`, `bootstrap-org`, `migrate`, `migrate --audit`, `sealer`, `audit-verify`) refuses in-memory, sealed or unreachable OpenBao in production before it opens a DB pool (`commands.ts:55-58`, `serve.ts:79-80, 259-260`; `entry-point-guards.test.ts`). Residual: the check runs at start only, and it relies on `sys/seal-status.storage_type`, which is acceptable.
+- **Input validation.**
+  - Strict zod schemas on every route. The form parser refuses repeated parameters and caps bodies at 16 KB; JSON bodies are capped at 256 KB. Client events are limited to 4 KB each and must be I-JSON.
+  - Fastify's JSON parser has prototype-poisoning protection on by default, and no CORS is enabled.
+  - **SSRF:** `graph_base_url` and `issuer` are pinned in production (the issuer can't be overridden). Every discovery endpoint must be on the issuer's origin. `_claim_sources` is never followed. `vault.addr` is the exception: see SEC-F002-45 and -49.
+  - **Log injection:** N/A. Logs are structured JSON, no raw URL or body is logged, and display strings are sanitised.
+- **Supply chain.**
+  - Direct runtime dependencies (fastify 5.12.5, jose 6.2.12, openid-client 6.8.8, pg 8.23.0, pino 10.3.1, kysely 0.29.6, yaml 2.9.1, zod 4.6.5) have no open advisory in the GitHub Advisory Database (queried 2026-09-26). Transitive dependencies were not scanned: the OSV gate is part of the CI hardening the product owner deferred (F-001 BC-11, an accepted risk).
+  - Dockerfile: base images pinned by digest, no `syntax` directive, `pnpm deploy --prod`, uid 1000, application files owned by root.
+  - CI: `integration` and `soak` are least-privilege. The other jobs keep default token permissions under F-001 RF-2 and the deferred CI hardening. Recorded as accepted risk, not re-raised.
+- **Prompt injection and tool abuse:** N/A for F-002 (no model calls, no agent tools). The one forward risk is IdP- and Graph-supplied display strings: SEC-F002-47.
+
+### P6-4. New findings
+
+| ID | Finding | Status | Severity | Location | Recommendation |
+|---|---|---|---|---|---|
+| SEC-F002-42 | **The `Principal` roles PEPs are told to authorize on ignore the strong-flow admin rule and are a sign-in-time snapshot.** (1) `GET /v1/internal/principals/{id}` derives `roles` from group memberships, so an admin who signed in by device code (session roles `[user]`, `admin_role_withheld`) still gets `platform_admin`. The session role never reaches a PEP: it isn't in the token, and not in `Principal`. (2) `cp.group_membership` is written only at sign-in (`provision`). Refresh's Graph result only filters the session's roles, so a user removed from the admin group in Entra keeps `platform_admin` in `Principal` until their next full sign-in, up to `refresh_absolute_s` (7 d). (3) A changed `access.admin_group_id` isn't reconciled at start: the old group keeps `role='platform_admin'` until someone signs in. (4) The `@ralysa/auth` guide tells integrators to "decide here" on `principal.roles`. `/v1/audit/events` is safe because it requires both the session role and membership, but the design's "re-read at request time" is really "as of the last sign-in or refresh". | Confirmed | **Medium** (High once an F-003/F-004 PEP authorizes admin actions on it) | `cp/src/directory/routes.ts:77-86`; `grants/refresh-token.ts:225-228, 286-290`; `auth/sign-in-store.ts:189-297, 441-474`; `org/bootstrap.ts:19-66`; `packages/auth/README.md:96`; `audit/routes/query.ts:87-108` | Give PEPs the session's roles: `GET /v1/internal/principals/{user_id}?sid=` returns `session_roles` (session roles ∩ current membership). Document `roles` as directory roles that are never enough for `platform_admin`. On every refresh, write the Graph result for the two configured groups back to `cp.group_membership` (`graph_check`) and emit `directory.group_membership.changed` (`privileged` when the admin group changes). At `serve` start, reconcile `cp.idp_group.role` with config. Fix README:96. Tests: device-code admin → no `platform_admin` for that `sid`; admin removal visible in `Principal` after one refresh; an `admin_group_id` change takes effect at start. |
+| SEC-F002-43 | **An unauthenticated caller can cheaply exhaust the shared global rate limit and lock everyone out.** `/oauth2/*`, `/v1/auth/*` and `/.well-known/*` share one global per-instance bucket (default 1,200/min) plus a per-IP limit (60/min; IPv6 keyed by /64). Refresh, token exchange, code redemption and service `client_credentials` all go through `POST /oauth2/token` and are throttled in `onRequest` before the body is read. `/healthz` and `/readyz` have no limit, and each `/readyz` call runs a DB query on the `cp_app` pool (max 10). | Confirmed (code; not load-tested) | **Medium** | `cp/src/http/rate-limits.ts:19, 42-69, 85-107`; `app.ts:73-80, 88-115`; `config/schema.ts:156-163`; `auth/routes/token.ts:60-84` | **Scenario:** 20 IPv4 addresses (or 20 IPv6 /64s from one /59) per replica each send 60 req/min to `/.well-known/jwks.json`. Every token request then gets 429. Users can't sign in or refresh. Service tokens expire within 5 min, the governance feed can't authenticate, G-1 trips and every PEP rejects every token (fail-closed outage). Separately, many users behind one corporate egress IP exceed 60/min under normal refresh load. **Fix:** separate budgets per route family; serve JWKS and metadata from a ≤ 1 s cache outside the anonymous global bucket; give authenticated grants their own budgets after a cheap parse (`client_credentials` per registered client, refresh per token hash); configure trusted egress CIDRs with higher per-IP limits; add coarse /24 and /48 limits; move probes to an internal listener or cache readiness for 1 s. Add a TC showing that refresh and `client_credentials` still succeed while 25 source keys flood JWKS. |
+| SEC-F002-44 | **A custody violation on the RTS signing key has no recovery path, and the flagged versions stay in JWKS.** The flags can't be cleared (OpenBao 2.6.2, T16-1 notes). `signing_key` is `z.literal('ralysa-rts-signing')`, and recreating the key trips `key_replaced`, so RTS can never mint again without a code change or hand-editing `cp.signing_key_version`. `jwks()` keeps publishing every live version of the flagged key, and the control plane's own key set reads the same rows. The README says "don't recreate", and there is no RTS key-compromise runbook. This is the RTS-key counterpart of SEC-F002-35. | Confirmed | **Medium** | `cp/src/config/schema.ts:120`; `auth/tokens/signing-keys.ts:320-356, 473-486`; `cp/README.md:658, 686-688` | **Scenario:** an OpenBao admin (or an attacker with that access) sets `exportable` and exports the key. Every replica goes unready (correct), but sign-in stays down for good. Any path that still verifies against the published versions (PEP JWKS caches for ≤ 60 s, a PEP or client reaching a replica directly) accepts tokens minted with the exported key, with any `sub` and a non-revoked `sid`. **Fix:** key epochs (`signing_key` matching `^ralysa-rts-signing(-[0-9]{1,4})?$`; the kid pattern already comes from config); on a violation, withdraw the flagged key's versions from JWKS and from the control plane's own key set, as an audited mass sign-out; add a runbook "RTS signing key compromised". Test: flip `exportable` → JWKS drops the key; a new epoch signs after restart. |
+| SEC-F002-45 | **Environment overrides and production guards leave security settings changeable.** `PROTECTED_PATHS` doesn't cover `access.access_group_id`, `access.admin_group_id`, `access.loopback_ip_mismatch`, `access.device_code_enabled`, `access.admin_auth_context`, `idp.rts_client_id`, `org.id`, `vault.addr` or `vault.*_mount`. The `vault.addr` guard only checks `https://`. The `trust_proxy_cidrs` guard refuses only the exact `0.0.0.0/0` and `::/0`, so `0.0.0.0/1` + `128.0.0.0/1` or `::ffff:0:0/96` pass. `refresh_idle_s` and `refresh_absolute_s` have no bounds. | Confirmed | Low | `cp/src/config/load.ts:36-51, 120-124`; `config/guards.ts:14-16, 22, 40-42`; `config/schema.ts:149-150` | **Scenario:** someone who can set pod environment variables (Helm `extraEnv`, a CI/CD variable) but not the reviewed config file sets `RALYSA_CFG__ACCESS__ADMIN_GROUP_ID` to a group they control, or `…__LOOPBACK_IP_MISMATCH=alert` (which removes SEC-F002-04 a), or `…__VAULT__ADDR=https://<theirs>`. The last one receives the ServiceAccount JWT or `secret_id` at login and then supplies DB passwords and signatures. Only the override names are logged. **Fix:** protect all of `access.*`, `idp.*`, `org.*`, `vault.*`, `public_base_url` and `tokens.signing_key_pin_version`, or allow only a small operational list in production. Bound the refresh lifetimes (≥ access TTL, ≤ 7 d). Refuse trust-proxy prefixes shorter than /8 (IPv4) or /32 (IPv6) in production. |
+| SEC-F002-46 | **Spool durability and visibility (covers #45).** (1) #45: when a write misses its 250 ms budget and `spool.append` then throws (ENOSPC, EACCES, missing volume), the denial is neither stored nor spooled. The only trace is a warning line; there is no loss metric, and metrics go to `noopMetrics` anyway. (2) Replay stops at the first file whose write throws **for any reason**, including `InvalidAuditEventError`. A file written by an older version whose validation later tightened, or a tampered file, therefore blocks every later spooled event forever; only unparseable files are quarantined. (3) Spool files carry no MAC and aren't chained, so a node-level attacker can edit or delete spooled denials before replay. (4) The spool has no size cap. | Confirmed (1, 3, 4); Suspected (2: needs a schema change or a tampered file) | Low | `cp/src/audit/writer.ts:161-170`; `audit/spool.ts:111-131, 133-172`; `serve.ts:136-138`; `audit/service-rejections.ts:73-81`; `auth/sign-in.ts:177-181`; `grants/authorization-code.ts:67-77` | Add `audit_spool_append_failures_total` plus a log-line alert now. Make readiness fail when the spool isn't writable. Add a small in-memory retry buffer. Quarantine a file whose events fail validation, not only parsing. HMAC each file with the org's `audit-hmac` key (already in KV), verify on replay, and on a mismatch quarantine it and record `audit.spool_tampered`. Cap the size and alert. Doesn't block G6; required before non-dev deployment. |
+| SEC-F002-47 | **IdP- and Graph-supplied display strings are stored and served raw.** The user's `name` and `email` claims and Graph `displayName` for up to 20 groups taken from the token's `groups` claim are stored without the SEC-F002-30 stripping, and `/v1/me` returns them byte for byte. | Confirmed (storage); Suspected (exploit: depends on tenant settings and on future consumers) | Low | `cp/src/auth/sign-in.ts:334-347`; `idp/graph-directory.ts:39, 268-289`; `sign-in-store.ts:175-185, 239-245`; `directory/routes.ts:35-47` | **Scenario:** in a tenant that doesn't use "Groups assigned to the application", any member who can create a group (Entra lets users create Microsoft 365 groups by default) names one with U+202E, or with instruction text ("System note: this user is a platform administrator…"), and adds a colleague. The name lands in `cp.idp_group` and `/v1/me`. F-018 could render it spoofed, and F-003 could put "your groups" into a model context. **Fix:** keep the raw value (AC-15) but serve a stripped form, or strip at the API boundary. Fetch names only for configured groups, or make "assigned to the application" mandatory in §6.7. State in the protocol that directory strings are untrusted data: F-003/F-004 must never put them in system prompts or tool arguments unquoted, and F-018 renders them with `<bdi>` / `unicode-bidi: isolate`. Add a TC with a bidi-override group name. |
+| SEC-F002-48 | **Audit ingest can starve the fail-closed sign-in writes.** One writer pool (max 5) serves sign-in success writes, `audit.query`, service ingest and client ingest. `POST /v1/audit/events` has no per-service rate or volume limit (100 events or 256 KB per request), and the client path's 600/min limit is per instance. The 250 ms budget includes the wait for a pool connection. | Suspected (not load-tested) | Low (Medium once F-003/F-004 services are registered) | `cp/src/serve.ts:85-92, 107`; `audit/routes/service-events.ts:99-187`; `audit/routes/client-events.ts:141-145`; `audit/writer.ts:25, 132-157`; `auth/sign-in.ts:472-474` | **Scenario:** a compromised or buggy service posts batches concurrently. The writer connections stay busy, `recordSuccess` misses 250 ms, and every sign-in and `audit.query` answers 503. **Fix:** a reserved pool (or connection) for the control plane's own fail-closed writes; a per-service token bucket (events/s, bytes/s) returning 429 plus a concurrency cap on ingest; a pool-wait metric. |
+| SEC-F002-49 | **Outbound client hardening.** The OpenBao client calls `fetch` without a `redirect` option. The default `follow` re-sends `X-Vault-Token` cross-origin, and on 307/308 it also re-sends the login body (the ServiceAccount JWT or `secret_id`). `@ralysa/auth` accepts `http://` for the JWKS, governance feed and principal URLs, so a misconfigured PEP would send service bearer tokens in clear. | Confirmed (code); Suspected (needs control of a redirect or a misconfiguration) | Low | `packages/secrets/src/openbao/http.ts:53-58`; `packages/auth/src/verify/jwks.ts:18`; `verify/revocation-feed.ts:77`; `http.ts:84-86` | Set `redirect: 'error'` in the OpenBao client, as `idp/metadata.ts` and `graph-directory.ts` already do. In `@ralysa/auth`, refuse `http://` unless the host is loopback or `allowInsecureHttp` is set (dev/test). |
+| SEC-F002-50 | **The service ingest path can pre-fill server-owned `details` keys.** Reserved keys are checked only when `attestation = client`, so a service can write `details.server.spooled`, `details.server.original_ts` or `details.reported_by` and make a live event look like a replay from another time. | Confirmed | Low | `cp/src/audit/writer.ts:94-96`; `audit/routes/service-events.ts:135-141` | Refuse `RESERVED_DETAIL_KEYS` at the top level of `details`, and `server` at any depth, on the service path with 422. Only the control plane's own writer adds them. |
+| SEC-F002-51 | **The MFA-evidence rule accepts any `acrs` value.** `require_mfa_claim` is satisfied by `amr` containing `mfa` **or any non-empty `acrs`**. An authentication context that requires no MFA (for example a terms-of-use context) passes. | Confirmed (rule); Suspected (impact depends on the tenant's Conditional Access design) | Low | `cp/src/auth/flow-b.ts:250-256`; `grants/token-exchange.ts:116-118` | Add `idp.mfa_auth_contexts`: accept only those `acrs` values as MFA evidence. Settle it together with Q5 at TC-F-002-28. |
+
+### P6-5. Threat table (Phase 6 update)
+
+| # | Threat | Likelihood | Impact | Control now in code | Gap | Recommendation |
+|---|---|---|---|---|---|---|
+| T-1 | Device-code phishing (TM-01) | H | H | IdP-native flow, switch, `ipaddr` flag, admin only on a strong flow, MFA claim required in production | Mismatch only alerts (Q4); PEPs can't see the session role | Q4 at TC-28; SEC-F002-42 |
+| T-2 | Loopback code phishing | M | H | PKCE, binding cookie, callback = redemption IP (deny) | An attacker on the victim's egress IP passes; `alert` mode | Keep `deny`; document the residual |
+| T-3 | IdP token replay or confusion | L | H | Pinned claims, consume-first `uti` | — | — |
+| T-4 | Group spoofing, stale roles (TM-02, TM-49) | M | H | Graph authoritative, GUID only | `Principal` snapshot up to 7 d; raw display names | SEC-F002-42, -47 |
+| T-5 | Refresh-token theft (TM-40) | M | H | Rotation, family revocation | No sender constraint (CQ-19) | F-005 keychain |
+| T-6 | Signing-key exfiltration (TM-38) | L | Critical | Runtime flag monitor, denies | No recovery; flagged versions still published | SEC-F002-44, -35 (b–d) |
+| T-7 | Forged service audit (SR-07) | M | H | Per-service allow-list, source from token | Reserved `details` keys; ingest flood | SEC-F002-50, -48 |
+| T-8 | Privileged audit tampering (TM-45a) | M | H | NOLOGIN owner, DDL trigger, checkpoints, `audit-verify` | Live-key trust anchor; tail truncation without the log | SEC-F002-36, -38 |
+| T-9 | Forged or evasive client events (TM-45b) | H | M | Server sessions, `final_seq`, sweep, reserved keys | Pack and agent kill-switch scopes are declared by the host | F-012 |
+| T-10 | Audit flood / audit loss (TM-46) | M | H | Aggregation caps, spool | Silent loss on spool failure; poison file | SEC-F002-46, -48 |
+| T-11 | Cross-tenant (TM-04) | L | H | FORCE RLS, org pinned | — | — |
+| T-12 | Dev artefacts in production | M | Critical | Guards, exclusion, image scan, storage refusal | Environment-override channel | SEC-F002-45 |
+| T-13 | Secrets in logs, images or transit | M | M | Redact, scrub, scans | Redirects, `http://` PEP URLs | SEC-F002-49 |
+| T-14 (new) | Unauthenticated lockout of token issuance and JWKS | M | H | Per-IP + global limits | One shared global bucket; probes unlimited | SEC-F002-43 |
+| T-15 (new) | Directory strings as an injection or spoofing vector | L (today) | M | Client strings sanitised | IdP and Graph strings raw | SEC-F002-47 |
+
+### P6-6. Compliance controls touched (Phase 6 additions)
+
+Gulf control numbers are "to verify", as in §7.
+
+| Area | Findings | ISO/IEC 27001:2022 Annex A | SOC 2 | Gulf (to verify) |
+|---|---|---|---|---|
+| Access rights and privileged access | -42, -51 | 5.15, 5.18, 8.2, 8.5 | CC6.1, CC6.2, CC6.3 | NCA ECC 2-2; SAMA CSF 3.3.5 |
+| Availability of authentication and fail-closed controls | -43, -44, -48 | 8.6, 8.14, 5.29, 5.30 | A1.1, A1.2, CC7.5 | CBUAE AI Guidance Note (ability to stop and restore); SAMA CSF 3.3.x Business Continuity |
+| Cryptographic key management and recovery | -44, -35, -36, -37 | 8.24, 5.26 | CC6.1, CC6.7 | NCA ECC 2-8; SAMA CSF 3.3.9; QCB Cloud Regulation (KMS logs) |
+| Logging completeness and integrity | -46, -50, -38 | 8.15, 5.28, 5.33 | CC7.2, CC7.3 | NCA ECC 2-12; SAMA CSF 3.3.14; Qatar NIA Logging & Security Monitoring |
+| Configuration and change management | -45 | 8.9, 8.32 | CC8.1, CC6.8 | SAMA CSF 3.3.7 |
+| Secure coding and information transfer | -47, -49 | 8.28, 5.14, 8.21 | CC6.6, CC6.7 | NCA ECC 2-3 |
+
+### P6-7. Security verdict for G6
+
+**Verdict: PASS WITH CONDITIONS.** No Critical or High finding is open. The required Phase 4 changes are implemented and tested, apart from the deployment-time items (-11 audit device, -22 rendering). SEC-F002-34, -39 and -40 are fixed.
+
+G6 may not be recorded until **C1** exists; without it this review is **FAIL (blocked)**. Under CLAUDE.md, the standing authorization lets agents record G4–G8 after reviews pass. It does not let an agent supply the written human acceptance that status.md requires for -35 (b)–(d), -36 and -37. No agent message counts as that acceptance.
+
+**What Ram Mohan Rao Adduri must decide or accept in writing:**
+
+1. **C1 (G6 blocker). Accept SEC-F002-35 (b)–(d), -36 and -37 (restart case) as F-011 prerequisites, or have them built first.** Suggested wording, to be written by him in security.md or status.md (not recorded by Claude):
+   > "I, Ram Mohan Rao Adduri, accept SEC-F002-35 (b)–(d), SEC-F002-36 and SEC-F002-37 as open risks for F-002 Phase 0. I understand that the checkpoint trust anchor is the live OpenBao key, that a flagged checkpoint key has no recovery path, and that a key recreated under the same name is detected only within one process lifetime. This acceptance holds only for dev and CI with synthetic identities. These items must be implemented before F-011 (WORM) or before any non-dev deployment, whichever comes first. Owner: ________. Date: ________."
+2. **C2 (decide at G6). SEC-F002-42.** Recommended: fix before G7, because F-002 ships the `Principal` contract and the integrator guide that F-003 and F-004 will follow. The alternative is to accept it with README:96 corrected now and an issue that blocks the G4 of F-003 and F-004.
+3. **Acknowledge the items that block any non-dev deployment (not G6):**
+   - SEC-F002-38;
+   - the OpenBao audit device (-11);
+   - SEC-F002-43 and -44;
+   - SEC-F002-46 alerting (#45);
+   - SEC-F002-45 and -49;
+   - Kubernetes role rendering (-22, F-023);
+   - TC-F-002-28 with Q4 and Q5, and closing EXC-F002-01;
+   - a decision on SEC-F002-10 / Q3 before E-1 consent.
+4. **Acknowledge exception EXC-F002-01 and flow-A IP-mismatch-as-alert** (-05) until TC-F-002-28 runs. The security view: acceptable for G6, because the production default is fail-safe (`require_mfa_claim` unset = true) and nothing is deployed outside dev.
+5. **Track as tasks, not gate items:** SEC-F002-47, -48, -50 and -51.
+
+Reviewer: security-reviewer agent, 2026-09-26. Agent review only: no approval row is filled by this section.
+
+Source: GitHub Advisory Database (`gh api /advisories?ecosystem=npm&affects=<pkg>@<version>`), queried 2026-09-26 for the direct runtime dependencies listed in P6-3.

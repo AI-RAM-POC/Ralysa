@@ -251,6 +251,13 @@ Latency against real Entra can't be measured locally until E-1 is available.
 > This is not a security-reviewer sign-off; the security reviewer's phase-6 pass is separate. It
 > records the state in [security.md](security.md) and status.md that G6 depends on, plus the
 > security-relevant results above.
+>
+> **Security reviewer's phase-6 pass:** [security.md "Phase 6 security review (2026-09-26)"](security.md#phase-6-security-review-2026-09-26).
+> Verdict (§P6-7): **pass with conditions**. There are no open Critical or High findings. Three new findings are Medium:
+> SEC-F002-42 (`Principal` roles ignore the strong-flow admin rule and are a sign-in snapshot),
+> -43 (a shared global rate-limit bucket enables an unauthenticated lockout), and -44 (no recovery for a flagged RTS
+> signing key). There are seven new Low findings (-45 to -51). G6 still needs the founder's written acceptance of
+> -35 (b)–(d), -36 and -37 (condition C1) and a decision on -42 (C2).
 
 - **Tested and passing:**
   - authz bypass attempts (TC-10, -11, -25, -26, -27);
