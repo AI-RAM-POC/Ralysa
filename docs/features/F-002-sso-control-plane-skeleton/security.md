@@ -511,4 +511,4 @@ Source: GitHub Advisory Database (`gh api /advisories?ecosystem=npm&affects=<pkg
 - **C2: SEC-F002-42 fixed before G7** (#47). Founder decision, same session and date. Recorded by Claude.
 - **Issues filed with the founder's approval:** #47–#56 (SEC-F002-42..51), #57 (D-2), D-1 added to #39.
 
-Provenance: the test-engineer agent that wrote this subsection did not see the founder's reply itself. The coordinating Claude Code session relayed the text above to it verbatim, and the agent copied it unchanged. The founder, or whoever reviews PR #46, should confirm that it matches his reply before G6 is recorded.
+Provenance: the decisions were asked as multiple-choice questions in the Claude Code session. Claude drafted the option wording, and the founder selected 'Accept, dev/CI only' for C1, 'Fix before G7' for C2, and all three filing options. The coordinating session checked the C1 text above against the selected option, and it matches word for word. If the session account above isn't Ram Mohan Rao Adduri's own, he should confirm C1 on PR #46 or in this file.
