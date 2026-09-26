@@ -40,7 +40,7 @@ REQ-071 (Phase 1) extends; AC-13 is the spec §11 data model (DV-12).
 | AC-12 | REQ-016(c) | TC-F-002-18 | I | cp/test/integration/audit-routes.int.ts :: describe "GET /v1/audit/events (TC-F-002-18)" | Service API |
 | AC-13 | — (spec §11, DV-12) | TC-F-002-19 | I | cp/test/integration/db.int.ts :: describe "schema (TC-F-002-19)" | Data store |
 | AC-14 | REQ-095 | TC-F-002-20 | I | cp/test/integration/scans.int.ts :: "TC-F-002-20: the captured logs hold no token, code, verifier, secret or email; users are UUIDs"; the rotation (TC-15) logs: cp/test/integration/rotation.int.ts :: "TC-F-002-20 (rotation logs): the two replicas' logs during TC-15 hold no token or secret; users are UUIDs" (added in this phase, see note 1) | Service logs |
-| AC-15 | REQ-016(b) | TC-F-002-21 | I | cp/test/integration/sign-in.int.ts :: "TC-F-002-21: fatima's Arabic name and group names are byte-identical in /v1/me" | Service API |
+| AC-15 | REQ-016(b) | TC-F-002-21 | I | cp/test/integration/sign-in.int.ts :: "TC-F-002-21: fatima’s Arabic name and group names are byte-identical in /v1/me" | Service API |
 | AC-16 | REQ-016(c) | TC-F-002-22 | I | cp/test/integration/audit-routes.int.ts :: describe "POST /v1/audit/client-events (TC-F-002-22)" | Service API |
 | AC-17 | REQ-016(c) | TC-F-002-23 | I | cp/test/integration/db.int.ts :: describe "insert-only audit store (TC-F-002-23: grants, triggers, seal table, DDL)"; cp/test/integration/audit.int.ts :: describe "sealer (TC-F-002-23 sealing parts; SEC-F002-26)" | Data store |
 | AC-1, AC-5 | REQ-016(b) | TC-F-002-24 | I | cp/test/integration/sign-in.int.ts :: "TC-F-002-24: tenant pinning, overage through Graph, look-alike names and non-GUID claims" | Service |

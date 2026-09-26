@@ -81,7 +81,7 @@ implement it.
 
 | Run condition | Total | Passed | Failed | Blocked | Skipped |
 |---|---|---|---|---|---|
-| **Gating runs**: 5 full local integration runs on an idle machine, the forced unit run, CI on `f795d6b`, the soak on `main` | 36 | 35 | 0 | 1 (TC-F-002-28, E-1) | 0 |
+| **Gating runs**: 5 full local integration runs on an idle machine, the forced unit run, CI on `f795d6b`, PR CI [run 36258446142](https://github.com/AI-RAM-POC/Ralysa/actions/runs/36258446142) on `f01142e` (with the new test), the soak on `main` | 36 | 35 | 0 | 1 (TC-F-002-28, E-1) | 0 |
 | **Stress runs**: 2 full integration runs with `pnpm test --force` looping alongside (probe of the #39 flaky class) | 36 | 32 | **3 (TC-F-002-01, -15, -23)** | 1 (TC-28) | 0 TCs (12 tests of `audit.int.ts` skipped in run 6 after its setup hook failed) |
 
 **Per suite (real output, this phase):**
@@ -101,6 +101,7 @@ implement it.
 | TC-15 rotation load harness | inside the integration suite (`rotation.int.ts`) | 5/5 passed idle; **2/2 FAILED under load** (see Results) | 61.5–62.3 s each |
 | TC-16 soak | `soak.yml`, [run 36204987424](https://github.com/AI-RAM-POC/Ralysa/actions/runs/36204987424) on `main` | Passed (T15 section) | 10 min |
 | CI on `f795d6b` | [run 36256916071](https://github.com/AI-RAM-POC/Ralysa/actions/runs/36256916071) | `quality`, `integration` (with the image scan), `repo-checks`, `secret-scan` and `ui-e2e` all succeeded | 3 min 1 s |
+| PR CI on `f01142e` (this branch) | [run 36258446142](https://github.com/AI-RAM-POC/Ralysa/actions/runs/36258446142) | All six jobs succeeded. `integration`: control plane 169/169, including `rotation.int.ts` 2/2 (TC-15 and the new TC-20 rotation-log test); secrets 5/5; dev-stack 66/66 | — |
 | UI e2e (axe) | — | Not run locally because F-002 has no UI (see Accessibility). `ui-e2e` is green in CI on `f795d6b` as a regression check of F-001's surfaces | — |
 
 **Flake observations**
@@ -270,25 +271,37 @@ Latency against real Entra can't be measured locally until E-1 is available.
     run;
   - SEC-F002-39 and -40 (`checkpoint.test.ts`);
   - SEC-F002-35 (a): the TC-29 test "OpenBao 2.6.2 refuses to clear the flag again".
-- **Open and blocking G6** (security.md §E, status.md). Each blocks G6 unless a named human accepts
-  it in writing as an F-011 prerequisite; the test engineer can't accept them:
+- **Blocking G6 until decided (C1)** (security.md §E and P6-7, status.md). Each blocked G6 unless a
+  named human accepted it in writing; the test engineer can't accept them. The founder's decision is
+  recorded in security.md P6-8 ("accepted, dev/CI only"):
   - **SEC-F002-35 (b)–(d):** checkpoint-key recovery by key epoch, `audit-verify` still verifying
     with a flagged key, and the "checkpoint key compromised" runbook;
   - **SEC-F002-36:** pin the checkpoint trust anchor;
   - **SEC-F002-37:** detect a checkpoint key recreated under the same name.
-- **Open and blocking any non-dev deployment:**
+- **SEC-F002-42 (C2)**: `Principal` roles ignore the strong-flow admin rule and are a sign-in snapshot.
+  Founder decision (security.md P6-8): **fix before G7**
+  ([#47](https://github.com/AI-RAM-POC/Ralysa/issues/47)).
+- **Open and blocking any non-dev deployment** (security.md P6-7 item 3):
   - SEC-F002-38: require `--log-checkpoints` outside dev and ship the log off-host;
-  - the OpenBao audit device (SEC-F002-11).
+  - the OpenBao audit device (SEC-F002-11);
+  - SEC-F002-43 ([#48](https://github.com/AI-RAM-POC/Ralysa/issues/48));
+  - SEC-F002-44 ([#49](https://github.com/AI-RAM-POC/Ralysa/issues/49));
+  - SEC-F002-45 ([#50](https://github.com/AI-RAM-POC/Ralysa/issues/50));
+  - SEC-F002-46 alerting ([#51](https://github.com/AI-RAM-POC/Ralysa/issues/51), which covers [#45](https://github.com/AI-RAM-POC/Ralysa/issues/45));
+  - SEC-F002-49 ([#54](https://github.com/AI-RAM-POC/Ralysa/issues/54));
+  - SEC-F002-22: Kubernetes auth-role rendering (F-023);
+  - TC-F-002-28 run, with Q4 and Q5 answered and EXC-F002-01 closed;
+  - a decision on SEC-F002-10 / Q3 before the E-1 admin consent is given.
 
 ## Defects
 
-The proposed defects are **not filed**: the founder decides. The other rows are already tracked.
+D-1 and D-2 were proposed in this phase and filed with the founder's approval (security.md P6-8): D-1 was added to #39, and D-2 is #57.
 
 | ID / issue | Severity | Summary | Status |
 |---|---|---|---|
-| D-1 (to add to [#39](https://github.com/AI-RAM-POC/Ralysa/issues/39)) | Medium | Under CPU contention, the 250 ms audit-write budget fails closed in three more places than #39 lists: TC-F-002-15 (`rotation.int.ts`; 2 operations answered 503 `sign_in_audit_unavailable` in each of 2 stress runs), TC-F-002-01 (`sign-in-browser.int.ts`; the redemption answered 503) and the `audit.int.ts` `beforeAll` (the `db.migration.applied` write; the file's 12 tests are skipped). Failing closed is correct (design §5.8, REQ-071); the tests assume an unloaded database. In production, a sign-in fails with 503 whenever its success event takes more than 250 ms to commit, so sign-in availability tracks audit-DB latency. That is input for the Phase 1 capacity work (REQ-110) | Proposed |
-| D-2 | Low | A fresh control-plane database against an **existing** Transit key (after a rebuild or restore) republishes every historical key version in JWKS. In TC-15 the JWKS listed `ralysa-rts-signing.v1`–`v23`, and `secret.rotated published` was written for v1–v21, because the shared dev key had rotated in earlier runs. The old versions are superseded at once but retire only after the retention (access TTL + 5 min, about 20 min), so previously retired versions verify again for that window (the poll in `src/auth/tokens/signing-keys.ts`). The impact is small because Transit keys are non-exportable, but a deliberately retired version coming back is surprising. Possible fixes: publish only the latest version on first start, honour Transit `min_decryption_version`, or document it in the restore runbook | Proposed (confirm with the security reviewer) |
-| [#45](https://github.com/AI-RAM-POC/Ralysa/issues/45) | Medium | A spool append failure after a timed-out audit write loses the event (for example `auth.token_rejected`), and the only trace is a warning log. There is no loss metric, and metrics go to `noopMetrics`. It needs a timed-out write, a failing spool (disk full, EACCES) and a rolled-back late transaction. It weakens AC-4 and AC-7 completeness in that failure mode | Existing, open; not reproduced in this phase |
+| D-1 (in [#39](https://github.com/AI-RAM-POC/Ralysa/issues/39)) | Medium | Under CPU contention, the 250 ms audit-write budget fails closed in three more places than #39 lists: TC-F-002-15 (`rotation.int.ts`; 2 operations answered 503 `sign_in_audit_unavailable` in each of 2 stress runs), TC-F-002-01 (`sign-in-browser.int.ts`; the redemption answered 503) and the `audit.int.ts` `beforeAll` (the `db.migration.applied` write; the file's 12 tests are skipped). Failing closed is correct (design §5.8, REQ-071); the tests assume an unloaded database. In production, a sign-in fails with 503 whenever its success event takes more than 250 ms to commit, so sign-in availability tracks audit-DB latency. That is input for the Phase 1 capacity work (REQ-110). Related: SEC-F002-48 (#53) | Open (comment on #39) |
+| D-2, [#57](https://github.com/AI-RAM-POC/Ralysa/issues/57) | Low | A fresh control-plane database against an **existing** Transit key (after a rebuild or restore) republishes every historical key version in JWKS. In TC-15 the JWKS listed `ralysa-rts-signing.v1`–`v23`, and `secret.rotated published` was written for v1–v21, because the shared dev key had rotated in earlier runs. The old versions are superseded at once but retire only after the retention (access TTL + 5 min, about 20 min), so previously retired versions verify again for that window (the poll in `src/auth/tokens/signing-keys.ts`). The impact is small because Transit keys are non-exportable, but a deliberately retired version coming back is surprising. Possible fixes: publish only the latest version on first start, honour Transit `min_decryption_version`, or document it in the restore runbook | Open (#57) |
+| [#45](https://github.com/AI-RAM-POC/Ralysa/issues/45) | Medium | A spool append failure after a timed-out audit write loses the event (for example `auth.token_rejected`), and the only trace is a warning log. There is no loss metric, and metrics go to `noopMetrics`. It needs a timed-out write, a failing spool (disk full, EACCES) and a rolled-back late transaction. It weakens AC-4 and AC-7 completeness in that failure mode. Covered by SEC-F002-46 alerting ([#51](https://github.com/AI-RAM-POC/Ralysa/issues/51)), a non-dev blocker | Existing, open; not reproduced in this phase |
 | [#39](https://github.com/AI-RAM-POC/Ralysa/issues/39) | Low | Signing-key pin follow-ups (R37-r2-1..3) and the load-sensitive tests (R44-4, R44-5, F43-4) | Existing, open; follow-up |
 | [#38](https://github.com/AI-RAM-POC/Ralysa/issues/38) | Low | T14 scan-check gaps (R34-r2-1..5) | Existing, open; follow-up |
 
@@ -308,7 +321,7 @@ Observed and expected, so not defects:
   stay open.
 - **EXC-F002-01:** the production default of `idp.require_mfa_claim` (unset means `true` in
   production) isn't confirmed against real tokens (T15 section).
-- **Security items** SEC-F002-35 (b)–(d), -36 and -37 (G6) and -38 (non-dev deployment) are open.
+- **Security items stay open:** SEC-F002-35 (b)–(d), -36 and -37 (accepted for dev and CI only, C1); SEC-F002-42 (fix before G7, #47); the non-dev blockers listed under Security review summary.
 - **Metrics go to `noopMetrics`** in `serve` (status.md). Counters such as
   `audit_write_failures_total` and `auth_device_ip_mismatch_total` aren't exported, so alerts must
   key on log lines until F-011 or F-023.
@@ -327,43 +340,58 @@ Observed and expected, so not defects:
 
 ## Recommendation
 
-**Not ready** for G6 as it stands. It becomes **go with conditions** once the founder decides item 1
-below in writing.
+**Go with conditions** for G6. The two founder decisions that G6 was waiting for are recorded in
+security.md P6-8:
+- **C1:** SEC-F002-35 (b)–(d), -36 and -37 accepted as open risks for dev and CI with synthetic
+  identities only, to be built before F-011 or any non-dev deployment, whichever comes first;
+- **C2:** SEC-F002-42 is **fixed before G7**
+  ([#47](https://github.com/AI-RAM-POC/Ralysa/issues/47)).
+
+Without those two recorded decisions this report's recommendation would be **Not ready**.
 
 The quality evidence supports a release candidate for a dev-only Phase 0 skeleton:
 - Every automated TC passes in all of these:
   - 5 of 5 idle integration runs;
   - the unit, lint, build, typecheck and repo checks;
   - the scanner self-tests and the image scan;
-  - CI on `f795d6b` and the 10-minute soak.
+  - CI on `f795d6b`, PR CI [run 36258446142](https://github.com/AI-RAM-POC/Ralysa/actions/runs/36258446142)
+    and the 10-minute soak.
 - The NFR bounds are met: token-validation p95 ≤ 0.53 ms standalone, and rotation takes 150.6 s at
   production timings with 0 failures.
 - No Critical or High defect was found.
 
-What stands between this and G6:
+Conditions:
 
-1. **G6 blockers that need the founder's written decision** (status.md, security.md §E):
-   SEC-F002-35 (b)–(d), SEC-F002-36 and SEC-F002-37. Each must be either fixed or accepted in
-   writing by a named human as an F-011 prerequisite. Neither the test engineer nor the standing
-   authorization can accept them.
-2. **TC-F-002-28, blocked on E-1.** Recommendation: **G6 can pass with TC-28 as a condition** rather
-   than a blocker, because:
+1. **Before G7:** SEC-F002-42 fixed ([#47](https://github.com/AI-RAM-POC/Ralysa/issues/47)), as the
+   founder decided (C2).
+2. **TC-F-002-28, blocked on E-1, is a condition rather than a G6 blocker**, because:
    - E-1 is an external blocker;
    - the mock IdP covers every flow and failure path that TC-28 repeats;
    - the fail-safe MFA default (EXC-F002-01) fails closed;
    - nothing is deployed outside dev before G6 and TC-28.
 
-   The condition is to run TC-28 and close Q4, Q5 and EXC-F002-01 **before any non-dev deployment
-   and before G8 UAT with real users**.
-3. **Conditions to carry forward, which don't block G6:**
-   - SEC-F002-38 and the OpenBao audit device, before any non-dev deployment;
-   - #45 (Medium), fixed or accepted before any non-dev deployment, because it weakens audit
-     completeness;
-   - D-1, folded into #39;
-   - D-2, triaged with the security reviewer;
+   TC-28 must run, and Q4, Q5 and EXC-F002-01 must close, **before any non-dev deployment and
+   before G8 UAT with real users**.
+3. **Before any non-dev deployment** (security.md P6-7 item 3):
+   - C1's items: SEC-F002-35 (b)–(d), -36 and -37 built (or before F-011, whichever comes first);
+   - SEC-F002-38: require `--log-checkpoints` outside dev and ship the log off-host;
+   - the OpenBao audit device (SEC-F002-11);
+   - SEC-F002-43 ([#48](https://github.com/AI-RAM-POC/Ralysa/issues/48));
+   - SEC-F002-44 ([#49](https://github.com/AI-RAM-POC/Ralysa/issues/49));
+   - SEC-F002-45 ([#50](https://github.com/AI-RAM-POC/Ralysa/issues/50));
+   - SEC-F002-46 alerting ([#51](https://github.com/AI-RAM-POC/Ralysa/issues/51), which covers [#45](https://github.com/AI-RAM-POC/Ralysa/issues/45));
+   - SEC-F002-49 ([#54](https://github.com/AI-RAM-POC/Ralysa/issues/54));
+   - SEC-F002-22: Kubernetes auth-role rendering (F-023);
+   - TC-F-002-28 run, with Q4 and Q5 answered and EXC-F002-01 closed;
+   - a decision on SEC-F002-10 / Q3 before the E-1 admin consent is given.
+4. **Tracked, not gate items:**
+   - D-1, added to [#39](https://github.com/AI-RAM-POC/Ralysa/issues/39);
+   - D-2, [#57](https://github.com/AI-RAM-POC/Ralysa/issues/57);
+   - SEC-F002-47 (#52), -48 (#53), -50 (#55) and -51 (#56);
    - #38 and #39 remain follow-ups.
 
-Ready for release candidate / **Not ready** (pending item 1; then go with conditions 2 and 3)
+**Ready for release candidate, with conditions 1–4** (it would be Not ready without the recorded C1
+and C2 decisions)
 
 ## Approval (G6)
 

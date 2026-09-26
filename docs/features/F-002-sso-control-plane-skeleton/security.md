@@ -504,3 +504,11 @@ G6 may not be recorded until **C1** exists; without it this review is **FAIL (bl
 Reviewer: security-reviewer agent, 2026-09-26. Agent review only: no approval row is filled by this section.
 
 Source: GitHub Advisory Database (`gh api /advisories?ecosystem=npm&affects=<pkg>@<version>`), queried 2026-09-26 for the direct runtime dependencies listed in P6-3.
+
+### P6-8. Founder decisions (2026-09-26)
+
+- **C1: accepted.** Founder decision, given in the Claude Code session on 2026-09-26 in answer to the G6 question (session account uma.adduri@techpreneur.solutions, in the name of Ram Mohan Rao Adduri). Selected option: 'Accept, dev/CI only': *I (Ram) accept them as open risks for dev and CI with synthetic identities only, to be built before F-011 or any non-dev deployment, whichever comes first. Claude records this reply verbatim, attributed to me, and doesn't write the acceptance itself.* Scope: SEC-F002-35 (b)–(d), SEC-F002-36, SEC-F002-37. Recorded by Claude.
+- **C2: SEC-F002-42 fixed before G7** (#47). Founder decision, same session and date. Recorded by Claude.
+- **Issues filed with the founder's approval:** #47–#56 (SEC-F002-42..51), #57 (D-2), D-1 added to #39.
+
+Provenance: the test-engineer agent that wrote this subsection did not see the founder's reply itself. The coordinating Claude Code session relayed the text above to it verbatim, and the agent copied it unchanged. The founder, or whoever reviews PR #46, should confirm that it matches his reply before G6 is recorded.

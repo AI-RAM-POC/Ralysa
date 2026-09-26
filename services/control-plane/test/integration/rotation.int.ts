@@ -108,6 +108,7 @@ describe.skipIf(stack === undefined)('rotation under load (F-002-T13, TC-F-002-1
   }, 180_000);
 
   it("TC-F-002-20 (rotation logs): the two replicas' logs during TC-15 hold no token or secret; users are UUIDs", () => {
+    expect(logLines.length, 'run together with TC-F-002-15').toBeGreaterThan(0);
     // The rotation itself was logged, so the scan below saw it.
     const text = logLines.join('');
     for (const msg of ['signing_key_active', 'idp_client_secret_observed', 'idp_invalid_client']) {
